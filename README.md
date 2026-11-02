@@ -1,3 +1,5 @@
+<img src="Resources/AppIcon-1024.png" width="128" alt="Winnow icon: a smiling grain of wheat in front of two photos">
+
 # Winnow
 
 A personal, keyboard-first photo culling app for Apple Photos on Apple Silicon Macs.
@@ -10,10 +12,11 @@ then pick a source in the sidebar and cull from the keyboard. Press **?** for ev
 
 | Key | Does | In Photos |
 | --- | --- | --- |
-| P | Pick | Marks it a Favorite |
 | X or ⌫ | Reject | Adds it to the "Winnow – Rejected" album |
-| U | Clear pick or reject | Puts Favorite back the way it was |
-| 1–5, 0 | Star rating, clear rating | Nothing (Photos has no ratings; Winnow keeps them) |
+| U | Clear a reject | Leaves the "Winnow – Rejected" album |
+| F | Favorite or unfavorite | Favorite |
+| 1–5, 0 | Star rating, clear rating | Photos' own rating (macOS 27) |
+| A, I | Accept the suggested rating; show Apple's scores for the photo | |
 | H | Hide | Hides it |
 | ← → ↑ ↓ | Move (decisions move on to the next photo automatically) | |
 | Return, Esc | Grid ↔ single photo | |
@@ -24,7 +27,7 @@ then pick a source in the sidebar and cull from the keyboard. Press **?** for ev
 Rejected photos are only deleted when you click **Delete Rejected** in the toolbar: one batch, one macOS
 confirmation, and they go to Recently Deleted for 30 days.
 
-Winnow keeps its own data (stars, picks, rejects, where you were) in
+Ratings and Favorites live in Photos. Winnow keeps only its own data (rejects, where you were) in
 `~/Library/Application Support/Winnow/`, one database per library.
 
 Code: `Sources/Winnow` (the app), `Sources/WinnowKit` (decisions, their database, undo; unit-tested in
