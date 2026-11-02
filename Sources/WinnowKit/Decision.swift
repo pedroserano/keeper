@@ -4,16 +4,16 @@ import Foundation
 import GRDB
 
 public enum Flag: String, Codable, Sendable, DatabaseValueConvertible {
-    case none, pick, reject
+    case none, reject
 }
 
 /// A key press that changes a decision.
 public enum Action: Equatable, Sendable {
     case rate(Int) // 0 clears, 1–5 stars
-    case pick
     case reject
     case clearFlag
     case toggleHidden
+    case toggleFavorite
 }
 
 public struct Decision: Codable, Equatable, Sendable, FetchableRecord, PersistableRecord {
@@ -23,26 +23,32 @@ public struct Decision: Codable, Equatable, Sendable, FetchableRecord, Persistab
     public var assetID: String
     /// PHCloudIdentifier string, so decisions can be re-matched after a library migration.
     public var cloudID: String?
-    /// 0–5. Photos' own rating (macOS 27): Winnow writes it there and shows what Photos has.
+    /// 0–5. Photos' own rating (macOS 27). Photos is the source of truth: the session fills this
+    /// in from Photos, and a change here is written there.
     public var rating: Int
     public var flag: Flag
     /// True when Winnow hid the photo in Photos.
     public var hidden: Bool
-    /// Photos' Favorite state before Winnow first changed it, so clearing a pick puts it back.
-    public var originalFavorite: Bool?
+    /// Favorite in Photos. Like `rating`, the session fills it in from Photos; a change is written there.
+    public var favorite: Bool?
     /// When the user first looked at this photo in single or compare view.
     public var seenAt: Date?
     public var updatedAt: Date
 
+    enum CodingKeys: String, CodingKey {
+        case assetID, cloudID, rating, flag, hidden, seenAt, updatedAt
+        case favorite = "originalFavorite" // column named in v1, when picks existed
+    }
+
     public init(assetID: String, cloudID: String? = nil, rating: Int = 0, flag: Flag = .none,
-                hidden: Bool = false, originalFavorite: Bool? = nil, seenAt: Date? = nil,
+                hidden: Bool = false, favorite: Bool? = nil, seenAt: Date? = nil,
                 updatedAt: Date = Date()) {
         self.assetID = assetID
         self.cloudID = cloudID
         self.rating = rating
         self.flag = flag
         self.hidden = hidden
-        self.originalFavorite = originalFavorite
+        self.favorite = favorite
         self.seenAt = seenAt
         self.updatedAt = updatedAt
     }
@@ -58,24 +64,17 @@ public struct Decision: Codable, Equatable, Sendable, FetchableRecord, Persistab
         switch action {
         case .rate(let stars):
             d.rating = min(max(stars, 0), 5)
-        case .pick:
-            d.originalFavorite = d.originalFavorite ?? currentFavorite
-            d.flag = .pick
         case .reject:
-            d.originalFavorite = d.originalFavorite ?? currentFavorite
             d.flag = .reject
         case .clearFlag:
             d.flag = .none
         case .toggleHidden:
             d.hidden.toggle()
+        case .toggleFavorite:
+            d.favorite = !(d.favorite ?? currentFavorite)
         }
         d.updatedAt = date
         return d
-    }
-
-    /// The Favorite state Photos should show for this decision.
-    public func favorite(currentFavorite: Bool) -> Bool {
-        flag == .pick ? true : (originalFavorite ?? currentFavorite)
     }
 }
 
@@ -95,9 +94,8 @@ public struct PhotosChange: Equatable, Sendable {
         self.rating = rating
     }
 
-    public init(from before: Decision, to after: Decision, currentFavorite: Bool) {
-        let target = after.favorite(currentFavorite: currentFavorite)
-        favorite = target != currentFavorite ? target : nil
+    public init(from before: Decision, to after: Decision) {
+        favorite = before.favorite != after.favorite ? after.favorite : nil
         hidden = before.hidden != after.hidden ? after.hidden : nil
         inRejectAlbum = (before.flag == .reject) != (after.flag == .reject) ? after.flag == .reject : nil
         rating = before.rating != after.rating ? after.rating : nil

@@ -13,6 +13,7 @@ enum Source: Hashable, Codable {
     case bursts
     case suggestedRejects
     case bestShots
+    case calibrate
     case album(id: String, title: String)
 
     var title: String {
@@ -24,6 +25,7 @@ enum Source: Hashable, Codable {
         case .bursts: "Bursts"
         case .suggestedRejects: "Suggested Rejects"
         case .bestShots: "Best Shots"
+        case .calibrate: "Rate to Calibrate"
         case .album(_, let title): title
         }
     }
@@ -37,12 +39,13 @@ enum Source: Hashable, Codable {
         case .bursts: "square.stack.3d.down.right"
         case .suggestedRejects: "wand.and.rays"
         case .bestShots: "star"
+        case .calibrate: "slider.horizontal.3"
         case .album: "rectangle.stack"
         }
     }
 
-    /// Sources built from Apple's scores, ordered by score instead of by date.
-    var isSuggestion: Bool { self == .suggestedRejects || self == .bestShots }
+    /// Sources built from Apple's scores, in their own order instead of by date.
+    var isSuggestion: Bool { self == .suggestedRejects || self == .bestShots || self == .calibrate }
 
     /// Stable key for remembering a position per source.
     var key: String {
@@ -97,7 +100,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed, .suggestedRejects, .bestShots:
+        case .allPhotos, .unreviewed, .suggestedRejects, .bestShots, .calibrate:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)
@@ -147,6 +150,17 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         var out = Set<String>()
         fetch(source, newestFirst: false).enumerateObjects { a, _, _ in
             out.insert(String(a.localIdentifier.split(separator: "/").first ?? ""))
+        }
+        return out
+    }
+
+    /// Every star rating you've given in Photos (macOS 27), by UUID. Reads each photo once,
+    /// so it runs in the background.
+    nonisolated func photoRatings() -> [String: Int] {
+        var out: [String: Int] = [:]
+        fetch(.allPhotos, newestFirst: false).enumerateObjects { a, _, _ in
+            let r = a.rating.rawValue
+            if r > 0 { out[String(a.localIdentifier.split(separator: "/").first ?? "")] = r }
         }
         return out
     }

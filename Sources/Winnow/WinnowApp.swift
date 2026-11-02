@@ -53,7 +53,8 @@ struct RootView: View {
         case .problem(let url, let problem):
             ProblemView(url: url, problem: problem).frame(width: compact.width, height: compact.height)
         case .ready(let session):
-            ContentView(session: session).frame(minWidth: 1000, minHeight: 680)
+            // A new identity per session, so its key monitor never points at an old library.
+            ContentView(session: session).id(ObjectIdentifier(session)).frame(minWidth: 1000, minHeight: 680)
         }
     }
 }

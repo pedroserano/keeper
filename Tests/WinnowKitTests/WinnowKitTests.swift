@@ -4,80 +4,74 @@ import Testing
 import WinnowCore
 
 @Suite struct DecisionTests {
-    @Test func pickRemembersOriginalFavoriteAndClearingRestoresIt() {
-        let d0 = Decision.untouched("a")
-        let picked = d0.applying(.pick, currentFavorite: false)
-        #expect(picked.flag == .pick)
-        #expect(picked.originalFavorite == false)
-        #expect(PhotosChange(from: d0, to: picked, currentFavorite: false).favorite == true)
-
-        // Photos now shows it as a favorite; clearing should put it back to not-favorite.
-        let cleared = picked.applying(.clearFlag, currentFavorite: true)
-        #expect(cleared.flag == .none)
-        #expect(PhotosChange(from: picked, to: cleared, currentFavorite: true).favorite == false)
+    /// What the session hands over: the decision with Photos' current Favorite and rating filled in.
+    func fromPhotos(favorite: Bool = false, rating: Int = 0) -> Decision {
+        Decision(assetID: "a", rating: rating, favorite: favorite, updatedAt: .distantPast)
     }
 
-    @Test func pickOnAnExistingFavoriteChangesNothingInPhotos() {
-        let d0 = Decision.untouched("a")
-        let picked = d0.applying(.pick, currentFavorite: true)
-        let change = PhotosChange(from: d0, to: picked, currentFavorite: true)
-        #expect(change.favorite == nil)
-        #expect(change.isEmpty)
-        // And clearing keeps it a favorite, because it was one before Winnow.
-        let cleared = picked.applying(.clearFlag, currentFavorite: true)
-        #expect(PhotosChange(from: picked, to: cleared, currentFavorite: true).isEmpty)
+    @Test func favoriteTogglesAndUndoRestores() {
+        let d0 = fromPhotos(favorite: false)
+        let fav = d0.applying(.toggleFavorite, currentFavorite: false)
+        #expect(PhotosChange(from: d0, to: fav) == PhotosChange(favorite: true))
+        let undo = Change(label: "Favorite", before: [d0], after: [fav]).reversed
+        #expect(PhotosChange(from: undo.before[0], to: undo.after[0]).favorite == false)
     }
 
-    @Test func pickThenRejectRestoresFavoriteAndMovesIntoRejectAlbum() {
-        let picked = Decision.untouched("a").applying(.pick, currentFavorite: false)
-        let rejected = picked.applying(.reject, currentFavorite: true)
-        let change = PhotosChange(from: picked, to: rejected, currentFavorite: true)
-        #expect(change.favorite == false)
-        #expect(change.inRejectAlbum == true)
-        #expect(rejected.originalFavorite == false) // first value is kept
+    @Test func unfavoritingWorksOnPhotosFavorites() {
+        let d0 = fromPhotos(favorite: true)
+        #expect(PhotosChange(from: d0, to: d0.applying(.toggleFavorite, currentFavorite: true)).favorite == false)
+    }
+
+    @Test func favoriteFallsBackToPhotosWhenNotFilledIn() {
+        let d0 = Decision.untouched("a")
+        #expect(d0.applying(.toggleFavorite, currentFavorite: true).favorite == false)
+        #expect(d0.applying(.toggleFavorite, currentFavorite: false).favorite == true)
+    }
+
+    @Test func rejectingAFavoriteLeavesItAFavorite() {
+        // The delete sheet warns about favorites instead.
+        let d0 = fromPhotos(favorite: true)
+        let rejected = d0.applying(.reject, currentFavorite: true)
+        #expect(PhotosChange(from: d0, to: rejected) == PhotosChange(inRejectAlbum: true))
+        let cleared = rejected.applying(.clearFlag, currentFavorite: true)
+        #expect(PhotosChange(from: rejected, to: cleared) == PhotosChange(inRejectAlbum: false))
     }
 
     @Test func ratingIsWrittenToPhotosAndNothingElse() {
-        let d0 = Decision.untouched("a")
+        let d0 = fromPhotos()
         let rated = d0.applying(.rate(4), currentFavorite: false)
         #expect(rated.rating == 4)
-        #expect(PhotosChange(from: d0, to: rated, currentFavorite: false)
-                == PhotosChange(rating: 4))
+        #expect(PhotosChange(from: d0, to: rated) == PhotosChange(rating: 4))
         #expect(d0.applying(.rate(9), currentFavorite: false).rating == 5)
         let cleared = rated.applying(.rate(0), currentFavorite: false)
-        #expect(PhotosChange(from: rated, to: cleared, currentFavorite: false).rating == 0)
+        #expect(PhotosChange(from: rated, to: cleared).rating == 0)
     }
 
     @Test func undoingARatingRestoresPhotosOwnRating() {
-        // The photo already had 2 stars in Photos before Winnow touched it.
-        var before = Decision.untouched("a")
-        before.rating = 2
+        let before = fromPhotos(rating: 2) // already 2 stars in Photos
         let rated = before.applying(.rate(5), currentFavorite: false)
         let undo = Change(label: "Rate", before: [before], after: [rated]).reversed
-        #expect(PhotosChange(from: undo.before[0], to: undo.after[0], currentFavorite: false).rating == 2)
+        #expect(PhotosChange(from: undo.before[0], to: undo.after[0]).rating == 2)
     }
 
     @Test func sameRatingWritesNothing() {
-        var d = Decision.untouched("a")
-        d.rating = 3
-        #expect(PhotosChange(from: d, to: d.applying(.rate(3), currentFavorite: false), currentFavorite: false).isEmpty)
+        let d = fromPhotos(rating: 3)
+        #expect(PhotosChange(from: d, to: d.applying(.rate(3), currentFavorite: false)).isEmpty)
     }
 
     @Test func hideToggles() {
-        let d0 = Decision.untouched("a")
+        let d0 = fromPhotos()
         let hidden = d0.applying(.toggleHidden, currentFavorite: false)
-        #expect(PhotosChange(from: d0, to: hidden, currentFavorite: false).hidden == true)
+        #expect(PhotosChange(from: d0, to: hidden).hidden == true)
         let shown = hidden.applying(.toggleHidden, currentFavorite: false)
-        #expect(PhotosChange(from: hidden, to: shown, currentFavorite: false).hidden == false)
+        #expect(PhotosChange(from: hidden, to: shown).hidden == false)
     }
 
     @Test func undoingARejectLeavesTheAlbum() {
-        let d0 = Decision.untouched("a")
+        let d0 = fromPhotos()
         let rejected = d0.applying(.reject, currentFavorite: false)
         let undo = Change(label: "Reject", before: [d0], after: [rejected]).reversed
-        let change = PhotosChange(from: undo.before[0], to: undo.after[0], currentFavorite: false)
-        #expect(change.inRejectAlbum == false)
-        #expect(change.favorite == nil)
+        #expect(PhotosChange(from: undo.before[0], to: undo.after[0]) == PhotosChange(inRejectAlbum: false))
     }
 }
 
@@ -125,12 +119,12 @@ import WinnowCore
 @Suite struct StoreTests {
     @Test func saveLoadRemove() throws {
         let store = try DecisionStore()
-        let d = Decision(assetID: "x/L0/001", rating: 3, flag: .reject, originalFavorite: true, seenAt: Date())
-        try store.save([d, Decision(assetID: "y/L0/001", flag: .pick)])
+        let d = Decision(assetID: "x/L0/001", rating: 3, flag: .reject, favorite: true, seenAt: Date())
+        try store.save([d, Decision(assetID: "y/L0/001", flag: .none)])
         let all = try store.all()
         #expect(all.count == 2)
         #expect(all["x/L0/001"]?.rating == 3)
-        #expect(all["x/L0/001"]?.originalFavorite == true)
+        #expect(all["x/L0/001"]?.favorite == true)
         #expect(try store.rejected().map(\.assetID) == ["x/L0/001"])
         try store.remove(["x/L0/001"])
         #expect(try store.all().count == 1)
@@ -270,5 +264,114 @@ import WinnowCore
         let row = Calibration.agreement(scores: scores, favorites: ["a", "c"]).first { $0.signal == "overall" }!
         #expect(row.favorites == 1 && row.others == 1)
         #expect(row.auc == 1)
+    }
+}
+
+@Suite struct LearningTests {
+    /// Rated photos whose rating follows composition (your taste), while curation is unrelated noise
+    /// (think: nostalgia) and overall is constant.
+    func ratedByComposition(_ n: Int) -> [RatedPhoto] {
+        (0..<n).map { i in
+            let composition = Double(i % 50) / 50          // 0…0.98
+            let curation = Double((i * 37) % 101) / 101    // unrelated to the rating
+            let rating = 1 + Int(composition * 5)          // 1…5
+            return RatedPhoto(uuid: "r\(i)", scores: AppleScores(overall: 0.5, curation: curation, failure: 0,
+                                                                  composition: composition),
+                              rating: rating)
+        }
+    }
+
+    @Test func modelLearnsWhatDrivesYourRatings() {
+        let photos = ratedByComposition(200)
+        let model = RatingModel.fit(photos)!
+        let composition = RatingModel.features.firstIndex { $0.0 == "composition" }!
+        let strongest = model.weights.indices.max { abs(model.weights[$0]) < abs(model.weights[$1]) }!
+        #expect(strongest == composition)
+        #expect(model.weights[composition] > 0)
+        #expect(model.predict(AppleScores(curation: 0.5, failure: 0, composition: 0.95))
+                > model.predict(AppleScores(curation: 0.5, failure: 0, composition: 0.05)))
+    }
+
+    @Test func modelBeatsCurationWhenCurationIsntYourTaste() {
+        let e = RatingEvaluation.evaluate(ratedByComposition(200))
+        #expect(e.enoughRatings)
+        #expect(e.model > 0.9)
+        #expect(abs(e.curation) < 0.3)
+        #expect(e.modelWins)
+    }
+
+    @Test func tooFewRatingsNeverWin() {
+        let e = RatingEvaluation.evaluate(ratedByComposition(30))
+        #expect(!e.enoughRatings)
+        #expect(!e.modelWins)
+    }
+
+    @Test func recommenderRanksByModelWhenGiven() {
+        var scores: [String: AppleScores] = [:]
+        for i in 0..<100 {
+            // Curation runs opposite to composition here; the model should follow composition.
+            scores["p\(i)"] = AppleScores(overall: 0.5, curation: 1 - Double(i) / 100, failure: 0,
+                                          composition: Double(i) / 100)
+        }
+        let model = RatingModel.fit(ratedByComposition(200))!
+        let r = Recommender(scores: scores, model: model)
+        #expect(r.suggestion(forUUID: "p99")?.stars == 5)
+        #expect(r.suggestion(forUUID: "p0")?.stars == 1)
+        #expect(Recommender(scores: scores).suggestion(forUUID: "p99")?.stars == 1) // curation says otherwise
+    }
+
+    @Test func solveHandlesASimpleSystem() {
+        // 2x + y = 5, x + 3y = 10  →  x = 1, y = 3
+        let x = RatingModel.solve([[2, 1], [1, 3]], [5, 10])!
+        #expect(abs(x[0] - 1) < 1e-9 && abs(x[1] - 3) < 1e-9)
+    }
+}
+
+@Suite struct ProtectionTests {
+    func library() -> [String: AppleScores] {
+        var out: [String: AppleScores] = [:]
+        for i in 0..<100 {
+            out["p\(i)"] = AppleScores(overall: 0.5, curation: Double(i) / 100, failure: 0, noise: -0.05,
+                                       blurriness: 0.9, exposure: 0.9)
+        }
+        return out
+    }
+
+    @Test func meaningfulPhotosAreNotSuggestedRejects() {
+        var scores = library()
+        // High curation (something Photos thinks matters to you) but technically poor.
+        scores["keepsake"] = AppleScores(overall: 0.2, curation: 0.95, failure: -0.8, noise: -0.05,
+                                         blurriness: 0.1, exposure: 0.9)
+        scores["dud"] = AppleScores(overall: 0.2, curation: 0.2, failure: -0.8, noise: -0.05,
+                                    blurriness: 0.1, exposure: 0.9)
+        let r = Recommender(scores: scores)
+        let keepsake = r.suggestion(forUUID: "keepsake")!
+        #expect(keepsake.protected)
+        #expect(keepsake.reasons.contains(.failed)) // the reason still shows
+        #expect(!keepsake.suggestsReject)
+        #expect(r.suggestion(forUUID: "dud")!.suggestsReject)
+    }
+
+    @Test func screenshotsAreNeverProtected() {
+        var scores = library()
+        scores["shot"] = AppleScores(overall: 0.5, curation: 0.99, failure: 0)
+        let r = Recommender(scores: scores, screenshots: ["shot"])
+        #expect(r.suggestion(forUUID: "shot")!.suggestsReject)
+    }
+
+    @Test func calibrationSampleSpreadsAcrossTheRange() {
+        var scores: [String: AppleScores] = [:]
+        for i in 0..<1000 { scores["p\(i)"] = AppleScores(overall: 0.5, curation: Double(i) / 1000, failure: 0) }
+        let r = Recommender(scores: scores, screenshots: ["p5"])
+        let sample = r.calibrationSample(count: 150, excluding: ["p1", "p2"])
+        #expect(sample.count == 150)
+        #expect(Set(sample).count == 150)
+        #expect(!sample.contains("p1") && !sample.contains("p5"))
+        // About 15 from each tenth of the range. (Not exactly: the excluded photos shift the bin
+        // edges by a photo or two.)
+        let tenths = Dictionary(grouping: sample) { Int($0.dropFirst())! / 100 }.mapValues(\.count)
+        #expect(tenths.count == 10)
+        #expect(tenths.values.allSatisfy { (13...17).contains($0) })
+        #expect(r.calibrationSample(count: 150, excluding: ["p1", "p2"]) == sample) // stable
     }
 }

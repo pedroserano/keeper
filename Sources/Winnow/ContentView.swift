@@ -1,3 +1,4 @@
+import AppKit
 import Photos
 import SwiftUI
 import WinnowKit
@@ -7,7 +8,7 @@ struct ContentView: View {
     @ObservedObject var session: CullingSession
     @State private var showingDelete = false
     @State private var showingShortcuts = false
-    @FocusState private var keysFocused: Bool
+    @State private var keyMonitor: Any?
 
     var body: some View {
         NavigationSplitView {
@@ -15,13 +16,6 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230)
         } detail: {
             detail
-                .focusable()
-                .focusEffectDisabled()
-                .focused($keysFocused)
-                .onKeyPress(phases: .down, action: handleKey)
-                .simultaneousGesture(TapGesture().onEnded { keysFocused = true })
-                .onAppear { keysFocused = true }
-                .onChange(of: session.source) { keysFocused = true }
                 .overlay(alignment: .top) { toast }
                 .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar(session: session) }
                 .toolbar { toolbar }
@@ -32,6 +26,21 @@ struct ContentView: View {
         .environmentObject(session.library)
         .sheet(isPresented: $showingDelete) { DeleteQueueSheet().environmentObject(session).environmentObject(session.library) }
         .sheet(isPresented: $showingShortcuts) { ShortcutsSheet() }
+        .onAppear(perform: installKeyMonitor)
+        .onDisappear {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
+    }
+
+    /// Culling keys are handled for the whole window, so they always act on the selected photo,
+    /// wherever you last clicked (sidebar, toolbar, a photo). SwiftUI keyboard focus moved
+    /// whenever you clicked something else, which made keys work only some of the time.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handleKey(event) ? nil : event
+        }
     }
 
     @ViewBuilder private var detail: some View {
@@ -102,26 +111,33 @@ struct ContentView: View {
         }
     }
 
-    private func handleKey(_ press: KeyPress) -> KeyPress.Result {
-        if press.modifiers.contains(.command) { return .ignored } // leave ⌘ shortcuts to the menus
+    /// Returns true if the key was a culling key and has been used. Left alone: shortcuts with
+    /// ⌘ ⌃ or ⌥ (they belong to the menus), typing in a text field, and anything while a sheet is open.
+    private func handleKey(_ event: NSEvent) -> Bool {
+        guard !showingDelete, !showingShortcuts, let window = event.window,
+              window.sheetParent == nil, window.attachedSheet == nil else { return false }
+        if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
+        if let text = window.firstResponder as? NSText, text.isEditable { return false }
+
         let s = session
-        switch press.key {
-        case .leftArrow: s.move(by: -1)
-        case .rightArrow: s.move(by: 1)
-        case .upArrow: s.move(by: s.mode == .grid ? -s.gridColumns : -1)
-        case .downArrow: s.move(by: s.mode == .grid ? s.gridColumns : 1)
-        case .return: s.mode = s.mode == .grid ? .single : .grid
-        case .escape:
-            if s.zoomed { s.zoomed = false } else if s.mode != .grid { s.mode = .grid } else { return .ignored }
-        case .space:
+        switch event.keyCode {
+        case 123: s.move(by: -1)                                           // ←
+        case 124: s.move(by: 1)                                            // →
+        case 126: s.move(by: s.mode == .grid ? -s.gridColumns : -1)        // ↑
+        case 125: s.move(by: s.mode == .grid ? s.gridColumns : 1)          // ↓
+        case 36, 76: s.mode = s.mode == .grid ? .single : .grid            // Return, Enter
+        case 53:                                                           // Esc
+            if s.zoomed { s.zoomed = false } else if s.mode != .grid { s.mode = .grid } else { return false }
+        case 49:                                                           // Space
             if s.mode == .grid { s.mode = .single } else { s.toggleZoom(onFace: false) }
-        case .delete, .deleteForward: s.perform(.reject)
+        case 51, 117: s.perform(.reject)                                   // ⌫, ⌦
         default:
-            switch press.characters.lowercased() {
-            case "0", "1", "2", "3", "4", "5": s.perform(.rate(Int(press.characters)!))
-            case "p": s.perform(.pick)
+            // Shift is kept, so "?" arrives as "?".
+            switch event.charactersIgnoringModifiers?.lowercased() ?? "" {
+            case "0", "1", "2", "3", "4", "5": s.perform(.rate(Int(event.charactersIgnoringModifiers!)!))
             case "x": s.perform(.reject)
             case "u": s.perform(.clearFlag)
+            case "f": s.perform(.toggleFavorite)
             case "h": s.perform(.toggleHidden)
             case "z": s.toggleZoom(onFace: true)
             case "c": s.mode = s.mode == .compare ? .single : .compare
@@ -129,10 +145,10 @@ struct ContentView: View {
             case "a": s.acceptSuggestedRating()
             case "i": s.showingScores.toggle()
             case "?", "/": showingShortcuts = true
-            default: return .ignored
+            default: return false
             }
         }
-        return .handled
+        return true
     }
 }
 
@@ -151,11 +167,23 @@ struct Sidebar: View {
             Section {
                 row(.suggestedRejects)
                 row(.bestShots)
+                if session.suggestionsStatus == .ready { row(.calibrate) }
             } header: {
                 Text("Suggestions")
             } footer: {
-                if let note = suggestionsNote {
-                    Text(note).font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    if let note = suggestionsNote {
+                        Text(note).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if session.suggestionsStatus == .ready {
+                        Button(session.learning == .learning ? "Learning…" : "Learn from My Ratings") {
+                            session.learnFromRatings()
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .disabled(session.learning == .learning)
+                        .help("Fit the suggested stars to the ratings you've given in Photos")
+                    }
                 }
             }
             Section("Media Types") {
@@ -170,25 +198,43 @@ struct Sidebar: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Image(systemName: "photo.on.rectangle.angled").foregroundStyle(.secondary)
-                Text(session.libraryName).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Button("Change…") { model.chooseLibrary() }
-                    .buttonStyle(.link)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    Image(systemName: "photo.on.rectangle.angled").foregroundStyle(.secondary)
+                    Text(session.libraryName).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Change…") { model.chooseLibrary() }
+                        .buttonStyle(.link)
+                }
+                .font(.callout)
+                .padding(10)
             }
-            .font(.callout)
-            .padding(10)
+            .background(.bar)
         }
     }
 
     private var suggestionsNote: String? {
         switch session.suggestionsStatus {
-        case .loading: "Reading Apple's scores…"
-        case .ready: "From Apple Photos' own scores."
-        case .notAnalysed: "Photos hasn't analysed this library yet. Leave the Mac idle and plugged in, then reopen it."
-        case .unavailable: "Needs Full Disk Access to read Apple's scores."
+        case .loading: return "Reading Apple's scores…"
+        case .notAnalysed: return "Photos hasn't analysed this library yet. Leave the Mac idle and plugged in, then reopen it."
+        case .unavailable: return "Needs Full Disk Access to read Apple's scores."
+        case .ready: break
+        }
+        func pct(_ x: Double) -> String { String(format: "%.2f", x) }
+        switch session.learning {
+        case .waiting, .learning:
+            return "Stars from Photos' curation score. Learning from your ratings…"
+        case .fitted(let e):
+            return "Stars fitted to your \(e.rated) ratings. Agreement with your ratings: \(pct(e.model)), "
+                + "vs \(pct(e.curation)) for Photos' curation alone."
+        case .usingCuration(let e) where !e.enoughRatings:
+            return "Stars from Photos' curation score. Rate at least \(RatingModel.minimumRatings) photos "
+                + "(you've rated \(e.rated)) to fit them to your taste: try Rate to Calibrate."
+        case .usingCuration(let e):
+            return "Stars from Photos' curation score, which already agrees with your \(e.rated) ratings "
+                + "as well as a fitted model (\(pct(e.curation)) vs \(pct(e.model)))."
         }
     }
 
@@ -207,7 +253,6 @@ struct StatusBar: View {
             if !session.list.isEmpty {
                 Text("\(session.cursor + 1) of \(session.list.count)").monospacedDigit()
             }
-            Label("\(session.pickCount) picked", systemImage: "checkmark.circle")
             Label("\(session.rejectCount) rejected", systemImage: "xmark.circle")
             Spacer()
             if session.zoomed { Text("100%").monospacedDigit() }
@@ -222,7 +267,7 @@ struct StatusBar: View {
 }
 
 /// Everything Winnow knows about a photo, one corner each so they never blur together:
-/// top left your pick or reject, top right ♥ if it's a Favorite in Photos, bottom left your
+/// top left a reject, top right ♥ if it's a Favorite in Photos, bottom left your
 /// own rating (or "Not rated" plus the suggested rating), bottom right a reason to reject.
 struct PhotoBadges: View {
     let decision: Decision
@@ -246,15 +291,20 @@ struct PhotoBadges: View {
             HStack(alignment: .bottom, spacing: 4) {
                 RatingLabel(rating: decision.rating, suggested: suggestion?.stars ?? 0, compact: !large)
                 Spacer(minLength: 0)
-                if decision.flag == .none, let reason = suggestion?.reasons.first {
+                if decision.flag == .none, let suggestion, let reason = suggestion.reasons.first {
+                    // Orange: suggested reject. Grey: same issue, but Photos thinks the photo matters
+                    // to you, so it's kept out of Suggested Rejects.
                     Text(reason.rawValue)
                         .font(large ? .callout : .caption2)
                         .lineLimit(1)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(.orange.opacity(0.9), in: Capsule())
-                        .foregroundStyle(.black)
-                        .help("Suggested reject: " + (suggestion?.reasons.map(\.rawValue).joined(separator: ", ") ?? ""))
+                        .background(suggestion.protected ? Color.gray.opacity(0.6) : Color.orange.opacity(0.9),
+                                    in: Capsule())
+                        .foregroundStyle(suggestion.protected ? .white : .black)
+                        .help(suggestion.protected
+                              ? "Photos thinks this one matters to you, so it isn't a suggested reject"
+                              : "Suggested reject: " + suggestion.reasons.map(\.rawValue).joined(separator: ", "))
                 }
             }
         }
@@ -268,7 +318,6 @@ struct FlagIcon: View {
 
     var body: some View {
         switch flag {
-        case .pick: Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, .green).help("Picked")
         case .reject: Image(systemName: "xmark.circle.fill").foregroundStyle(.white, .red).help("Rejected")
         case .none: EmptyView()
         }

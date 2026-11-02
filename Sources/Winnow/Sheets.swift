@@ -55,9 +55,9 @@ struct ShortcutsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private let groups: [(String, [(String, String)])] = [
-        ("Decide", [("P", "Pick (marks as Favorite in Photos)"),
+        ("Decide", [("F", "Favorite or unfavorite in Photos"),
                     ("X or ⌫", "Reject (adds to the delete queue)"),
-                    ("U", "Clear pick or reject"),
+                    ("U", "Clear reject"),
                     ("1 – 5", "Star rating"),
                     ("0", "Clear rating"),
                     ("H", "Hide in Photos"),
@@ -69,7 +69,7 @@ struct ShortcutsSheet: View {
         ("Look closer", [("Space", "100% zoom (in the grid: open the photo)"),
                          ("Z", "100% zoom on the main face"),
                          ("C", "Compare with burst frames or nearby shots"),
-                         ("K", "In compare: keep this one, reject the rest"),
+                         ("K", "In compare: keep this one, reject the others"),
                          ("I", "Show Apple Photos' scores for this photo")]),
         ("Undo", [("⌘Z", "Undo"), ("⇧⌘Z", "Redo")]),
     ]
