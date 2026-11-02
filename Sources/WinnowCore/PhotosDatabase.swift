@@ -68,6 +68,16 @@ final class Database {
         return out
     }
 
+    /// Calls `body` with each result row's statement, for typed reads of large results.
+    func forEachRow(_ sql: String, _ body: (OpaquePointer) -> Void) throws {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            throw PhotosDatabaseError(kind: .sql, message: "SQL error: \(String(cString: sqlite3_errmsg(handle)))\n\(sql)")
+        }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW { body(stmt) }
+    }
+
     func column(_ sql: String, _ arguments: [String] = []) throws -> [String] {
         try rows(sql, arguments).compactMap { $0.first ?? nil }
     }
@@ -320,3 +330,96 @@ public func bottomFifthOverlap(_ pairs: [(Double, Double)]) -> (hits: Int, of: I
 // Opened and read off the main thread, then handed to the UI. SQLite runs in serialized mode
 // on macOS, and nothing here mutates after init except closing in deinit.
 extension PhotosDatabase: @unchecked Sendable {}
+
+// MARK: - Apple's per-photo scores
+
+/// The scores Apple Photos computes for a photo, as stored in its database. nil = not present.
+public struct AppleScores: Sendable, Equatable {
+    /// 0…1, higher is better. ZASSET.ZOVERALLAESTHETICSCORE.
+    public var overall: Double?
+    public var curation: Double?
+    /// ≤ 0; more negative is more likely a failed shot.
+    public var failure: Double?
+    /// ≤ 0; more negative is noisier.
+    public var noise: Double?
+    /// 0…1 from Photos' media analysis.
+    public var blurriness: Double?
+    public var exposure: Double?
+    public var sharpSubject: Double?
+    public var composition: Double?
+    public var lighting: Double?
+    /// Positive when the blur looks intentional, like a portrait's soft background.
+    public var tastefullyBlurred: Double?
+
+    public init(overall: Double? = nil, curation: Double? = nil, failure: Double? = nil, noise: Double? = nil,
+                blurriness: Double? = nil, exposure: Double? = nil, sharpSubject: Double? = nil,
+                composition: Double? = nil, lighting: Double? = nil, tastefullyBlurred: Double? = nil) {
+        self.overall = overall
+        self.curation = curation
+        self.failure = failure
+        self.noise = noise
+        self.blurriness = blurriness
+        self.exposure = exposure
+        self.sharpSubject = sharpSubject
+        self.composition = composition
+        self.lighting = lighting
+        self.tastefullyBlurred = tastefullyBlurred
+    }
+
+    /// Photos has run its detailed analysis on this photo.
+    public var isAnalysed: Bool { failure != nil }
+}
+
+extension PhotosDatabase {
+    /// Every still photo's Apple scores, keyed by UUID. One query on the live database opened
+    /// read-only; columns this macOS version doesn't have come back as nil.
+    public static func readAppleScores(inLibrary library: URL) throws -> [String: AppleScores] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: """
+                Winnow can't read this library's database. Give it Full Disk Access in \
+                System Settings › Privacy & Security › Full Disk Access.
+                """)
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        func columns(_ table: String) throws -> Set<String> {
+            tables.contains(table) ? Set(try db.rows("PRAGMA table_info(\(q(table)))").compactMap { $0[1] }) : []
+        }
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains) else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema,
+                                      message: "This library's database has no asset table Winnow recognises.")
+        }
+        let a = try columns(assetTable)
+        let c = try columns("ZCOMPUTEDASSETATTRIBUTES")
+        let m = try columns("ZMEDIAANALYSISASSETATTRIBUTES")
+        func pick(_ alias: String, _ available: Set<String>, _ name: String) -> String {
+            available.contains(name) ? "\(alias).\(q(name))" : "NULL"
+        }
+        var joins = ""
+        if c.contains("ZASSET") { joins += " LEFT JOIN ZCOMPUTEDASSETATTRIBUTES c ON c.ZASSET = a.Z_PK" }
+        if m.contains("ZASSET") { joins += " LEFT JOIN ZMEDIAANALYSISASSETATTRIBUTES m ON m.ZASSET = a.Z_PK" }
+        let cc = c.contains("ZASSET") ? c : [], mm = m.contains("ZASSET") ? m : []
+        var filters: [String] = []
+        if a.contains("ZKIND") { filters.append("a.ZKIND = 0") }
+        if a.contains("ZTRASHEDSTATE") { filters.append("a.ZTRASHEDSTATE = 0") }
+        let sql = """
+            SELECT a.ZUUID, \(pick("a", a, "ZOVERALLAESTHETICSCORE")), \(pick("a", a, "ZCURATIONSCORE")),
+                   \(pick("c", cc, "ZFAILURESCORE")), \(pick("c", cc, "ZNOISESCORE")),
+                   \(pick("m", mm, "ZBLURRINESSSCORE")), \(pick("m", mm, "ZEXPOSURESCORE")),
+                   \(pick("c", cc, "ZSHARPLYFOCUSEDSUBJECTSCORE")), \(pick("c", cc, "ZPLEASANTCOMPOSITIONSCORE")),
+                   \(pick("c", cc, "ZPLEASANTLIGHTINGSCORE")), \(pick("c", cc, "ZTASTEFULLYBLURREDSCORE"))
+            FROM \(q(assetTable)) a\(joins)
+            \(filters.isEmpty ? "" : "WHERE " + filters.joined(separator: " AND "))
+            """
+        var out: [String: AppleScores] = [:]
+        try db.forEachRow(sql) { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            func d(_ i: Int32) -> Double? { sqlite3_column_type(stmt, i) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, i) }
+            out[uuid] = AppleScores(overall: d(1), curation: d(2), failure: d(3), noise: d(4), blurriness: d(5),
+                                    exposure: d(6), sharpSubject: d(7), composition: d(8), lighting: d(9),
+                                    tastefullyBlurred: d(10))
+        }
+        return out
+    }
+}

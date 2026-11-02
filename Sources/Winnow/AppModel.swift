@@ -72,8 +72,7 @@ final class AppModel: ObservableObject {
             let library = self.library ?? PhotoLibrary()
             self.library = library
             lastLibraryPath = url.path
-            state = .ready(CullingSession(library: library, store: store,
-                                          libraryName: url.deletingPathExtension().lastPathComponent))
+            state = .ready(CullingSession(library: library, store: store, libraryURL: url))
         } catch {
             state = .problem(url, .other("Couldn't open Winnow's database: \(error.localizedDescription)"))
         }

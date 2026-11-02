@@ -11,6 +11,7 @@ import AppKit
 import os
 import Photos
 import SwiftUI
+import WinnowCore
 import WinnowKit
 
 let log = Logger(subsystem: "local.winnow", category: "session")
@@ -19,8 +20,10 @@ let log = Logger(subsystem: "local.winnow", category: "session")
 /// the photos, so a 100,000-photo library costs almost nothing until photos are on screen.
 struct AssetList: @unchecked Sendable {
     let result: PHFetchResult<PHAsset>
-    /// Positions in `result` that pass the filter, ascending; nil means all of them.
+    /// Positions in `result` that pass the filter, in display order; nil means all of them.
     let positions: [Int]?
+    /// False when `positions` is in a custom order (suggestions are sorted by score).
+    var ascending = true
 
     var count: Int { positions?.count ?? result.count }
     var isEmpty: Bool { count == 0 }
@@ -32,6 +35,7 @@ struct AssetList: @unchecked Sendable {
         let position = result.index(of: asset)
         guard position != NSNotFound else { return nil }
         guard let positions else { return position }
+        guard ascending else { return positions.firstIndex(of: position) }
         // Binary search: positions are ascending.
         var lo = 0, hi = positions.count - 1
         while lo <= hi {
@@ -54,11 +58,23 @@ final class CullingSession: ObservableObject {
         var id: String { rawValue }
     }
 
+    enum SuggestionsStatus: Equatable {
+        case loading
+        case ready
+        case notAnalysed        // Photos hasn't scored this library yet
+        case unavailable(String)
+    }
+
     let library: PhotoLibrary
     let store: DecisionStore
     let libraryName: String
+    let libraryURL: URL
 
     @Published private(set) var source: Source = .allPhotos
+    @Published private(set) var recommender: Recommender?
+    @Published private(set) var suggestionsStatus = SuggestionsStatus.loading
+    /// The Apple-scores panel in single view (I).
+    @Published var showingScores = false
     @Published var filter: Filter = .all { didSet { if filter != oldValue { reload() } } }
     @Published var newestFirst = false { didSet { if newestFirst != oldValue { reload() } } }
     @Published var mode: Mode = .grid { didSet { modeChanged(from: oldValue) } }
@@ -83,12 +99,17 @@ final class CullingSession: ObservableObject {
     private var filterTask: Task<Void, Never>?
     private var countsTask: Task<Void, Never>?
     private var writes: Task<Void, Never>?
+    /// Ratings Winnow has written that Photos hasn't reported back yet, so the stars don't
+    /// flicker back to the old value while the write is under way.
+    private var pendingRatings: [String: Int] = [:]
+    private var ratingWritesInFlight: [String: Int] = [:]
     private var messageTask: Task<Void, Never>?
 
-    init(library: PhotoLibrary, store: DecisionStore, libraryName: String) {
+    init(library: PhotoLibrary, store: DecisionStore, libraryURL: URL) {
         self.library = library
         self.store = store
-        self.libraryName = libraryName
+        self.libraryURL = libraryURL
+        self.libraryName = libraryURL.deletingPathExtension().lastPathComponent
         let started = ContinuousClock.now
         decisions = (try? store.all()) ?? [:]
         if let json = try? store.setting("source"), let data = json.data(using: .utf8),
@@ -99,6 +120,71 @@ final class CullingSession: ObservableObject {
         library.onChange = { [weak self] change in self?.libraryChanged(change) }
         reload(restoreFrom: (try? store.setting("cursor.\(source.key)")) ?? nil)
         refreshCounts()
+        loadSuggestions()
+    }
+
+    // MARK: Suggestions
+
+    /// Reads Apple's scores for every photo (one read-only query, well under a second for
+    /// 200,000 photos) and builds the suggestions from them, in the background.
+    func loadSuggestions() {
+        suggestionsStatus = .loading
+        let url = libraryURL, library = library
+        Task { [weak self] in
+            let started = ContinuousClock.now
+            let result = await Task.detached(priority: .utility) { () -> Result<Recommender, Error> in
+                do {
+                    let scores = try PhotosDatabase.readAppleScores(inLibrary: url)
+                    return .success(Recommender(scores: scores, screenshots: library.uuids(in: .screenshots)))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard let self else { return }
+            switch result {
+            case .success(let r):
+                log.notice("open: read \(r.scores.count) photos' Apple scores in \(started.duration(to: .now))")
+                self.recommender = r
+                self.suggestionsStatus = r.hasScores ? .ready : .notAnalysed
+                if self.source.isSuggestion { self.reload() }
+                self.refreshCounts()
+                if r.hasScores { self.saveCalibration(r) }
+            case .failure(let error):
+                self.suggestionsStatus = .unavailable(error.localizedDescription)
+                if self.source.isSuggestion { self.loading = false }
+            }
+        }
+    }
+
+    /// Measures how well each of Apple's scores ranks your Favorites above the rest, and saves the
+    /// summary to ~/Documents/Winnow/out/score-calibration.csv. Summary numbers only, no per-photo data.
+    private func saveCalibration(_ r: Recommender) {
+        let library = library, libraryName = libraryName
+        Task.detached(priority: .background) {
+            let favorites = library.uuids(in: .favorites)
+            let rows = Calibration.agreement(scores: r.scores, favorites: favorites)
+            var csv = "library,signal,auc,favorites,others,favoritesMean,othersMean\n"
+            for row in rows {
+                csv += [libraryName, row.signal, String(format: "%.4f", row.auc), String(row.favorites),
+                        String(row.others), String(format: "%.4f", row.favoritesMean),
+                        String(format: "%.4f", row.othersMean)].joined(separator: ",") + "\n"
+            }
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Winnow/out")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? csv.write(to: dir.appendingPathComponent("score-calibration.csv"), atomically: true, encoding: .utf8)
+            log.notice("calibration: \(rows.count) signals against \(favorites.count) favorites")
+        }
+    }
+
+    func suggestion(_ asset: PHAsset) -> Suggestion? {
+        recommender?.suggestion(forUUID: String(asset.localIdentifier.split(separator: "/").first ?? ""))
+    }
+
+    /// A: take the suggested star rating.
+    func acceptSuggestedRating() {
+        guard let asset = target, let s = suggestion(asset), s.stars > 0 else { return }
+        perform(.rate(s.stars))
     }
 
     // MARK: State
@@ -110,8 +196,12 @@ final class CullingSession: ObservableObject {
         mode == .compare && compareGroup.indices.contains(compareFocus) ? compareGroup[compareFocus] : current
     }
 
+    /// Winnow's record for a photo, with the rating taken from Photos itself (macOS 27 ratings),
+    /// so ratings you gave in Photos show here and Photos is the one place they live.
     func decision(_ asset: PHAsset) -> Decision {
-        decisions[asset.localIdentifier] ?? .untouched(asset.localIdentifier)
+        var d = decisions[asset.localIdentifier] ?? .untouched(asset.localIdentifier)
+        d.rating = pendingRatings[asset.localIdentifier] ?? asset.rating.rawValue
+        return d
     }
 
     var rejectCount: Int { decisions.values.filter { $0.flag == .reject }.count }
@@ -145,39 +235,62 @@ final class CullingSession: ObservableObject {
         let keepAsset = keepingID.flatMap { library.assets(withIDs: [$0]).first }
 
         // The common case needs no scan: every photo in the source, straight from PhotoKit.
-        if filter == .all && source != .unreviewed {
+        if filter == .all && source != .unreviewed && !source.isSuggestion {
             loading = false
             setList(AssetList(result: result, positions: nil), keeping: keepAsset)
             return
         }
 
-        // Anything else means checking each photo's decision; do that in the background.
+        // Suggestion sources wait for Apple's scores; loadSuggestions() reloads when they arrive.
         loading = true
+        if source.isSuggestion && recommender == nil {
+            if case .unavailable = suggestionsStatus { loading = false }
+            list = .empty
+            return
+        }
+
+        // Anything else means checking each photo; do that in the background.
         let snapshot = decisions
         let filter = filter
-        let unseenOnly = source == .unreviewed
+        let source = source
+        let recommender = recommender
         filterTask = Task { [weak self] in
             let started = ContinuousClock.now
-            let positions = await Task.detached(priority: .userInitiated) { () -> [Int] in
-                var out: [Int] = []
-                result.enumerateObjects { asset, i, stop in
-                    if Task.isCancelled { stop.pointee = true; return }
+            let (positions, ordered) = await Task.detached(priority: .userInitiated) { () -> ([Int], Bool) in
+                var out: [(position: Int, keep: Double)] = []
+                result.enumerateObjects { asset, i, _ in
                     let d = snapshot[asset.localIdentifier]
-                    if unseenOnly, d?.seenAt != nil { return }
+                    if source == .unreviewed, d?.seenAt != nil { return }
                     let flag = d?.flag ?? .none
                     switch filter {
-                    case .all: out.append(i)
-                    case .unflagged: if flag == .none { out.append(i) }
-                    case .picks: if flag == .pick { out.append(i) }
-                    case .rejects: if flag == .reject { out.append(i) }
+                    case .all: break
+                    case .unflagged: if flag != .none { return }
+                    case .picks: if flag != .pick { return }
+                    case .rejects: if flag != .reject { return }
+                    }
+                    guard source.isSuggestion else { out.append((i, 0)); return }
+                    let uuid = String(asset.localIdentifier.split(separator: "/").first ?? "")
+                    guard let s = recommender?.suggestion(forUUID: uuid) else { return }
+                    switch source {
+                    case .suggestedRejects where s.suggestsReject: out.append((i, s.keep))
+                    case .bestShots where s.stars == 5 && !s.suggestsReject: out.append((i, s.keep))
+                    default: break
                     }
                 }
-                return out
+                // Suggested rejects worst first; best shots best first.
+                switch source {
+                case .suggestedRejects: out.sort { $0.keep < $1.keep }
+                case .bestShots: out.sort { $0.keep > $1.keep }
+                default: return (out.map(\.position), true)
+                }
+                return (out.map(\.position), false)
             }.value
             guard let self, !Task.isCancelled else { return }
             log.notice("open: filtered \(result.count) photos to \(positions.count) in \(started.duration(to: .now))")
             self.loading = false
-            self.setList(AssetList(result: result, positions: positions), keeping: keepAsset)
+            var newList = AssetList(result: result, positions: positions)
+            newList.ascending = ordered
+            self.setList(newList, keeping: keepAsset)
         }
     }
 
@@ -198,6 +311,7 @@ final class CullingSession: ObservableObject {
         let library = library
         let seen = decisions.values.filter { $0.seenAt != nil }.count
         let albums = library.albums.map { Source.album(id: $0.localIdentifier, title: $0.localizedTitle ?? "Untitled") }
+        let recommender = recommender
         countsTask = Task { [weak self] in
             let started = ContinuousClock.now
             let out = await Task.detached(priority: .utility) { () -> [Source: Int] in
@@ -205,6 +319,11 @@ final class CullingSession: ObservableObject {
                 let all = library.fetch(.allPhotos, newestFirst: false).count
                 out[.allPhotos] = all
                 out[.unreviewed] = max(all - seen, 0)
+                if let recommender, recommender.hasScores {
+                    let c = recommender.counts()
+                    out[.suggestedRejects] = c.rejects
+                    out[.bestShots] = c.best
+                }
                 for s in [Source.favorites, .screenshots, .bursts] + albums {
                     if Task.isCancelled { break }
                     out[s] = library.fetch(s, newestFirst: false).count
@@ -223,10 +342,18 @@ final class CullingSession: ObservableObject {
         guard let details = change.changeDetails(for: list.result) else { return }
         let after = details.fetchResultAfterChanges
 
-        // The common case — our own favorite writes — changes objects in place: positions still hold.
+        // Photos now reports these photos' latest state, so pending ratings can go,
+        // unless another rating write for the same photo is still queued.
+        for asset in details.changedObjects where (ratingWritesInFlight[asset.localIdentifier] ?? 0) <= 0 {
+            pendingRatings[asset.localIdentifier] = nil
+        }
+
+        // The common case — our own writes — changes objects in place: positions still hold.
         if details.hasIncrementalChanges,
            (details.insertedIndexes?.count ?? 0) == 0, (details.removedIndexes?.count ?? 0) == 0 {
-            list = AssetList(result: after, positions: list.positions)
+            var updated = AssetList(result: after, positions: list.positions)
+            updated.ascending = list.ascending
+            list = updated
             return
         }
 
@@ -387,8 +514,16 @@ final class CullingSession: ObservableObject {
         if record { history.record(Change(label: change.label, before: change.before, after: after)) }
 
         let pairs = Array(zip(change.before, after))
+        let ratingIDs = pairs.filter { $0.0.rating != $0.1.rating }.map(\.1.assetID)
+        for (_, d) in pairs where ratingIDs.contains(d.assetID) {
+            pendingRatings[d.assetID] = d.rating
+            ratingWritesInFlight[d.assetID, default: 0] += 1
+        }
         let previous = writes
         writes = Task { [weak self] in
+            defer {
+                for id in ratingIDs { self?.ratingWritesInFlight[id, default: 1] -= 1 }
+            }
             await previous?.value
             guard let self else { return }
             // Fetch fresh objects so "is it a favorite now" reflects earlier writes.
@@ -402,6 +537,7 @@ final class CullingSession: ObservableObject {
                 try await self.library.apply(items)
             } catch {
                 // Roll back so Winnow never shows a state Photos doesn't have.
+                for id in ratingIDs { self.pendingRatings[id] = nil }
                 for d in change.before { self.decisions[d.assetID] = d }
                 try? self.store.save(change.before)
                 if record { self.history.discardLast() }

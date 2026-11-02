@@ -60,7 +60,8 @@ struct ShortcutsSheet: View {
                     ("U", "Clear pick or reject"),
                     ("1 – 5", "Star rating"),
                     ("0", "Clear rating"),
-                    ("H", "Hide in Photos")]),
+                    ("H", "Hide in Photos"),
+                    ("A", "Accept the suggested star rating")]),
         ("Move", [("← →", "Previous / next photo"),
                   ("↑ ↓", "Row up / down in the grid"),
                   ("Return", "Switch between grid and single photo"),
@@ -68,7 +69,8 @@ struct ShortcutsSheet: View {
         ("Look closer", [("Space", "100% zoom (in the grid: open the photo)"),
                          ("Z", "100% zoom on the main face"),
                          ("C", "Compare with burst frames or nearby shots"),
-                         ("K", "In compare: keep this one, reject the rest")]),
+                         ("K", "In compare: keep this one, reject the rest"),
+                         ("I", "Show Apple Photos' scores for this photo")]),
         ("Undo", [("⌘Z", "Undo"), ("⇧⌘Z", "Redo")]),
     ]
 

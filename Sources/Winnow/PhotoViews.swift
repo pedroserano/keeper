@@ -1,6 +1,7 @@
 import Photos
 import SwiftUI
 import Vision
+import WinnowCore
 import WinnowKit
 
 private var backingScale: CGFloat { NSScreen.main?.backingScaleFactor ?? 2 }
@@ -64,7 +65,7 @@ struct GridView: View {
                         ForEach(session.list.indices, id: \.self) { i in
                             let asset = session.list.asset(at: i)
                             GridCell(asset: asset, decision: session.decision(asset),
-                                     selected: i == session.cursor, size: cell)
+                                     suggestion: session.suggestion(asset), selected: i == session.cursor, size: cell)
                                 .onTapGesture(count: 2) {
                                     session.select(index: i)
                                     session.mode = .single
@@ -88,6 +89,7 @@ struct GridView: View {
 struct GridCell: View {
     let asset: PHAsset
     let decision: Decision
+    let suggestion: Suggestion?
     let selected: Bool
     let size: CGFloat
 
@@ -97,7 +99,7 @@ struct GridCell: View {
             .background(.quaternary)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .opacity(decision.flag == .reject ? 0.35 : 1)
-            .overlay(alignment: .topLeading) { DecisionBadge(decision: decision).padding(6) }
+            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: asset.isFavorite) }
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 3)
@@ -126,9 +128,14 @@ struct SingleView: View {
                     }
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if session.showingScores, let asset = session.current {
+                    ScoresPanel(scores: session.recommender?.scores[String(asset.localIdentifier.split(separator: "/").first ?? "")])
+                }
+            }
             .overlay(alignment: .bottom) {
                 if let asset = session.current {
-                    InfoBar(asset: asset, decision: session.decision(asset),
+                    InfoBar(asset: asset, decision: session.decision(asset), suggestion: session.suggestion(asset),
                             position: "\(session.cursor + 1) of \(session.list.count)")
                 }
             }
@@ -149,17 +156,24 @@ struct SingleView: View {
 struct InfoBar: View {
     let asset: PHAsset
     let decision: Decision
+    let suggestion: Suggestion?
     let position: String
 
     var body: some View {
         HStack(spacing: 14) {
-            DecisionBadge(decision: decision, large: true)
+            FlagIcon(flag: decision.flag)
+            RatingLabel(rating: decision.rating, suggested: suggestion?.stars ?? 0)
             VStack(alignment: .leading, spacing: 2) {
-                Text(PHAssetResource.assetResources(for: asset).first?.originalFilename ?? "")
+                Text(PHAssetResource.assetResources(for: asset).first?.filename ?? "")
                     .font(.callout.weight(.medium))
                 Text(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let suggestion, suggestion.stars > 0 || suggestion.suggestsReject {
+                    Text(suggestionLine(suggestion))
+                        .font(.caption)
+                        .foregroundStyle(suggestion.suggestsReject ? .orange : .secondary)
+                }
             }
             Spacer()
             if asset.isFavorite { Image(systemName: "heart.fill").foregroundStyle(.pink) }
@@ -171,6 +185,52 @@ struct InfoBar: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         .environment(\.colorScheme, .dark)
         .padding(12)
+    }
+
+    private func suggestionLine(_ s: Suggestion) -> String {
+        var parts: [String] = []
+        if s.stars > 0 { parts.append("Suggested \(s.stars)★ from Apple's scores (A to accept)") }
+        if s.suggestsReject { parts.append("Consider rejecting: " + s.reasons.map(\.rawValue).joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// I: Apple Photos' own scores for this photo, as read from its library.
+struct ScoresPanel: View {
+    let scores: AppleScores?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Apple Photos scores").font(.headline)
+            if let s = scores, s.isAnalysed {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
+                    row("Overall aesthetic", s.overall)
+                    row("Curation", s.curation)
+                    row("Failure", s.failure)
+                    row("Blurriness", s.blurriness)
+                    row("Exposure", s.exposure)
+                    row("Noise", s.noise)
+                    row("Sharp subject", s.sharpSubject)
+                    row("Composition", s.composition)
+                    row("Lighting", s.lighting)
+                }
+                .font(.callout.monospacedDigit())
+            } else {
+                Text("Photos hasn't analysed this photo yet.").font(.callout).foregroundStyle(.secondary)
+            }
+            Text("I to hide").font(.caption).foregroundStyle(.tertiary)
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .environment(\.colorScheme, .dark)
+        .padding(12)
+    }
+
+    private func row(_ name: String, _ value: Double?) -> some View {
+        GridRow {
+            Text(name).foregroundStyle(.secondary)
+            Text(value.map { String(format: "%+.3f", $0) } ?? "–").gridColumnAlignment(.trailing)
+        }
     }
 }
 
@@ -288,7 +348,8 @@ struct CompareView: View {
         .frame(width: size.width, height: size.height)
         .clipped()
         .opacity(session.decision(asset).flag == .reject ? 0.45 : 1)
-        .overlay(alignment: .topLeading) { DecisionBadge(decision: session.decision(asset), large: true).padding(8) }
+        .overlay { PhotoBadges(decision: session.decision(asset), suggestion: session.suggestion(asset),
+                                 isFavorite: asset.isFavorite, large: true) }
         .overlay {
             RoundedRectangle(cornerRadius: 4).strokeBorder(focused ? Color.accentColor : .white.opacity(0.15),
                                                            lineWidth: focused ? 3 : 1)

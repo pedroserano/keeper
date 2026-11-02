@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleExecutable</key>
+	<string>Winnow</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.winnow.app</string>
 	<key>CFBundleName</key>
-	<string>Winnow</string>
-	<key>CFBundleExecutable</key>
 	<string>Winnow</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
@@ -15,12 +15,12 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>15.0</string>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
+	<string>27.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Winnow scores your photos on this Mac to suggest which ones to keep or remove.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
 </dict>
 </plist>

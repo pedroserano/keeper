@@ -43,6 +43,14 @@ do {
         let found = try PhotosDatabase.countPhotos(withUUIDs: uuids, inLibrary: library!)
         print("\(found) of \(uuids.count) found in \(started.duration(to: .now))")
 
+    case "apple-scores" where library != nil:
+        // Same read Winnow does in the background to make its suggestions.
+        let started = ContinuousClock.now
+        let scores = try PhotosDatabase.readAppleScores(inLibrary: library!)
+        let analysed = scores.values.filter(\.isAnalysed).count
+        print("\(scores.count) photos, \(analysed) analysed, read in \(started.duration(to: .now))")
+        if let (uuid, s) = scores.first(where: { $0.value.isAnalysed }) { print("e.g. \(uuid): \(s)") }
+
     case "export" where library != nil:
         let db = try PhotosDatabase(library: library!)
         let export = try db.exportRows()

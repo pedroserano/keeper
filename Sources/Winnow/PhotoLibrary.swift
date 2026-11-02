@@ -11,6 +11,8 @@ enum Source: Hashable, Codable {
     case favorites
     case screenshots
     case bursts
+    case suggestedRejects
+    case bestShots
     case album(id: String, title: String)
 
     var title: String {
@@ -20,6 +22,8 @@ enum Source: Hashable, Codable {
         case .favorites: "Favorites"
         case .screenshots: "Screenshots"
         case .bursts: "Bursts"
+        case .suggestedRejects: "Suggested Rejects"
+        case .bestShots: "Best Shots"
         case .album(_, let title): title
         }
     }
@@ -31,9 +35,14 @@ enum Source: Hashable, Codable {
         case .favorites: "heart"
         case .screenshots: "camera.viewfinder"
         case .bursts: "square.stack.3d.down.right"
+        case .suggestedRejects: "wand.and.rays"
+        case .bestShots: "star"
         case .album: "rectangle.stack"
         }
     }
+
+    /// Sources built from Apple's scores, ordered by score instead of by date.
+    var isSuggestion: Bool { self == .suggestedRejects || self == .bestShots }
 
     /// Stable key for remembering a position per source.
     var key: String {
@@ -88,7 +97,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed:
+        case .allPhotos, .unreviewed, .suggestedRejects, .bestShots:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)
@@ -133,10 +142,19 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         albums = out.sorted { ($0.localizedTitle ?? "").localizedStandardCompare($1.localizedTitle ?? "") == .orderedAscending }
     }
 
+    /// UUIDs (the part of a local identifier that matches Photos.sqlite) of every photo in a source.
+    nonisolated func uuids(in source: Source) -> Set<String> {
+        var out = Set<String>()
+        fetch(source, newestFirst: false).enumerateObjects { a, _, _ in
+            out.insert(String(a.localIdentifier.split(separator: "/").first ?? ""))
+        }
+        return out
+    }
+
     func cloudIDs(for ids: [String]) -> [String: String] {
         var out: [String: String] = [:]
         for (id, result) in PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: ids) {
-            if case .success(let cloud) = result { out[id] = cloud.stringValue }
+            if case .success(let cloud) = result { out[id] = cloud.archivalStringValue }
         }
         return out
     }
@@ -173,17 +191,18 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
 
     // MARK: Writing
 
-    /// Applies favorite, hidden and reject-album changes in one Photos transaction.
+    /// Applies rating, favorite, hidden and reject-album changes in one Photos transaction.
     func apply(_ changes: [(asset: PHAsset, change: PhotosChange)]) async throws {
         let changes = changes.filter { !$0.change.isEmpty }
         guard !changes.isEmpty else { return }
         let album = changes.contains { $0.change.inRejectAlbum != nil } ? try await rejectAlbumCollection() : nil
         try await PHPhotoLibrary.shared().performChanges {
             for (asset, change) in changes {
-                if change.favorite != nil || change.hidden != nil {
+                if change.favorite != nil || change.hidden != nil || change.rating != nil {
                     let request = PHAssetChangeRequest(for: asset)
                     if let favorite = change.favorite { request.isFavorite = favorite }
                     if let hidden = change.hidden { request.isHidden = hidden }
+                    if let rating = change.rating { request.rating = PHAsset.Rating(rawValue: rating) ?? .unset }
                 }
                 if let inAlbum = change.inRejectAlbum, let album,
                    let request = PHAssetCollectionChangeRequest(for: album) {

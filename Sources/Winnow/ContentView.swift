@@ -126,6 +126,8 @@ struct ContentView: View {
             case "z": s.toggleZoom(onFace: true)
             case "c": s.mode = s.mode == .compare ? .single : .compare
             case "k": s.keepFocusedRejectRest()
+            case "a": s.acceptSuggestedRating()
+            case "i": s.showingScores.toggle()
             case "?", "/": showingShortcuts = true
             default: return .ignored
             }
@@ -145,6 +147,16 @@ struct Sidebar: View {
                 row(.allPhotos)
                 row(.unreviewed)
                 row(.favorites)
+            }
+            Section {
+                row(.suggestedRejects)
+                row(.bestShots)
+            } header: {
+                Text("Suggestions")
+            } footer: {
+                if let note = suggestionsNote {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Media Types") {
                 row(.screenshots)
@@ -168,6 +180,15 @@ struct Sidebar: View {
             }
             .font(.callout)
             .padding(10)
+        }
+    }
+
+    private var suggestionsNote: String? {
+        switch session.suggestionsStatus {
+        case .loading: "Reading Apple's scores…"
+        case .ready: "From Apple Photos' own scores."
+        case .notAnalysed: "Photos hasn't analysed this library yet. Leave the Mac idle and plugged in, then reopen it."
+        case .unavailable: "Needs Full Disk Access to read Apple's scores."
         }
     }
 
@@ -200,24 +221,88 @@ struct StatusBar: View {
     }
 }
 
-/// Flag and stars, drawn over a photo.
-struct DecisionBadge: View {
+/// Everything Winnow knows about a photo, one corner each so they never blur together:
+/// top left your pick or reject, top right ♥ if it's a Favorite in Photos, bottom left your
+/// own rating (or "Not rated" plus the suggested rating), bottom right a reason to reject.
+struct PhotoBadges: View {
     let decision: Decision
+    let suggestion: Suggestion?
+    let isFavorite: Bool
     var large = false
 
     var body: some View {
-        HStack(spacing: large ? 8 : 4) {
-            switch decision.flag {
-            case .pick: Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, .green)
-            case .reject: Image(systemName: "xmark.circle.fill").foregroundStyle(.white, .red)
-            case .none: EmptyView()
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                FlagIcon(flag: decision.flag)
+                Spacer(minLength: 0)
+                if isFavorite {
+                    Image(systemName: "heart.fill")
+                        .foregroundStyle(.pink)
+                        .shadow(color: .black.opacity(0.6), radius: 1.5)
+                        .help("Favorite in Photos")
+                }
             }
-            if decision.rating > 0 {
-                Text(String(repeating: "★", count: decision.rating))
-                    .foregroundStyle(.yellow)
-                    .shadow(radius: 1)
+            Spacer(minLength: 0)
+            HStack(alignment: .bottom, spacing: 4) {
+                RatingLabel(rating: decision.rating, suggested: suggestion?.stars ?? 0, compact: !large)
+                Spacer(minLength: 0)
+                if decision.flag == .none, let reason = suggestion?.reasons.first {
+                    Text(reason.rawValue)
+                        .font(large ? .callout : .caption2)
+                        .lineLimit(1)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.orange.opacity(0.9), in: Capsule())
+                        .foregroundStyle(.black)
+                        .help("Suggested reject: " + (suggestion?.reasons.map(\.rawValue).joined(separator: ", ") ?? ""))
+                }
             }
         }
         .font(large ? .title3 : .caption)
+        .padding(large ? 8 : 5)
+    }
+}
+
+struct FlagIcon: View {
+    let flag: Flag
+
+    var body: some View {
+        switch flag {
+        case .pick: Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, .green).help("Picked")
+        case .reject: Image(systemName: "xmark.circle.fill").foregroundStyle(.white, .red).help("Rejected")
+        case .none: EmptyView()
+        }
+    }
+}
+
+/// Your rating as yellow stars. Unrated photos say so, with the suggestion beside it in a
+/// separate grey capsule so it can't be mistaken for a rating you gave.
+struct RatingLabel: View {
+    let rating: Int
+    let suggested: Int
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if rating > 0 {
+                Text(String(repeating: "★", count: rating))
+                    .foregroundStyle(.yellow)
+                    .padding(.horizontal, 4)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .help("Your rating")
+            } else {
+                if !compact {
+                    Text("Not rated").foregroundStyle(.secondary)
+                }
+                if suggested > 0 {
+                    Label("\(suggested)★", systemImage: "sparkles")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.horizontal, 5)
+                        .background(.gray.opacity(0.55), in: Capsule())
+                        .help("Suggested from Apple's scores. Press A to accept.")
+                }
+            }
+        }
     }
 }

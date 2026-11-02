@@ -23,6 +23,7 @@ public struct Decision: Codable, Equatable, Sendable, FetchableRecord, Persistab
     public var assetID: String
     /// PHCloudIdentifier string, so decisions can be re-matched after a library migration.
     public var cloudID: String?
+    /// 0–5. Photos' own rating (macOS 27): Winnow writes it there and shows what Photos has.
     public var rating: Int
     public var flag: Flag
     /// True when Winnow hid the photo in Photos.
@@ -83,13 +84,22 @@ public struct PhotosChange: Equatable, Sendable {
     public var favorite: Bool?        // nil = leave alone
     public var hidden: Bool?
     public var inRejectAlbum: Bool?
+    public var rating: Int?           // 0 = unset, 1–5
 
-    public var isEmpty: Bool { favorite == nil && hidden == nil && inRejectAlbum == nil }
+    public var isEmpty: Bool { favorite == nil && hidden == nil && inRejectAlbum == nil && rating == nil }
+
+    public init(favorite: Bool? = nil, hidden: Bool? = nil, inRejectAlbum: Bool? = nil, rating: Int? = nil) {
+        self.favorite = favorite
+        self.hidden = hidden
+        self.inRejectAlbum = inRejectAlbum
+        self.rating = rating
+    }
 
     public init(from before: Decision, to after: Decision, currentFavorite: Bool) {
         let target = after.favorite(currentFavorite: currentFavorite)
         favorite = target != currentFavorite ? target : nil
         hidden = before.hidden != after.hidden ? after.hidden : nil
         inRejectAlbum = (before.flag == .reject) != (after.flag == .reject) ? after.flag == .reject : nil
+        rating = before.rating != after.rating ? after.rating : nil
     }
 }
