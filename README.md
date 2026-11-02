@@ -82,3 +82,7 @@ Build either app with `./scripts/make-winnow-app.sh` or `./scripts/make-spike-ap
 ```bash
 swift run winnow-scores schema --library "PATH/TO/Library.photoslibrary"
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
