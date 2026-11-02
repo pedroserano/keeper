@@ -218,9 +218,8 @@ final class CullingSession: ObservableObject {
             self.groups = result.groups
             self.groupLocalIDs = result.localIDs
             self.similarity = .ready(groups: result.groups.count)
-            if let r = self.recommender {
-                self.recommender = await Task.detached(priority: .userInitiated) { r.with(groups: result.groups) }.value
-            }
+            self.inputsVersion += 1
+            await self.rebuildRecommender()
             if self.source.isSuggestion { self.reload() }
             self.refreshCounts()
         }
@@ -416,12 +415,12 @@ final class CullingSession: ObservableObject {
     func setAggressiveness(_ value: Double) {
         previewTask?.cancel()
         aggressiveness = value
+        inputsVersion += 1
         try? store.setSetting("aggressiveness", to: String(value))
-        guard let base = recommender else { return }
         Task { [weak self] in
-            let updated = await Task.detached(priority: .userInitiated) { base.with(aggressiveness: value) }.value
-            guard let self, self.aggressiveness == value else { return }
-            self.recommender = updated
+            guard let self else { return }
+            await self.rebuildRecommender()
+            guard self.aggressiveness == value else { return }
             self.aggressivenessPreview = nil
             if self.source.isSuggestion { self.reload() }
             self.refreshCounts()
@@ -430,11 +429,35 @@ final class CullingSession: ObservableObject {
 
     // MARK: Suggestions
 
+    /// The model fitted to your ratings, if it beats curation.
+    private var fittedModel: RatingModel?
+    /// Bumped whenever the groups, the model or the aggressiveness change.
+    private var inputsVersion = 0
+
+    /// Rebuilds the suggestions from the latest groups, model and aggressiveness. Background jobs
+    /// (finding look-alikes, learning from ratings, the slider) finish in any order, so each one
+    /// rebuilds from everything current instead of from what it saw when it started; if something
+    /// changes mid-build, it builds again.
+    private func rebuildRecommender() async {
+        while let base = recommender {
+            let version = inputsVersion
+            let groups = groups, model = fittedModel, aggressiveness = aggressiveness
+            let updated = await Task.detached(priority: .userInitiated) {
+                base.with(model: .some(model), groups: groups, aggressiveness: aggressiveness)
+            }.value
+            if version == inputsVersion {
+                recommender = updated
+                return
+            }
+        }
+    }
+
     /// Reads Apple's scores for every photo (one read-only query, well under a second for
     /// 200,000 photos) and builds the suggestions from them, in the background.
     func loadSuggestions() {
         suggestionsStatus = .loading
         let url = libraryURL, library = library, groups = groups, aggressiveness = aggressiveness
+        let version = inputsVersion
         Task { [weak self] in
             let started = ContinuousClock.now
             let result = await Task.detached(priority: .utility) { () -> Result<Recommender, Error> in
@@ -454,12 +477,14 @@ final class CullingSession: ObservableObject {
             case .success(let r):
                 log.notice("open: read \(r.scores.count) photos' Apple scores and \(r.faces.count) photos' faces in \(started.duration(to: .now))")
                 self.recommender = r
+                // Groups or the slider changed while the scores were loading: build with those.
+                if self.inputsVersion != version { await self.rebuildRecommender() }
                 self.files = r.files
                 self.suggestionsStatus = r.hasScores ? .ready : .notAnalysed
                 if self.source.isSuggestion { self.reload() }
                 self.refreshCounts()
                 if r.hasScores {
-                    self.saveCalibration(r)
+                    self.saveCalibration(self.recommender ?? r)
                     self.learnFromRatings()
                 }
             case .failure(let error):
@@ -500,10 +525,10 @@ final class CullingSession: ObservableObject {
     func learnFromRatings() {
         guard let base = recommender, base.hasScores, learning != .learning else { return }
         learning = .learning
-        let library = library, libraryName = libraryName, existingSample = calibrationSample, groups = groups
+        let library = library, libraryName = libraryName, existingSample = calibrationSample
         Task { [weak self] in
             let started = ContinuousClock.now
-            let (evaluation, updated, sample) = await Task.detached(priority: .utility) {
+            let (evaluation, model, sample) = await Task.detached(priority: .utility) {
                 let ratings = library.photoRatings()
                 let rated = ratings.compactMap { uuid, rating -> RatedPhoto? in
                     guard let s = base.scores[uuid], s.isAnalysed else { return nil }
@@ -511,16 +536,19 @@ final class CullingSession: ObservableObject {
                 }
                 let evaluation = RatingEvaluation.evaluate(rated)
                 let model = evaluation.modelWins ? RatingModel.fit(rated) : nil
-                let updated = base.with(model: .some(model), groups: groups)
+                // The sample only needs the stars, not the look-alike groups.
                 let sample = existingSample.isEmpty
-                    ? updated.calibrationSample(excluding: Set(ratings.keys)) : existingSample
+                    ? base.with(model: .some(model), groups: []).calibrationSample(excluding: Set(ratings.keys))
+                    : existingSample
                 Self.saveLearningReport(evaluation, model: model, libraryName: libraryName)
-                return (evaluation, updated, sample)
+                return (evaluation, model, sample)
             }.value
             guard let self else { return }
             log.notice("learning: \(evaluation.rated) ratings, model \(evaluation.model), curation \(evaluation.curation) in \(started.duration(to: .now))")
-            self.recommender = updated
-            self.learning = updated.model != nil ? .fitted(evaluation) : .usingCuration(evaluation)
+            self.fittedModel = model
+            self.inputsVersion += 1
+            await self.rebuildRecommender()
+            self.learning = model != nil ? .fitted(evaluation) : .usingCuration(evaluation)
             if self.calibrationSample != sample {
                 self.calibrationSample = sample
                 if let data = try? JSONEncoder().encode(sample) {
