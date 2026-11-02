@@ -5,10 +5,12 @@ let package = Package(
     name: "Winnow",
     platforms: [.macOS(.v15)],
     targets: [
-        // Phase 0 spike: maps Apple Photos' internal score columns and compares them with Vision.
-        .executableTarget(name: "winnow-scores", path: "Sources/WinnowScores"),
-        // Phase 0 spike: PhotoKit access, Vision aesthetics timing, batch delete flow.
-        .executableTarget(name: "WinnowSpike", path: "Sources/WinnowSpike"),
+        // Read-only access to a Photos library's own database and its score columns.
+        .target(name: "WinnowCore", path: "Sources/WinnowCore"),
+        // Phase 0 spike app: pick a library, map its scores, time PhotoKit + Vision, try batch delete.
+        .executableTarget(name: "WinnowSpike", dependencies: ["WinnowCore"], path: "Sources/WinnowSpike"),
+        // Command-line front end to WinnowCore, for automated testing.
+        .executableTarget(name: "winnow-scores", dependencies: ["WinnowCore"], path: "Sources/WinnowScores"),
     ],
     swiftLanguageModes: [.v5]
 )
