@@ -24,6 +24,21 @@ then pick a source in the sidebar and cull from the keyboard. Press **?** for ev
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
+**Look-alikes.** In the background, Winnow fingerprints photos taken within 30 seconds of another
+(Apple's Vision feature print) and groups the ones that look alike, in two lists: **Duplicates**
+(near-identical copies) and **Similar Shots** (takes of the same moment). Every photo in a group looks
+like every other one, and all were taken within a minute of each other. The suggested keeper leans
+towards the bigger file: for duplicates it's the largest copy (most pixels, then biggest file); for
+similar shots, file size counts twice as much as how good the photo looks. To keep a different photo,
+click **Keep** under it (or select it and press K). Groups are listed one section at a time with each
+photo's time, dimensions and file size; press C to compare a group.
+
+**Merge** a group (or Select All, then Merge Selected) and the kept photo gets the group's best rating,
+its Favorite and every album the others were in, like Photos' own duplicate merge. The others move to
+Rejected, and merged groups leave the list. Nothing is deleted until you use Delete Rejected; ⌘Z
+undoes a merge. The first run on a big library takes a while, shows its progress in
+the sidebar, and picks up where it left off; after that only new photos are fingerprinted.
+
 Rejected photos are only deleted when you click **Delete Rejected** in the toolbar: one batch, one macOS
 confirmation, and they go to Recently Deleted for 30 days.
 

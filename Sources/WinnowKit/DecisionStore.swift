@@ -48,6 +48,17 @@ public final class DecisionStore: Sendable {
                 t.column("value", .text)
             }
         }
+        m.registerMigration("v2-feature-prints") { db in
+            // Vision feature prints for duplicate and similar-shot detection, computed once per photo.
+            try db.create(table: "featurePrint") { t in
+                t.primaryKey("uuid", .text)
+                t.column("vector", .blob).notNull()
+            }
+        }
+        m.registerMigration("v3-merged-albums") { db in
+            // Albums a merge added a photo to (JSON), so undo can take it out of exactly those.
+            try db.alter(table: "decision") { t in t.add(column: "addedAlbums", .text) }
+        }
         return m
     }
 
@@ -71,6 +82,34 @@ public final class DecisionStore: Sendable {
 
     public func remove(_ assetIDs: [String]) throws {
         _ = try dbQueue.write { db in try Decision.deleteAll(db, keys: assetIDs) }
+    }
+
+    // MARK: Feature prints
+
+    public func featurePrintUUIDs() throws -> Set<String> {
+        try dbQueue.read { db in Set(try String.fetchAll(db, sql: "SELECT uuid FROM featurePrint")) }
+    }
+
+    public func saveFeaturePrints(_ prints: [String: FeatureVector]) throws {
+        try dbQueue.write { db in
+            for (uuid, v) in prints {
+                try db.execute(sql: "INSERT OR REPLACE INTO featurePrint (uuid, vector) VALUES (?, ?)",
+                               arguments: [uuid, v.quantized])
+            }
+        }
+    }
+
+    public func featurePrints(for uuids: Set<String>) throws -> [String: FeatureVector] {
+        try dbQueue.read { db in
+            var out: [String: FeatureVector] = [:]
+            let rows = try Row.fetchCursor(db, sql: "SELECT uuid, vector FROM featurePrint")
+            while let row = try rows.next() {
+                let uuid: String = row["uuid"]
+                guard uuids.contains(uuid), let v = FeatureVector(quantized: row["vector"]) else { continue }
+                out[uuid] = v
+            }
+            return out
+        }
     }
 
     public func setting(_ key: String) throws -> String? {

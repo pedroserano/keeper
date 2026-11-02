@@ -60,21 +60,28 @@ struct GridView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
-                              spacing: spacing) {
-                        // Indexes, not photos: only the cells on screen ever load their photo.
-                        ForEach(session.list.indices, id: \.self) { i in
-                            let asset = session.list.asset(at: i)
-                            GridCell(asset: asset, decision: session.decision(asset),
-                                     suggestion: session.suggestion(asset),
-                                     isFavorite: session.isFavorite(asset), selected: i == session.cursor, size: cell)
-                                .onTapGesture(count: 2) {
-                                    session.select(index: i)
-                                    session.mode = .single
+                              spacing: spacing, pinnedViews: [.sectionHeaders]) {
+                        if let sections = session.sections {
+                            // Duplicates and Similar Shots: one section per group, the one to keep first.
+                            ForEach(Array(sections.enumerated()), id: \.offset) { n, range in
+                                Section {
+                                    ForEach(range, id: \.self) { i in cellView(i, details: true) }
+                                } header: {
+                                    if session.sectionGroups.indices.contains(n) {
+                                        GroupHeader(group: session.sectionGroups[n], range: range,
+                                                    number: n + 1, of: sections.count)
+                                    }
                                 }
-                                .onTapGesture { session.select(index: i) }
+                            }
+                        } else {
+                            // Indexes, not photos: only the cells on screen ever load their photo.
+                            ForEach(session.list.indices, id: \.self) { i in cellView(i, details: false) }
                         }
                     }
                     .padding(spacing)
+                }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if session.sections != nil, !session.sectionGroups.isEmpty { MergeBar() }
                 }
                 .onAppear {
                     session.gridColumns = columns
@@ -87,6 +94,124 @@ struct GridView: View {
     }
 }
 
+extension GridView {
+    func cellView(_ i: Int, details: Bool) -> some View {
+        let asset = session.list.asset(at: i)
+        return GridCell(asset: asset, decision: session.decision(asset), suggestion: session.suggestion(asset),
+                        isFavorite: session.isFavorite(asset), selected: i == session.cursor, size: cell,
+                        file: details ? session.fileInfo(asset) : nil, showDetails: details,
+                        isKeeper: details && session.isKeeper(asset),
+                        keep: details ? { session.keepInGroup(asset) } : nil)
+            .id(i)
+            .onTapGesture(count: 2) {
+                session.select(index: i)
+                session.mode = .single
+            }
+            .onTapGesture { session.select(index: i) }
+    }
+}
+
+/// "☐ Group 12 of 412 · 3 near-identical copies · Nov 3, 2019, 2:14:07 – 2:14:31 PM   Keeps the largest [Merge]"
+struct GroupHeader: View {
+    @EnvironmentObject private var session: CullingSession
+    let group: LookAlikeGroup
+    let range: Range<Int>
+    let number: Int
+    let of: Int
+
+    var body: some View {
+        let dates = range.compactMap { session.list.asset(at: $0).creationDate }
+        HStack(spacing: 8) {
+            Toggle(isOn: Binding(get: { session.selectedGroups.contains(group.id) },
+                                 set: { _ in session.toggleSelection(group) })) { EmptyView() }
+                .toggleStyle(.checkbox)
+                .help("Select this group to merge it with others")
+            Text("Group \(number.formatted()) of \(of.formatted())").fontWeight(.semibold)
+            Text("·")
+            Text(kind)
+            if let first = dates.min(), let last = dates.max() {
+                Text("·")
+                Text(span(first, last))
+            }
+            Spacer()
+            Text(keepNote)
+                .foregroundStyle(.secondary)
+                .help("Click Keep under another photo, or select it and press K, to keep that one instead")
+            Button("Merge") { Task { await session.merge([group]) } }
+                .disabled(session.merging)
+                .help("Keep the photo marked Keep, giving it the group's best rating, Favorite and albums; "
+                      + "move the others to Rejected. ⌘Z undoes.")
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
+    }
+
+    private var kind: String {
+        "\(group.members.count) " + (group.kind == .duplicate ? "near-identical copies" : "similar shots")
+    }
+
+    private var keepNote: String {
+        if session.isChosenByYou(group) { return "Keeping your pick" }
+        return group.kind == .duplicate ? "Suggests the largest copy" : "Suggests the best, favoring bigger files"
+    }
+
+    private func span(_ a: Date, _ b: Date) -> String {
+        let day = a.formatted(date: .abbreviated, time: .omitted)
+        let time = Date.FormatStyle().hour().minute().second()
+        return a == b ? "\(day), \(a.formatted(time))" : "\(day), \(a.formatted(time)) – \(b.formatted(time))"
+    }
+}
+
+/// Above the look-alike groups: select them all, merge the selected ones.
+struct MergeBar: View {
+    @EnvironmentObject private var session: CullingSession
+    @State private var confirming = false
+
+    private var selected: [LookAlikeGroup] {
+        session.sectionGroups.filter { session.selectedGroups.contains($0.id) }
+    }
+
+    var body: some View {
+        let total = session.sectionGroups.count
+        let allSelected = !session.sectionGroups.isEmpty && selected.count == total
+        HStack(spacing: 12) {
+            Button(allSelected ? "Deselect All" : "Select All") {
+                allSelected ? session.deselectAllGroups() : session.selectAllGroups()
+            }
+            Text("\(selected.count.formatted()) of \(total.formatted()) groups selected")
+                .foregroundStyle(.secondary)
+            Spacer()
+            if session.merging { ProgressView().controlSize(.small) }
+            Button("Merge Selected…") { confirming = true }
+                .buttonStyle(.borderedProminent)
+                .disabled(selected.isEmpty || session.merging)
+        }
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .confirmationDialog(title, isPresented: $confirming) {
+            Button("Merge \(selected.count.formatted()) Groups") {
+                let groups = selected
+                Task { await session.merge(groups) }
+            }
+        } message: {
+            Text("""
+                Each group's kept photo gets the group's best rating, its Favorite and all its albums. \
+                The other \(selected.map(\.others.count).reduce(0, +).formatted()) photos move to Rejected; \
+                nothing is deleted until you use Delete Rejected. ⌘Z undoes the whole merge.
+                """)
+        }
+    }
+
+    private var title: String {
+        "Merge \(selected.count.formatted()) \(selected.count == 1 ? "group" : "groups")?"
+    }
+}
+
 struct GridCell: View {
     let asset: PHAsset
     let decision: Decision
@@ -94,8 +219,55 @@ struct GridCell: View {
     let isFavorite: Bool
     let selected: Bool
     let size: CGFloat
+    var file: FileInfo? = nil
+    /// Under the photo: time to the second, dimensions, file size, and whether Winnow would keep it.
+    var showDetails = false
+    var isKeeper = false
+    /// In a group: makes this the photo to keep.
+    var keep: (() -> Void)? = nil
 
     var body: some View {
+        if showDetails {
+            VStack(alignment: .leading, spacing: 3) {
+                thumbnail
+                HStack(spacing: 4) {
+                    Text(asset.creationDate?.formatted(Date.FormatStyle().hour().minute().second()) ?? "")
+                    Spacer(minLength: 0)
+                    if isKeeper {
+                        Text("Keep")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 5)
+                            .background(.green.opacity(0.85), in: Capsule())
+                            .foregroundStyle(.white)
+                    } else if let keep {
+                        Button("Keep", action: keep)
+                            .buttonStyle(.plain)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 5)
+                            .overlay(Capsule().stroke(.secondary.opacity(0.6)))
+                            .foregroundStyle(.secondary)
+                            .help("Keep this one instead when the group is merged (K)")
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                Text(dimensionsAndSize)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: size)
+        } else {
+            thumbnail
+        }
+    }
+
+    private var dimensionsAndSize: String {
+        let w = file?.width ?? asset.pixelWidth, h = file?.height ?? asset.pixelHeight
+        var parts = ["\(w) × \(h)"]
+        if let bytes = file?.bytes { parts.append(bytes.formatted(.byteCount(style: .file))) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var thumbnail: some View {
         AssetImage(asset: asset, pointSize: CGSize(width: size, height: size), fill: true)
             .frame(width: size, height: size)
             .background(.quaternary)
@@ -173,7 +345,7 @@ struct InfoBar: View {
                 Text(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let suggestion, suggestion.stars > 0 || !suggestion.reasons.isEmpty {
+                if let suggestion, suggestion.stars > 0 || !suggestion.reasons.isEmpty || suggestion.group != nil {
                     Text(suggestionLine(suggestion))
                         .font(.caption)
                         .foregroundStyle(suggestion.suggestsReject ? .orange : .secondary)
@@ -199,6 +371,11 @@ struct InfoBar: View {
             parts.append("Consider rejecting: " + reasons)
         } else if !s.reasons.isEmpty {
             parts.append("\(reasons), but Photos thinks this one matters to you")
+        }
+        if let g = s.group {
+            let kind = g.kind == .duplicate ? "copies" : "similar shots"
+            parts.append(g.isBest ? "Suggested keeper of \(g.size) \(kind) (C to compare)"
+                                  : "One of \(g.size) \(kind); another is suggested to keep (C to compare)")
         }
         return parts.joined(separator: " · ")
     }

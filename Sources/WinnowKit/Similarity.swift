@@ -1,0 +1,154 @@
+// Finding duplicates and similar shots.
+//
+// Duplicates and near-identical takes are almost always captured within seconds of each other,
+// so photos are first chained into time clusters (each within `clusterGap` of the previous one).
+// Only photos in a cluster of two or more are compared, using Vision's image feature print:
+// 768 numbers per photo, normalised, where the cosine distance between two photos is about
+// 0.002 for a resized copy, 0.01 for a slightly rotated one, 0.05 for a cropped one, 0.15 for two
+// different scenes in a similar style, and 0.65 for unrelated images.
+
+import Foundation
+
+/// A feature print, stored compactly: one Float32 scale followed by one Int8 per element
+/// (about 0.8 KB per photo instead of 3 KB).
+public struct FeatureVector: Sendable, Equatable {
+    public let values: [Float]
+
+    public init(_ values: [Float]) { self.values = values }
+
+    public init?(quantized data: Data) {
+        guard data.count > 4 else { return nil }
+        let scale = data.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: Float.self) }
+        values = data.dropFirst(4).map { Float(Int8(bitPattern: $0)) * scale }
+    }
+
+    public var quantized: Data {
+        let maxAbs = values.map(abs).max() ?? 0
+        let scale = maxAbs > 0 ? maxAbs / 127 : 1
+        var data = withUnsafeBytes(of: scale) { Data($0) }
+        data.append(contentsOf: values.map { UInt8(bitPattern: Int8(clamping: Int(($0 / scale).rounded()))) })
+        return data
+    }
+
+    /// 0 = same direction, 1 = unrelated, 2 = opposite.
+    public func distance(to other: FeatureVector) -> Float {
+        var dot: Float = 0, a: Float = 0, b: Float = 0
+        for i in values.indices where i < other.values.count {
+            dot += values[i] * other.values[i]
+            a += values[i] * values[i]
+            b += other.values[i] * other.values[i]
+        }
+        guard a > 0, b > 0 else { return 1 }
+        return 1 - dot / (a.squareRoot() * b.squareRoot())
+    }
+}
+
+/// Photos that look alike: every member is within the kind's distance of every other member,
+/// and all were taken within `Similarity.groupSpan` of each other.
+public struct SimilarGroup: Sendable, Equatable {
+    public enum Kind: Sendable, Equatable {
+        /// Near-identical copies: re-imports, edits, the same frame saved twice.
+        case duplicate
+        /// Takes of the same moment that look alike.
+        case similar
+
+        public var distance: Float {
+            self == .duplicate ? Similarity.duplicateDistance : Similarity.similarDistance
+        }
+    }
+
+    public let members: [String]
+    public let kind: Kind
+
+    public init(members: [String], kind: Kind) {
+        self.members = members
+        self.kind = kind
+    }
+}
+
+public enum Similarity {
+    /// Photos more than this far apart in time are never compared.
+    public static let clusterGap: TimeInterval = 30
+    /// Members of one group are never more than this far apart in time.
+    public static let groupSpan: TimeInterval = 60
+    /// From test images and the first scan of a 150,000-photo library (out/similarity-report.csv).
+    /// 0.12 grouped photos that looked nothing alike, so similar is now 0.10.
+    public static let duplicateDistance: Float = 0.02
+    public static let similarDistance: Float = 0.10
+
+    /// Chains photos (sorted by date) into runs where each is within `clusterGap` of the one before.
+    /// Returns only runs of two or more.
+    public static func timeClusters(_ photos: [(uuid: String, date: Date)]) -> [[String]] {
+        let sorted = photos.sorted { $0.date < $1.date }
+        var clusters: [[String]] = []
+        var run: [String] = []
+        var last: Date?
+        for p in sorted {
+            if let last, p.date.timeIntervalSince(last) > clusterGap {
+                if run.count > 1 { clusters.append(run) }
+                run = []
+            }
+            run.append(p.uuid)
+            last = p.date
+        }
+        if run.count > 1 { clusters.append(run) }
+        return clusters
+    }
+
+    /// Groups of photos that all look alike (complete linkage: each new member must be within the
+    /// kind's distance of every member already there, not just one of them, so groups can't chain
+    /// across a run of gradually changing shots) and were all taken within `groupSpan` of each other.
+    /// Clusters must be in date order, as `timeClusters` returns them.
+    public static func groups(clusters: [[String]], vectors: [String: FeatureVector], dates: [String: Date],
+                              kind: SimilarGroup.Kind) -> [SimilarGroup] {
+        let limit = kind.distance
+        var out: [SimilarGroup] = []
+        for cluster in clusters {
+            let ids = cluster.filter { vectors[$0] != nil && dates[$0] != nil }
+            var open: [[String]] = []
+            func close(before date: Date) {
+                open.removeAll { group in
+                    guard date.timeIntervalSince(dates[group[0]]!) > groupSpan else { return false }
+                    if group.count > 1 { out.append(SimilarGroup(members: group, kind: kind)) }
+                    return true
+                }
+            }
+            for id in ids {
+                let date = dates[id]!, v = vectors[id]!
+                close(before: date)
+                // Join the open group this photo is closest to, if it's close to all of its members.
+                var best: (index: Int, distance: Float)?
+                for (i, group) in open.enumerated() {
+                    let farthest = group.map { v.distance(to: vectors[$0]!) }.max() ?? .infinity
+                    if farthest <= limit, farthest < (best?.distance ?? .infinity) { best = (i, farthest) }
+                }
+                if let best { open[best.index].append(id) } else { open.append([id]) }
+            }
+            close(before: .distantFuture)
+        }
+        return out
+    }
+
+    /// Group sizes, for the report: how many groups have 2, 3, … members, plus the largest.
+    public static func sizeCounts(_ groups: [SimilarGroup]) -> (counts: [Int: Int], largest: Int) {
+        var counts: [Int: Int] = [:]
+        for g in groups { counts[g.members.count, default: 0] += 1 }
+        return (counts, groups.map(\.members.count).max() ?? 0)
+    }
+
+    /// Each compared photo's distance to its closest neighbour in its cluster, for tuning the
+    /// thresholds: a histogram in steps of 0.02 up to 0.3, plus everything above.
+    public static func nearestNeighbourHistogram(clusters: [[String]], vectors: [String: FeatureVector]) -> [(upTo: Float, count: Int)] {
+        let edges: [Float] = stride(from: 0.02, through: 0.3001, by: 0.02).map { Float($0) } + [.infinity]
+        var counts = [Int](repeating: 0, count: edges.count)
+        for cluster in clusters {
+            let ids = cluster.filter { vectors[$0] != nil }
+            for i in ids.indices {
+                var nearest = Float.infinity
+                for j in ids.indices where j != i { nearest = min(nearest, vectors[ids[i]]!.distance(to: vectors[ids[j]]!)) }
+                if let bin = edges.firstIndex(where: { nearest <= $0 }), nearest.isFinite { counts[bin] += 1 }
+            }
+        }
+        return zip(edges, counts).map { ($0, $1) }
+    }
+}

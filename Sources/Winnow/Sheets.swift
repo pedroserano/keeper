@@ -68,8 +68,8 @@ struct ShortcutsSheet: View {
                   ("Esc", "Back out of zoom, then back to the grid")]),
         ("Look closer", [("Space", "100% zoom (in the grid: open the photo)"),
                          ("Z", "100% zoom on the main face"),
-                         ("C", "Compare with burst frames or nearby shots"),
-                         ("K", "In compare: keep this one, reject the others"),
+                         ("C", "Compare with its look-alikes, burst frames or nearby shots"),
+                         ("K", "In compare: keep this one, reject the others. In Duplicates or Similar Shots: keep this one when merging"),
                          ("I", "Show Apple Photos' scores for this photo")]),
         ("Undo", [("⌘Z", "Undo"), ("⇧⌘Z", "Redo")]),
     ]

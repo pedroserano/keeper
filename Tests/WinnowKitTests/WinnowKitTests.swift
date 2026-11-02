@@ -130,6 +130,16 @@ import WinnowCore
         #expect(try store.all().count == 1)
     }
 
+    @Test func featurePrintsRoundTrip() throws {
+        let store = try DecisionStore()
+        let v = FeatureVector((0..<768).map { cos(Float($0)) / 30 })
+        try store.saveFeaturePrints(["u1": v, "u2": v])
+        #expect(try store.featurePrintUUIDs() == ["u1", "u2"])
+        let loaded = try store.featurePrints(for: ["u1"])
+        #expect(loaded.count == 1)
+        #expect(loaded["u1"]!.distance(to: v) < 0.001)
+    }
+
     @Test func settingsRoundTrip() throws {
         let store = try DecisionStore()
         #expect(try store.setting("source") == nil)
@@ -373,5 +383,211 @@ import WinnowCore
         #expect(tenths.count == 10)
         #expect(tenths.values.allSatisfy { (13...17).contains($0) })
         #expect(r.calibrationSample(count: 150, excluding: ["p1", "p2"]) == sample) // stable
+    }
+}
+
+@Suite struct SimilarityTests {
+    func date(_ s: Double) -> Date { Date(timeIntervalSinceReferenceDate: s) }
+
+    /// A unit vector pointing mostly along `axis`, nudged by `wobble` toward the next axis.
+    func vector(_ axis: Int, wobble: Float = 0) -> FeatureVector {
+        var v = [Float](repeating: 0, count: 16)
+        v[axis] = 1
+        v[(axis + 1) % 16] = wobble
+        return FeatureVector(v)
+    }
+
+    @Test func clustersChainByTimeGap() {
+        let photos = [("a", date(0)), ("b", date(20)), ("c", date(45)),   // chained: each ≤ 30 s from the last
+                      ("d", date(200)),                                   // alone
+                      ("e", date(500)), ("f", date(505))]
+        let clusters = Similarity.timeClusters(photos.map { (uuid: $0.0, date: $0.1) })
+        #expect(clusters == [["a", "b", "c"], ["e", "f"]])
+    }
+
+    /// Everything taken a second apart, in the given order.
+    func dates(_ ids: [String]) -> [String: Date] {
+        Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, date(Double($0))) })
+    }
+
+    @Test func duplicatesAndSimilarShotsAreSeparateGroupings() {
+        let ids = ["copy1", "copy2", "take", "other"]
+        let vectors: [String: FeatureVector] = [
+            "copy1": vector(0), "copy2": vector(0, wobble: 0.01),     // near-identical
+            "take":  vector(0, wobble: 0.35),                          // same scene, different take
+            "other": vector(5),                                         // different scene, same minute
+        ]
+        let dupes = Similarity.groups(clusters: [ids], vectors: vectors, dates: dates(ids), kind: .duplicate)
+        let similar = Similarity.groups(clusters: [ids], vectors: vectors, dates: dates(ids), kind: .similar)
+        #expect(dupes == [SimilarGroup(members: ["copy1", "copy2"], kind: .duplicate)])
+        #expect(similar == [SimilarGroup(members: ["copy1", "copy2", "take"], kind: .similar)])
+    }
+
+    @Test func groupsDontChainAcrossGraduallyChangingShots() {
+        // A looks like B and B like C, but A and C look nothing alike: no group may hold A and C.
+        let ids = ["a", "b", "c"]
+        let vectors = ["a": vector(0), "b": vector(0, wobble: 0.35), "c": vector(0, wobble: 0.8)]
+        #expect(vectors["a"]!.distance(to: vectors["c"]!) > Similarity.similarDistance)
+        #expect(vectors["b"]!.distance(to: vectors["c"]!) <= Similarity.similarDistance)
+        let groups = Similarity.groups(clusters: [ids], vectors: vectors, dates: dates(ids), kind: .similar)
+        #expect(groups == [SimilarGroup(members: ["a", "b"], kind: .similar)])
+    }
+
+    @Test func groupsStayWithinAMinute() {
+        // One time cluster (each shot within 30 s of the last) spanning 100 s; the first and last
+        // shots are identical but too far apart to be the same moment.
+        let ids = ["p0", "p25", "p50", "p75", "p100"]
+        let vectors = ["p0": vector(0), "p25": vector(3), "p50": vector(6), "p75": vector(9), "p100": vector(0)]
+        let when = Dictionary(uniqueKeysWithValues: ids.map { ($0, date(Double($0.dropFirst())!)) })
+        #expect(Similarity.groups(clusters: [ids], vectors: vectors, dates: when, kind: .duplicate).isEmpty)
+    }
+
+    @Test func photosInDifferentClustersAreNeverGrouped() {
+        let vectors = ["a": vector(0), "b": vector(0)]
+        #expect(Similarity.groups(clusters: [["a"], ["b"]], vectors: vectors, dates: dates(["a", "b"]),
+                                  kind: .duplicate).isEmpty)
+    }
+
+    @Test func sizeCountsForTheReport() {
+        let groups = [SimilarGroup(members: ["a", "b"], kind: .similar), SimilarGroup(members: ["c", "d"], kind: .similar),
+                      SimilarGroup(members: ["e", "f", "g"], kind: .similar)]
+        let stats = Similarity.sizeCounts(groups)
+        #expect(stats.counts == [2: 2, 3: 1])
+        #expect(stats.largest == 3)
+    }
+
+    @Test func quantizationKeepsDistances() {
+        let a = FeatureVector((0..<768).map { sin(Float($0)) / 20 })
+        let b = FeatureVector((0..<768).map { sin(Float($0) + 0.3) / 20 })
+        let qa = FeatureVector(quantized: a.quantized)!, qb = FeatureVector(quantized: b.quantized)!
+        #expect(a.quantized.count == 772)
+        #expect(abs(qa.distance(to: qb) - a.distance(to: b)) < 0.005)
+        #expect(qa.distance(to: qa) < 0.0001)
+    }
+
+    @Test func histogramCountsNearestNeighbours() {
+        let vectors = ["a": vector(0), "b": vector(0, wobble: 0.01), "c": vector(9)]
+        let h = Similarity.nearestNeighbourHistogram(clusters: [["a", "b", "c"]], vectors: vectors)
+        #expect(h.first?.count == 2)               // a and b are each other's nearest, distance ≈ 0
+        #expect(h.last?.count == 1)                // c's nearest is far
+        #expect(h.map(\.count).reduce(0, +) == 3)
+    }
+}
+
+@Suite struct GroupSuggestionTests {
+    func library() -> [String: AppleScores] {
+        var out: [String: AppleScores] = [:]
+        for i in 0..<100 {
+            out["p\(i)"] = AppleScores(overall: 0.5, curation: Double(i) / 100, failure: 0, noise: -0.05,
+                                       blurriness: 0.9, exposure: 0.9)
+        }
+        return out
+    }
+
+    @Test func bestSimilarShotIsKeptAndTheRestAreSuggestedRejects() {
+        let r = Recommender(scores: library(), groups: [SimilarGroup(members: ["p40", "p95", "p60"], kind: .similar)])
+        #expect(r.suggestion(forUUID: "p95")!.group == GroupInfo(kind: .similar, size: 3, isBest: true))
+        #expect(!r.suggestion(forUUID: "p95")!.suggestsReject)
+        #expect(r.suggestion(forUUID: "p40")!.reasons.contains(.similar))
+        // p60 is in the top 30% by curation, so normally protected; a better shot exists, so not here.
+        #expect(r.suggestion(forUUID: "p60")!.suggestsReject)
+    }
+
+    @Test func largestCopyIsKeptEvenIfItScoresLower() {
+        let files: [String: FileInfo] = [
+            "p10": FileInfo(width: 4032, height: 3024, bytes: 3_400_000),
+            "p90": FileInfo(width: 1024, height: 768, bytes: 300_000),
+            "p50": FileInfo(width: 4032, height: 3024, bytes: 2_100_000),
+        ]
+        let r = Recommender(scores: library(), groups: [SimilarGroup(members: ["p90", "p10", "p50"], kind: .duplicate)],
+                            files: files)
+        #expect(r.suggestion(forUUID: "p10")!.group?.isBest == true)
+        #expect(r.suggestion(forUUID: "p90")!.reasons.contains(.duplicate))
+        #expect(r.suggestion(forUUID: "p50")!.reasons.contains(.duplicate))
+        #expect(r.lookAlikes.count == 1 && r.lookAlikes[0].kind == .duplicate)
+    }
+
+    @Test func duplicatesAndSimilarShotsAreSeparateGroups() {
+        let groups = [SimilarGroup(members: ["p20", "p30"], kind: .duplicate),
+                      SimilarGroup(members: ["p20", "p30", "p99"], kind: .similar)]
+        let r = Recommender(scores: library(), groups: groups)
+        #expect(r.lookAlikes(.duplicate).map(\.members) == [["p30", "p20"]])
+        #expect(Set(r.lookAlikes(.similar)[0].members) == ["p20", "p30", "p99"])
+        #expect(r.lookAlike(forUUID: "p20", kind: .duplicate)?.kind == .duplicate)
+        #expect(r.lookAlike(forUUID: "p99", kind: .duplicate) == nil)
+        // p30 is the copy to keep but not the best of its similar shots; p20 is neither.
+        #expect(r.suggestion(forUUID: "p30")!.reasons == [.similar])
+        #expect(r.suggestion(forUUID: "p20")!.reasons.contains(.duplicate))
+        #expect(r.suggestion(forUUID: "p20")!.reasons.contains(.similar))
+        #expect(r.suggestion(forUUID: "p99")!.group?.isBest == true)
+    }
+
+    @Test func unanalysedDuplicatesStillGetSuggested() {
+        var scores = library()
+        scores["new"] = AppleScores(overall: 0.5) // not analysed by Photos yet
+        let files = ["p80": FileInfo(width: 4000, height: 3000), "new": FileInfo(width: 800, height: 600)]
+        let r = Recommender(scores: scores, groups: [SimilarGroup(members: ["p80", "new"], kind: .duplicate)], files: files)
+        #expect(r.suggestion(forUUID: "new")?.reasons == [.duplicate])
+        #expect(r.suggestion(forUUID: "p80")?.group?.isBest == true)
+    }
+}
+
+@Suite struct LookAlikeAndMergeTests {
+    func score(_ id: String) -> Double { Double(id.dropFirst()) ?? 0 } // "p70" scores 70
+
+    @Test func largestDuplicateIsSuggested() {
+        let files = ["p90": FileInfo(width: 1024, height: 768, bytes: 200_000),
+                     "p10": FileInfo(width: 4032, height: 3024, bytes: 3_000_000)]
+        let g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p10"], kind: .duplicate)], score: score, files: files)[0]
+        #expect(g.keeper == "p10")
+        #expect(g.members == ["p10", "p90"])
+    }
+
+    @Test func biggerSimilarShotWinsUnlessItLooksMuchWorse() {
+        let big = FileInfo(width: 4032, height: 3024, bytes: 3_000_000)
+        let small = FileInfo(width: 1024, height: 768, bytes: 200_000)
+        // The biggest file looks second best of three: it's kept over the best-looking small one.
+        var g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p50", "p10"], kind: .similar)], score: score,
+                                 files: ["p90": small, "p50": big, "p10": small])[0]
+        #expect(g.keeper == "p50")
+        // Two files of the same size: the better-looking of them is kept.
+        g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p50", "p10"], kind: .similar)], score: score,
+                             files: ["p90": small, "p50": big, "p10": big])[0]
+        #expect(g.keeper == "p50")
+        // All the same size: looks decide.
+        g = LookAlikes.build(groups: [SimilarGroup(members: ["p10", "p90", "p50"], kind: .similar)], score: score, files: [:])[0]
+        #expect(g.keeper == "p90")
+        #expect(g.others == ["p50", "p10"])
+    }
+
+    @Test func pickingAnotherKeeperKeepsTheGroupsIdentity() {
+        let g = LookAlikes.build(groups: [SimilarGroup(members: ["p10", "p90", "p50"], kind: .similar)], score: score, files: [:])[0]
+        let picked = g.keeping("p10")
+        #expect(picked.keeper == "p10")
+        #expect(picked.members.first == "p10")
+        #expect(Set(picked.members) == Set(g.members))
+        #expect(picked.id == g.id)
+        #expect(g.keeping("elsewhere") == g)
+    }
+
+    @Test func mergeCarriesRatingFavoriteAndAlbumsToTheKeeper() {
+        let keeper = Decision(assetID: "k", rating: 2, favorite: false)
+        let others = [Decision(assetID: "a", rating: 4, favorite: true), Decision(assetID: "b", rating: 1, favorite: false)]
+        let merged = Merge.merged(keeper: keeper, others: others, albumsToAdd: ["album-1", "album-2"])
+        #expect(merged[0].rating == 4)
+        #expect(merged[0].favorite == true)
+        #expect(merged[0].flag == Flag.none)
+        #expect(merged.dropFirst().allSatisfy { $0.flag == .reject })
+        #expect(PhotosChange(from: keeper, to: merged[0])
+                == PhotosChange(favorite: true, rating: 4, addAlbums: ["album-1", "album-2"]))
+        // Undo takes it out of exactly those albums again.
+        #expect(PhotosChange(from: merged[0], to: keeper)
+                == PhotosChange(favorite: false, rating: 2, removeAlbums: ["album-1", "album-2"]))
+    }
+
+    @Test func addedAlbumsPersist() throws {
+        let store = try DecisionStore()
+        try store.save([Decision(assetID: "k", addedAlbums: ["album-1"])])
+        #expect(try store.all()["k"]?.addedAlbums == ["album-1"])
     }
 }

@@ -64,7 +64,18 @@ struct ContentView: View {
     }
 
     private var emptyDetail: String {
-        session.source == .unreviewed && session.filter == .all
+        if session.source.isGroups {
+            switch session.similarity {
+            case .waiting:
+                return "Winnow is about to scan for look-alikes."
+            case .indexing(let done, let total):
+                let pct = total > 0 ? Int((Double(done) / Double(total) * 100).rounded()) : 0
+                return "Still scanning: \(pct)% done\(timeLeft(session)). Look-alikes appear here when the scan finishes."
+            case .ready:
+                return "Every group of look-alikes has been merged or culled."
+            }
+        }
+        return session.source == .unreviewed && session.filter == .all
             ? "You've looked at every photo in this library."
             : "Choose another source or filter."
     }
@@ -186,6 +197,14 @@ struct Sidebar: View {
                     }
                 }
             }
+            Section {
+                row(.duplicates)
+                row(.similarShots)
+            } header: {
+                Text("Look-alikes")
+            } footer: {
+                Text(similarityNote).font(.caption).foregroundStyle(.secondary)
+            }
             Section("Media Types") {
                 row(.screenshots)
                 row(.bursts)
@@ -212,6 +231,21 @@ struct Sidebar: View {
                 .padding(10)
             }
             .background(.bar)
+        }
+    }
+
+    private var similarityNote: String {
+        switch session.similarity {
+        case .waiting:
+            return "Looking for photos taken close together…"
+        case .indexing(let done, let total):
+            let pct = total > 0 ? Int((Double(done) / Double(total) * 100).rounded()) : 0
+            return "Scanning for look-alikes: \(pct)% (\(done.formatted()) of \(total.formatted()))\(timeLeft(session)). "
+                + "Groups appear when the scan finishes. It keeps going in the background and picks up where it left off."
+        case .ready(let groups):
+            return groups == 0 ? "No duplicates or similar shots found."
+                : "In each group the best-looking photo is kept, or its largest copy. Merge a group to "
+                + "move the rest to Rejected; merged groups leave the list."
         }
     }
 
@@ -354,4 +388,11 @@ struct RatingLabel: View {
             }
         }
     }
+}
+
+/// ", about 9 minutes left", or nothing until there's a pace to go on.
+@MainActor func timeLeft(_ session: CullingSession) -> String {
+    guard let left = session.similarityTimeLeft else { return "" }
+    let minutes = Int((Double(left.components.seconds) / 60).rounded(.up))
+    return minutes <= 1 ? ", about a minute left" : ", about \(minutes) minutes left"
 }

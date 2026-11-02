@@ -423,3 +423,66 @@ extension PhotosDatabase {
         return out
     }
 }
+
+// MARK: - File details
+
+/// What Photos records about a photo's original file. nil = not in this macOS version's schema.
+public struct FileInfo: Sendable, Equatable {
+    public var width: Int?
+    public var height: Int?
+    public var bytes: Int?
+    public var filename: String?
+
+    public init(width: Int? = nil, height: Int? = nil, bytes: Int? = nil, filename: String? = nil) {
+        self.width = width
+        self.height = height
+        self.bytes = bytes
+        self.filename = filename
+    }
+
+    public var pixels: Int? { width.flatMap { w in height.map { w * $0 } } }
+}
+
+extension PhotosDatabase {
+    /// Original file size, dimensions and name for every still photo, keyed by UUID. PhotoKit has
+    /// no public file size, so this comes from the library's own database (read-only, live).
+    public static func readFileInfo(inLibrary library: URL) throws -> [String: FileInfo] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Winnow can't read this library's database.")
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains) else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema,
+                                      message: "This library's database has no asset table Winnow recognises.")
+        }
+        func columns(_ table: String) throws -> Set<String> {
+            tables.contains(table) ? Set(try db.rows("PRAGMA table_info(\(q(table)))").compactMap { $0[1] }) : []
+        }
+        let a = try columns(assetTable)
+        let x = try columns("ZADDITIONALASSETATTRIBUTES")
+        let xx = x.contains("ZASSET") ? x : []
+        func pick(_ alias: String, _ available: Set<String>, _ name: String) -> String {
+            available.contains(name) ? "\(alias).\(q(name))" : "NULL"
+        }
+        let join = xx.isEmpty ? "" : " LEFT JOIN ZADDITIONALASSETATTRIBUTES x ON x.ZASSET = a.Z_PK"
+        // Original dimensions where recorded (an edit can change the current ones), else current.
+        let sql = """
+            SELECT a.ZUUID,
+                   COALESCE(\(pick("x", xx, "ZORIGINALWIDTH")), \(pick("a", a, "ZWIDTH"))),
+                   COALESCE(\(pick("x", xx, "ZORIGINALHEIGHT")), \(pick("a", a, "ZHEIGHT"))),
+                   \(pick("x", xx, "ZORIGINALFILESIZE")), \(pick("x", xx, "ZORIGINALFILENAME"))
+            FROM \(q(assetTable)) a\(join)
+            \(a.contains("ZKIND") ? "WHERE a.ZKIND = 0" : "")
+            """
+        var out: [String: FileInfo] = [:]
+        try db.forEachRow(sql) { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            func i(_ c: Int32) -> Int? { sqlite3_column_type(stmt, c) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, c)) }
+            out[uuid] = FileInfo(width: i(1), height: i(2), bytes: i(3),
+                                 filename: sqlite3_column_text(stmt, 4).map { String(cString: $0) })
+        }
+        return out
+    }
+}

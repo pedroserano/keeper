@@ -10,6 +10,8 @@
 //
 // Curation also protects: it reflects what matters to you (people, favorites, sharing), not just
 // how good a photo looks, so a photo Photos ranks highly is never put forward as a reject.
+// The exception is duplicates and similar shots: the best of each group is kept, so the others
+// are suggested even when they're precious.
 
 import WinnowCore
 
@@ -20,6 +22,17 @@ public enum Reason: String, Sendable, CaseIterable {
     case exposure = "Poor exposure"
     case noisy = "Noisy"
     case lowScore = "Low score"
+    case duplicate = "Duplicate"
+    case similar = "Similar shot"
+}
+
+/// Where a photo sits in its look-alike group.
+public struct GroupInfo: Sendable, Equatable {
+    /// .duplicate when this photo is a near-identical copy of another in the group.
+    public let kind: SimilarGroup.Kind
+    public let size: Int
+    /// The one to keep (see LookAlikes).
+    public let isBest: Bool
 }
 
 public struct Suggestion: Sendable, Equatable {
@@ -30,15 +43,21 @@ public struct Suggestion: Sendable, Equatable {
     public let keep: Double
     /// Photos ranks this among the photos that matter most to you, so it isn't suggested as a reject.
     public let protected: Bool
+    /// Set when the photo has duplicates or similar shots.
+    public let group: GroupInfo?
 
-    public init(stars: Int, reasons: [Reason], keep: Double, protected: Bool = false) {
+    public init(stars: Int, reasons: [Reason], keep: Double, protected: Bool = false, group: GroupInfo? = nil) {
         self.stars = stars
         self.reasons = reasons
         self.keep = keep
         self.protected = protected
+        self.group = group
     }
 
-    public var suggestsReject: Bool { !reasons.isEmpty && !protected }
+    /// Protection never covers a weaker copy: the best of its group is kept instead.
+    public var suggestsReject: Bool {
+        !reasons.isEmpty && (!protected || reasons.contains(.duplicate) || reasons.contains(.similar))
+    }
 }
 
 public struct Recommender: Sendable {
@@ -68,11 +87,20 @@ public struct Recommender: Sendable {
     /// Curation at `protectPercentile`; nil when the library has no curation scores.
     public let protectCutoff: Double?
     public let analysedCount: Int
+    public let groups: [SimilarGroup]
+    public let files: [String: FileInfo]
+    /// Duplicates and similar shots, the photo to keep first. A photo can be in one group of each kind.
+    public let lookAlikes: [LookAlikeGroup]
+    let duplicateIndex: [String: Int]
+    let similarIndex: [String: Int]
 
-    public init(scores: [String: AppleScores], screenshots: Set<String> = [], model: RatingModel? = nil) {
+    public init(scores: [String: AppleScores], screenshots: Set<String> = [], model: RatingModel? = nil,
+                groups: [SimilarGroup] = [], files: [String: FileInfo] = [:]) {
         self.scores = scores
         self.screenshots = screenshots
         self.model = model
+        self.groups = groups
+        self.files = files
         let analysed = scores.values.filter(\.isAnalysed)
         func percentiles(_ values: [Double], _ ps: [Double]) -> [Double] {
             let sorted = values.sorted()
@@ -83,6 +111,45 @@ public struct Recommender: Sendable {
         analysedCount = basis.count
         cutoffs = percentiles(basis, Self.starPercentiles)
         protectCutoff = percentiles(analysed.compactMap(\.curation), [Threshold.protectPercentile]).first
+
+        func score(_ uuid: String) -> Double {
+            guard let s = scores[uuid], s.isAnalysed else { return -.infinity }
+            return model.map { $0.predict(s) } ?? s.curation ?? s.overall ?? -.infinity
+        }
+        lookAlikes = LookAlikes.build(groups: groups, score: score, files: files)
+        var duplicates: [String: Int] = [:], similar: [String: Int] = [:]
+        for (i, g) in lookAlikes.enumerated() {
+            for m in g.members {
+                if g.kind == .duplicate { duplicates[m] = i } else { similar[m] = i }
+            }
+        }
+        duplicateIndex = duplicates
+        similarIndex = similar
+    }
+
+    /// The photo's group of the given kind, if it has one.
+    public func lookAlike(forUUID uuid: String, kind: SimilarGroup.Kind) -> LookAlikeGroup? {
+        (kind == .duplicate ? duplicateIndex : similarIndex)[uuid].map { lookAlikes[$0] }
+    }
+
+    /// The groups of one kind.
+    public func lookAlikes(_ kind: SimilarGroup.Kind) -> [LookAlikeGroup] {
+        lookAlikes.filter { $0.kind == kind }
+    }
+
+    /// The photo's duplicates if it has any, otherwise its similar shots.
+    public func group(forUUID uuid: String) -> GroupInfo? {
+        (lookAlike(forUUID: uuid, kind: .duplicate) ?? lookAlike(forUUID: uuid, kind: .similar)).map {
+            GroupInfo(kind: $0.kind, size: $0.members.count, isBest: $0.keeper == uuid)
+        }
+    }
+
+    /// Duplicate and Similar shot, for each kind of group this photo isn't the one to keep in.
+    func groupReasons(forUUID uuid: String) -> [Reason] {
+        var out: [Reason] = []
+        if let g = lookAlike(forUUID: uuid, kind: .duplicate), g.keeper != uuid { out.append(.duplicate) }
+        if let g = lookAlike(forUUID: uuid, kind: .similar), g.keeper != uuid { out.append(.similar) }
+        return out
     }
 
     /// The score stars and ordering come from.
@@ -100,8 +167,12 @@ public struct Recommender: Sendable {
 
     public func suggestion(forUUID uuid: String) -> Suggestion? {
         let isScreenshot = screenshots.contains(uuid)
+        let group = self.group(forUUID: uuid)
+        let groupReasons = self.groupReasons(forUUID: uuid)
         guard hasScores, let s = scores[uuid], s.isAnalysed, let score = basis(s) else {
-            return isScreenshot ? Suggestion(stars: 0, reasons: [.screenshot], keep: 0) : nil
+            let reasons = (isScreenshot ? [Reason.screenshot] : []) + groupReasons
+            return reasons.isEmpty && group == nil ? nil
+                : Suggestion(stars: 0, reasons: reasons, keep: 0, group: group)
         }
         let stars = 1 + cutoffs.filter { score >= $0 }.count
 
@@ -118,16 +189,17 @@ public struct Recommender: Sendable {
         if let e = s.exposure, e <= Threshold.exposure { reasons.append(.exposure) }
         if let n = s.noise, n <= Threshold.noise { reasons.append(.noisy) }
         if score < cutoffs[0] { reasons.append(.lowScore) }
+        reasons += groupReasons
 
         // Screenshots are never protected: they're rarely what anyone means by a keepsake.
         let protected = !isScreenshot && protectCutoff.map { (s.curation ?? -.infinity) >= $0 } == true
-        return Suggestion(stars: stars, reasons: reasons, keep: score, protected: protected)
+        return Suggestion(stars: stars, reasons: reasons, keep: score, protected: protected, group: group)
     }
 
     /// How many photos have a reject suggestion, and how many are suggested 5★.
     public func counts() -> (rejects: Int, best: Int) {
         var rejects = 0, best = 0
-        for uuid in Set(scores.keys).union(screenshots) {
+        for uuid in Set(scores.keys).union(screenshots).union(duplicateIndex.keys).union(similarIndex.keys) {
             guard let s = suggestion(forUUID: uuid) else { continue }
             if s.suggestsReject { rejects += 1 }
             if s.stars == 5 && !s.suggestsReject { best += 1 }

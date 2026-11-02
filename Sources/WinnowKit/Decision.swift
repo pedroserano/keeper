@@ -33,16 +33,19 @@ public struct Decision: Codable, Equatable, Sendable, FetchableRecord, Persistab
     public var favorite: Bool?
     /// When the user first looked at this photo in single or compare view.
     public var seenAt: Date?
+    /// Albums Winnow added this photo to when merging look-alikes into it (album local
+    /// identifiers), so undo removes exactly those and no others.
+    public var addedAlbums: Set<String>?
     public var updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case assetID, cloudID, rating, flag, hidden, seenAt, updatedAt
+        case assetID, cloudID, rating, flag, hidden, seenAt, addedAlbums, updatedAt
         case favorite = "originalFavorite" // column named in v1, when picks existed
     }
 
     public init(assetID: String, cloudID: String? = nil, rating: Int = 0, flag: Flag = .none,
                 hidden: Bool = false, favorite: Bool? = nil, seenAt: Date? = nil,
-                updatedAt: Date = Date()) {
+                addedAlbums: Set<String>? = nil, updatedAt: Date = Date()) {
         self.assetID = assetID
         self.cloudID = cloudID
         self.rating = rating
@@ -50,6 +53,7 @@ public struct Decision: Codable, Equatable, Sendable, FetchableRecord, Persistab
         self.hidden = hidden
         self.favorite = favorite
         self.seenAt = seenAt
+        self.addedAlbums = addedAlbums
         self.updatedAt = updatedAt
     }
 
@@ -84,14 +88,22 @@ public struct PhotosChange: Equatable, Sendable {
     public var hidden: Bool?
     public var inRejectAlbum: Bool?
     public var rating: Int?           // 0 = unset, 1–5
+    /// Album local identifiers to add the photo to, or take it out of.
+    public var addAlbums: [String] = []
+    public var removeAlbums: [String] = []
 
-    public var isEmpty: Bool { favorite == nil && hidden == nil && inRejectAlbum == nil && rating == nil }
+    public var isEmpty: Bool {
+        favorite == nil && hidden == nil && inRejectAlbum == nil && rating == nil && addAlbums.isEmpty && removeAlbums.isEmpty
+    }
 
-    public init(favorite: Bool? = nil, hidden: Bool? = nil, inRejectAlbum: Bool? = nil, rating: Int? = nil) {
+    public init(favorite: Bool? = nil, hidden: Bool? = nil, inRejectAlbum: Bool? = nil, rating: Int? = nil,
+                addAlbums: [String] = [], removeAlbums: [String] = []) {
         self.favorite = favorite
         self.hidden = hidden
         self.inRejectAlbum = inRejectAlbum
         self.rating = rating
+        self.addAlbums = addAlbums
+        self.removeAlbums = removeAlbums
     }
 
     public init(from before: Decision, to after: Decision) {
@@ -99,5 +111,30 @@ public struct PhotosChange: Equatable, Sendable {
         hidden = before.hidden != after.hidden ? after.hidden : nil
         inRejectAlbum = (before.flag == .reject) != (after.flag == .reject) ? after.flag == .reject : nil
         rating = before.rating != after.rating ? after.rating : nil
+        let was = before.addedAlbums ?? [], now = after.addedAlbums ?? []
+        addAlbums = now.subtracting(was).sorted()
+        removeAlbums = was.subtracting(now).sorted()
+    }
+}
+
+/// Merging a look-alike group into the photo to keep, the way Photos merges duplicates: the kept
+/// photo gets the group's highest rating, Favorite if any of them was one, and every album the
+/// others are in; the others are rejected (deleted only from Delete Rejected, after confirmation).
+public enum Merge {
+    /// `albumsToAdd`: albums the others are in that the kept photo isn't.
+    public static func merged(keeper: Decision, others: [Decision], albumsToAdd: Set<String>,
+                              at date: Date = Date()) -> [Decision] {
+        var k = keeper
+        k.rating = max(k.rating, others.map(\.rating).max() ?? 0)
+        k.favorite = (k.favorite ?? false) || others.contains { $0.favorite == true }
+        k.addedAlbums = (k.addedAlbums ?? []).union(albumsToAdd)
+        k.flag = .none
+        k.updatedAt = date
+        return [k] + others.map { d in
+            var d = d
+            d.flag = .reject
+            d.updatedAt = date
+            return d
+        }
     }
 }

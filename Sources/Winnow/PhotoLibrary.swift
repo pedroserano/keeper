@@ -14,6 +14,8 @@ enum Source: Hashable, Codable {
     case suggestedRejects
     case bestShots
     case calibrate
+    case duplicates
+    case similarShots
     case album(id: String, title: String)
 
     var title: String {
@@ -26,6 +28,8 @@ enum Source: Hashable, Codable {
         case .suggestedRejects: "Suggested Rejects"
         case .bestShots: "Best Shots"
         case .calibrate: "Rate to Calibrate"
+        case .duplicates: "Duplicates"
+        case .similarShots: "Similar Shots"
         case .album(_, let title): title
         }
     }
@@ -40,12 +44,27 @@ enum Source: Hashable, Codable {
         case .suggestedRejects: "wand.and.rays"
         case .bestShots: "star"
         case .calibrate: "slider.horizontal.3"
+        case .duplicates: "plus.square.on.square"
+        case .similarShots: "square.on.square"
         case .album: "rectangle.stack"
         }
     }
 
     /// Sources built from Apple's scores, in their own order instead of by date.
-    var isSuggestion: Bool { self == .suggestedRejects || self == .bestShots || self == .calibrate }
+    var isSuggestion: Bool {
+        [.suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots].contains(self)
+    }
+
+    /// Duplicates and similar shots, shown group by group.
+    var isGroups: Bool { groupKind != nil }
+
+    var groupKind: SimilarGroup.Kind? {
+        switch self {
+        case .duplicates: .duplicate
+        case .similarShots: .similar
+        default: nil
+        }
+    }
 
     /// Stable key for remembering a position per source.
     var key: String {
@@ -64,7 +83,7 @@ struct LoadedImage {
 
 @MainActor
 final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
-    static let rejectAlbumTitle = "Winnow – Rejected"
+    nonisolated static let rejectAlbumTitle = "Winnow – Rejected"
 
     nonisolated let imageManager = PHCachingImageManager()
     @Published private(set) var albums: [PHAssetCollection] = []
@@ -100,7 +119,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed, .suggestedRejects, .bestShots, .calibrate:
+        case .allPhotos, .unreviewed, .suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)
@@ -116,7 +135,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
     }
 
     /// Assets by ID, including hidden ones and every frame of a burst.
-    func assets(withIDs ids: [String]) -> [PHAsset] {
+    nonisolated func assets(withIDs ids: [String]) -> [PHAsset] {
         guard !ids.isEmpty else { return [] }
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
@@ -209,21 +228,50 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
     func apply(_ changes: [(asset: PHAsset, change: PhotosChange)]) async throws {
         let changes = changes.filter { !$0.change.isEmpty }
         guard !changes.isEmpty else { return }
-        let album = changes.contains { $0.change.inRejectAlbum != nil } ? try await rejectAlbumCollection() : nil
-        try await PHPhotoLibrary.shared().performChanges {
-            for (asset, change) in changes {
-                if change.favorite != nil || change.hidden != nil || change.rating != nil {
-                    let request = PHAssetChangeRequest(for: asset)
-                    if let favorite = change.favorite { request.isFavorite = favorite }
-                    if let hidden = change.hidden { request.isHidden = hidden }
-                    if let rating = change.rating { request.rating = PHAsset.Rating(rawValue: rating) ?? .unset }
-                }
-                if let inAlbum = change.inRejectAlbum, let album,
-                   let request = PHAssetCollectionChangeRequest(for: album) {
-                    if inAlbum { request.addAssets([asset] as NSArray) } else { request.removeAssets([asset] as NSArray) }
+        let rejectAlbum = changes.contains { $0.change.inRejectAlbum != nil } ? try await rejectAlbumCollection() : nil
+        let albumIDs = Set(changes.flatMap { $0.change.addAlbums + $0.change.removeAlbums })
+        var albums: [String: PHAssetCollection] = [:]
+        if !albumIDs.isEmpty {
+            PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: Array(albumIDs), options: nil)
+                .enumerateObjects { c, _, _ in albums[c.localIdentifier] = c }
+        }
+        // A merge of thousands of groups is split up so no single Photos transaction gets huge.
+        for start in stride(from: 0, to: changes.count, by: 500) {
+            let chunk = changes[start..<min(start + 500, changes.count)]
+            try await PHPhotoLibrary.shared().performChanges {
+                for (asset, change) in chunk {
+                    if change.favorite != nil || change.hidden != nil || change.rating != nil {
+                        let request = PHAssetChangeRequest(for: asset)
+                        if let favorite = change.favorite { request.isFavorite = favorite }
+                        if let hidden = change.hidden { request.isHidden = hidden }
+                        if let rating = change.rating { request.rating = PHAsset.Rating(rawValue: rating) ?? .unset }
+                    }
+                    if let inAlbum = change.inRejectAlbum, let rejectAlbum,
+                       let request = PHAssetCollectionChangeRequest(for: rejectAlbum) {
+                        if inAlbum { request.addAssets([asset] as NSArray) } else { request.removeAssets([asset] as NSArray) }
+                    }
+                    for id in change.addAlbums {
+                        if let album = albums[id] { PHAssetCollectionChangeRequest(for: album)?.addAssets([asset] as NSArray) }
+                    }
+                    for id in change.removeAlbums {
+                        if let album = albums[id] { PHAssetCollectionChangeRequest(for: album)?.removeAssets([asset] as NSArray) }
+                    }
                 }
             }
         }
+    }
+
+    /// Regular albums a photo is in that Winnow may add photos to (not Winnow's own reject
+    /// album, not shared or smart albums).
+    nonisolated func albumIDs(containing asset: PHAsset) -> Set<String> {
+        var out = Set<String>()
+        PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil).enumerateObjects { c, _, _ in
+            if c.assetCollectionSubtype == .albumRegular, c.localizedTitle != Self.rejectAlbumTitle,
+               c.canPerform(.addContent) {
+                out.insert(c.localIdentifier)
+            }
+        }
+        return out
     }
 
     /// One call, so macOS shows one confirmation for the whole batch.
