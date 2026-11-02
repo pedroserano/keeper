@@ -86,6 +86,7 @@ final class SpikeModel: ObservableObject {
             }.value
             lastLibraryPath = url.path
             library = loaded
+            saveColumnStats(loaded)
             photos = []
             comparison = nil
             status = "Press Run to score your most recent photos."
@@ -194,7 +195,13 @@ final class SpikeModel: ObservableObject {
             guard let a = p.photosScore, let b = p.vision else { return nil }
             return (a, Double(b))
         }
-        if pairs.count >= 10 {
+        let distinctPhotosScores = Set(pairs.map(\.0))
+        if pairs.count >= 10, distinctPhotosScores.count == 1 {
+            // A ranking can't be compared with a constant: Photos hasn't analysed these photos,
+            // or this macOS version no longer fills this column.
+            comparison = String(format: "Can't compare: Photos' overall score is %.2f for every photo. ", pairs[0].0)
+                + "Check Score Columns… for columns whose values vary."
+        } else if pairs.count >= 10 {
             let overlap = bottomFifthOverlap(pairs)
             comparison = String(format: "Vision vs Photos' own score, %d photos: rank correlation %.2f · ", pairs.count, spearman(pairs))
                 + "of Photos' bottom 20%, Vision also puts \(overlap.hits) of \(overlap.of) in its bottom 20%"
@@ -221,10 +228,27 @@ final class SpikeModel: ObservableObject {
         }
     }
 
+    private var outputFolder: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Winnow/out")
+    }
+
+    /// Records which score columns this macOS version has, and whether their values vary,
+    /// in ~/Documents/Winnow/out/score-columns.csv. Statistics only; no per-photo data.
+    private func saveColumnStats(_ loaded: LoadedLibrary) {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        var csv = "macOS,table,column,perPhoto,nonNull,min,max,mean\n"
+        for c in loaded.columns {
+            csv += ["\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)", c.table, c.column, String(c.joinable),
+                    String(c.nonNull), c.min.map { String($0) } ?? "", c.max.map { String($0) } ?? "",
+                    c.mean.map { String($0) } ?? ""].joined(separator: ",") + "\n"
+        }
+        try? FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        try? csv.write(to: outputFolder.appendingPathComponent("score-columns.csv"), atomically: true, encoding: .utf8)
+    }
+
     /// Keeps a record of each run in ~/Documents/Winnow/out for the Phase 0 gate review.
     private func saveResults() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let dir = docs.appendingPathComponent("Winnow/out")
+        let dir = outputFolder
         var csv = "uuid,vision,isUtility,photosOverall,loadMs,scoreMs\n"
         for p in photos {
             csv += [p.uuid,

@@ -3,12 +3,12 @@
 A personal, keyboard-first photo culling app for Apple Photos on Apple Silicon Macs.
 The spec lives in the Winnow PRD v2 doc.
 
-This repository is at **Phase 0**: a spike app and a baseline study that settle the open risks before the Alpha.
+This repository is at **Phase 0**: a spike app that settles the open risks before the Alpha. It answers which of
+Photos' own score columns exist on this macOS, how fast PhotoKit loads and Vision scores photos, how closely
+Vision agrees with Photos, and how a batch delete feels. Its interface is deliberately rough: the real one is
+built in the Alpha.
 
-| Piece | Answers | Where |
-| --- | --- | --- |
-| Winnow Spike app | Which of Photos' own score columns exist on this macOS; how fast PhotoKit loads and Vision scores photos; how closely Vision agrees with Photos; how a batch delete feels | `Sources/WinnowSpike`, `Sources/WinnowCore` |
-| Baseline study | How long culling takes in Photos.app today | `docs/phase0-baseline.md` |
+Code: `Sources/WinnowSpike` (the app) and `Sources/WinnowCore` (reading a library's database).
 
 ## Using the spike app
 
