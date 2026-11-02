@@ -9,6 +9,7 @@ enum Source: Hashable, Codable {
     case allPhotos
     case unreviewed
     case favorites
+    case dateRange
     case screenshots
     case bursts
     case suggestedRejects
@@ -23,6 +24,7 @@ enum Source: Hashable, Codable {
         case .allPhotos: "All Photos"
         case .unreviewed: "Unreviewed"
         case .favorites: "Favorites"
+        case .dateRange: "Date Range"
         case .screenshots: "Screenshots"
         case .bursts: "Bursts"
         case .suggestedRejects: "Suggested Rejects"
@@ -39,6 +41,7 @@ enum Source: Hashable, Codable {
         case .allPhotos: "photo.on.rectangle"
         case .unreviewed: "eye.slash"
         case .favorites: "heart"
+        case .dateRange: "calendar"
         case .screenshots: "camera.viewfinder"
         case .bursts: "square.stack.3d.down.right"
         case .suggestedRejects: "wand.and.rays"
@@ -107,10 +110,18 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
     // MARK: Fetching
 
     /// Lazy: PhotoKit loads objects only as they're asked for, so this is fast at any library size.
-    nonisolated func fetch(_ source: Source, newestFirst: Bool) -> PHFetchResult<PHAsset> {
+    /// `range` is for Date Range: whole days, first to last inclusive.
+    nonisolated func fetch(_ source: Source, newestFirst: Bool, range: ClosedRange<Date>? = nil) -> PHFetchResult<PHAsset> {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: !newestFirst)]
         options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        if source == .dateRange, let range {
+            let calendar = Calendar.current
+            let start = calendar.startOfDay(for: range.lowerBound)
+            let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: range.upperBound))!
+            options.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@ AND creationDate < %@",
+                                            PHAssetMediaType.image.rawValue, start as NSDate, end as NSDate)
+        }
 
         func smartAlbum(_ subtype: PHAssetCollectionSubtype) -> PHFetchResult<PHAsset> {
             guard let album = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: subtype, options: nil).firstObject
@@ -119,7 +130,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed, .suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots:
+        case .allPhotos, .unreviewed, .dateRange, .suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)

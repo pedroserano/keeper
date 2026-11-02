@@ -74,6 +74,15 @@ final class CullingSession: ObservableObject {
     @Published private(set) var recommender: Recommender?
     @Published private(set) var suggestionsStatus = SuggestionsStatus.loading
 
+    /// Something Winnow can't see, explained in a banner with a way to fix it.
+    enum AccessGap: Equatable {
+        /// Photos access limited to chosen photos (iOS-style limited access, should macOS offer it).
+        case limitedPhotos
+        /// macOS won't let Winnow read the library's database: no Apple scores, file sizes or faces.
+        case noDatabase
+    }
+    @Published private(set) var accessGap: AccessGap?
+
     enum LearningStatus: Equatable {
         case waiting
         case learning
@@ -164,6 +173,20 @@ final class CullingSession: ObservableObject {
            let saved = try? JSONDecoder().decode(Source.self, from: data) {
             source = saved
         }
+        if let saved = try? store.setting("dateRange") {
+            let parts = saved.split(separator: ",").compactMap { Double($0) }
+            if parts.count == 2 {
+                dateRange = Date(timeIntervalSince1970: parts[0])...Date(timeIntervalSince1970: parts[1])
+            }
+        }
+        if let json = try? store.setting("keeperChoices"), let data = json.data(using: .utf8) {
+            keeperChoices = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+        }
+        if let json = try? store.setting("selectedGroups"), let data = json.data(using: .utf8) {
+            selectedGroups = Set((try? JSONDecoder().decode([String].self, from: data)) ?? [])
+        }
+        if let saved = try? store.setting("aggressiveness"), let value = Double(saved) { aggressiveness = value }
+        if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { accessGap = .limitedPhotos }
         log.notice("open: loaded \(self.decisions.count) decisions in \(started.duration(to: .now))")
         library.onChange = { [weak self] change in self?.libraryChanged(change) }
         reload(restoreFrom: (try? store.setting("cursor.\(source.key)")) ?? nil)
@@ -196,10 +219,7 @@ final class CullingSession: ObservableObject {
             self.groupLocalIDs = result.localIDs
             self.similarity = .ready(groups: result.groups.count)
             if let r = self.recommender {
-                self.recommender = await Task.detached(priority: .userInitiated) {
-                    Recommender(scores: r.scores, screenshots: r.screenshots, model: r.model,
-                                groups: result.groups, files: r.files)
-                }.value
+                self.recommender = await Task.detached(priority: .userInitiated) { r.with(groups: result.groups) }.value
             }
             if self.source.isSuggestion { self.reload() }
             self.refreshCounts()
@@ -234,7 +254,13 @@ final class CullingSession: ObservableObject {
     }
 
     /// The photo you picked to keep in each group, by group id, where it differs from the suggestion.
-    @Published private(set) var keeperChoices: [String: String] = [:]
+    /// Saved with the library, so picks survive quitting; kept after a merge, so undo brings them back.
+    @Published private(set) var keeperChoices: [String: String] = [:] {
+        didSet {
+            guard let data = try? JSONEncoder().encode(keeperChoices) else { return }
+            try? store.setSetting("keeperChoices", to: String(decoding: data, as: UTF8.self))
+        }
+    }
 
     /// The group as it will be merged: keeping your pick, if you made one.
     func chosen(_ group: LookAlikeGroup) -> LookAlikeGroup {
@@ -261,15 +287,42 @@ final class CullingSession: ObservableObject {
     // MARK: Merging look-alikes
 
     /// Groups ticked in Duplicates or Similar Shots, by group id.
-    @Published var selectedGroups: Set<String> = []
+    /// Saved with the library, so ticks survive switching lists and quitting. Group ids name their
+    /// kind, so Duplicates and Similar Shots keep separate ticks.
+    @Published var selectedGroups: Set<String> = [] {
+        didSet {
+            guard let data = try? JSONEncoder().encode(selectedGroups.sorted()) else { return }
+            try? store.setSetting("selectedGroups", to: String(decoding: data, as: UTF8.self))
+        }
+    }
     @Published private(set) var merging = false
 
     func toggleSelection(_ group: LookAlikeGroup) {
         if selectedGroups.contains(group.id) { selectedGroups.remove(group.id) } else { selectedGroups.insert(group.id) }
     }
 
-    func selectAllGroups() { selectedGroups = Set(sectionGroups.map(\.id)) }
-    func deselectAllGroups() { selectedGroups = [] }
+    /// Every group in this list (the other list's ticks stay as they are).
+    func selectAllGroups() { selectedGroups.formUnion(sectionGroups.map(\.id)) }
+    func deselectAllGroups() { selectedGroups.subtract(sectionGroups.map(\.id)) }
+
+    /// Which group the cursor is in, in a Duplicates or Similar Shots list.
+    private var cursorSection: Int? {
+        sections?.firstIndex { $0.contains(cursor) }
+    }
+
+    /// G in a group list: tick or untick the group the cursor is in.
+    func toggleSelectionAtCursor() {
+        guard let n = cursorSection, sectionGroups.indices.contains(n) else { return }
+        toggleSelection(sectionGroups[n])
+    }
+
+    /// ↑ ↓ in a group list: to the first photo (the one kept) of the previous or next group.
+    func moveGroup(by delta: Int) {
+        guard let sections, let n = cursorSection else { return }
+        let target = min(max(n + delta, 0), sections.count - 1)
+        zoomed = false
+        select(index: sections[target].lowerBound)
+    }
 
     /// Merges each group into its keeper (see WinnowKit.Merge), as one undoable step, then takes
     /// the merged groups out of their list.
@@ -309,7 +362,6 @@ final class CullingSession: ObservableObject {
         let photos = after.count - groups.count
         commit(Change(label: groups.count == 1 ? "Merge" : "Merge \(groups.count) Groups", before: before, after: after))
         selectedGroups.subtract(groups.map(\.id))
-        for g in groups { keeperChoices[g.id] = nil }
         show("Merged \(groups.count.formatted()) \(groups.count == 1 ? "group" : "groups"). "
              + "\(photos.formatted()) photos moved to Rejected; delete them from Delete Rejected. ⌘Z undoes.")
         reload()
@@ -320,21 +372,79 @@ final class CullingSession: ObservableObject {
         String(asset.localIdentifier.split(separator: "/").first ?? "")
     }
 
+    func dismissAccessGap() { accessGap = nil }
+
+    // MARK: Date range
+
+    /// The days Date Range shows, first to last inclusive. Starts as the last 30 days.
+    @Published private(set) var dateRange: ClosedRange<Date> = {
+        let today = Date()
+        return Calendar.current.date(byAdding: .day, value: -29, to: today)!...today
+    }()
+
+    func setDateRange(from: Date, to: Date) {
+        let range = min(from, to)...max(from, to)
+        guard range != dateRange else { return }
+        dateRange = range
+        try? store.setSetting("dateRange", to: "\(range.lowerBound.timeIntervalSince1970),\(range.upperBound.timeIntervalSince1970)")
+        if source == .dateRange { reload() }
+        refreshCounts()
+    }
+
+    // MARK: Aggressiveness
+
+    /// How readily photos are suggested as rejects: 0 conservative, 0.5 default, 1 aggressive.
+    @Published private(set) var aggressiveness = 0.5
+    /// While the slider moves: how many photos would be in Suggested Rejects and Best Shots.
+    @Published private(set) var aggressivenessPreview: (rejects: Int, best: Int)?
+    private var previewTask: Task<Void, Never>?
+
+    /// Works out the counts for a slider position, a moment after it stops moving.
+    func previewAggressiveness(_ value: Double) {
+        previewTask?.cancel()
+        guard let base = recommender, base.hasScores else { return }
+        previewTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            let counts = await Task.detached(priority: .userInitiated) { base.with(aggressiveness: value).counts() }.value
+            guard let self, !Task.isCancelled else { return }
+            self.aggressivenessPreview = counts
+        }
+    }
+
+    /// Applies a slider position: suggestions, counts and the open list all follow.
+    func setAggressiveness(_ value: Double) {
+        previewTask?.cancel()
+        aggressiveness = value
+        try? store.setSetting("aggressiveness", to: String(value))
+        guard let base = recommender else { return }
+        Task { [weak self] in
+            let updated = await Task.detached(priority: .userInitiated) { base.with(aggressiveness: value) }.value
+            guard let self, self.aggressiveness == value else { return }
+            self.recommender = updated
+            self.aggressivenessPreview = nil
+            if self.source.isSuggestion { self.reload() }
+            self.refreshCounts()
+        }
+    }
+
     // MARK: Suggestions
 
     /// Reads Apple's scores for every photo (one read-only query, well under a second for
     /// 200,000 photos) and builds the suggestions from them, in the background.
     func loadSuggestions() {
         suggestionsStatus = .loading
-        let url = libraryURL, library = library, groups = groups
+        let url = libraryURL, library = library, groups = groups, aggressiveness = aggressiveness
         Task { [weak self] in
             let started = ContinuousClock.now
             let result = await Task.detached(priority: .utility) { () -> Result<Recommender, Error> in
                 do {
                     let scores = try PhotosDatabase.readAppleScores(inLibrary: url)
                     let files = (try? PhotosDatabase.readFileInfo(inLibrary: url)) ?? [:]
+                    let faces = (try? PhotosDatabase.readFaceInfo(inLibrary: url)) ?? [:]
                     return .success(Recommender(scores: scores, screenshots: library.uuids(in: .screenshots),
-                                                groups: groups, files: files))
+                                                groups: groups, files: files, faces: faces,
+                                                aggressiveness: aggressiveness))
                 } catch {
                     return .failure(error)
                 }
@@ -342,7 +452,7 @@ final class CullingSession: ObservableObject {
             guard let self else { return }
             switch result {
             case .success(let r):
-                log.notice("open: read \(r.scores.count) photos' Apple scores in \(started.duration(to: .now))")
+                log.notice("open: read \(r.scores.count) photos' Apple scores and \(r.faces.count) photos' faces in \(started.duration(to: .now))")
                 self.recommender = r
                 self.files = r.files
                 self.suggestionsStatus = r.hasScores ? .ready : .notAnalysed
@@ -354,6 +464,10 @@ final class CullingSession: ObservableObject {
                 }
             case .failure(let error):
                 self.suggestionsStatus = .unavailable(error.localizedDescription)
+                let database = self.libraryURL.appendingPathComponent("database/Photos.sqlite").path
+                if (error as? PhotosDatabaseError)?.kind == .noAccess || !FileManager.default.isReadableFile(atPath: database) {
+                    self.accessGap = self.accessGap ?? .noDatabase
+                }
                 if self.source.isSuggestion { self.loading = false }
             }
         }
@@ -397,8 +511,7 @@ final class CullingSession: ObservableObject {
                 }
                 let evaluation = RatingEvaluation.evaluate(rated)
                 let model = evaluation.modelWins ? RatingModel.fit(rated) : nil
-                let updated = Recommender(scores: base.scores, screenshots: base.screenshots, model: model,
-                                          groups: groups, files: base.files)
+                let updated = base.with(model: .some(model), groups: groups)
                 let sample = existingSample.isEmpty
                     ? updated.calibrationSample(excluding: Set(ratings.keys)) : existingSample
                 Self.saveLearningReport(evaluation, model: model, libraryName: libraryName)
@@ -491,7 +604,7 @@ final class CullingSession: ObservableObject {
     private func reload(restoreFrom id: String? = nil) {
         let keepID = id ?? current?.localIdentifier
         let started = ContinuousClock.now
-        let result = library.fetch(source, newestFirst: newestFirst)
+        let result = library.fetch(source, newestFirst: newestFirst, range: dateRange)
         log.notice("open: fetched \(result.count) photos for \(self.source.title) in \(started.duration(to: .now))")
         apply(result, keepingID: keepID)
     }
@@ -594,7 +707,6 @@ final class CullingSession: ObservableObject {
             newList.ascending = ordered
             self.sections = sections
             self.sectionGroups = groupIndices.map { listedGroups[$0] }
-            self.selectedGroups.formIntersection(self.sectionGroups.map(\.id))
             self.setList(newList, keeping: keepAsset)
         }
     }
@@ -615,6 +727,7 @@ final class CullingSession: ObservableObject {
         countsTask?.cancel()
         let library = library
         let seen = decisions.values.filter { $0.seenAt != nil }.count
+        let range = dateRange
         let albums = library.albums.map { Source.album(id: $0.localIdentifier, title: $0.localizedTitle ?? "Untitled") }
         let recommender = recommender
         let sampleCount = calibrationSample.count
@@ -640,9 +753,9 @@ final class CullingSession: ObservableObject {
                     out[.duplicates] = unresolvedPhotos[.duplicate] ?? 0
                     out[.similarShots] = unresolvedPhotos[.similar] ?? 0
                 }
-                for s in [Source.favorites, .screenshots, .bursts] + albums {
+                for s in [Source.favorites, .dateRange, .screenshots, .bursts] + albums {
                     if Task.isCancelled { break }
-                    out[s] = library.fetch(s, newestFirst: false).count
+                    out[s] = library.fetch(s, newestFirst: false, range: range).count
                 }
                 return out
             }.value
@@ -916,6 +1029,26 @@ final class CullingSession: ObservableObject {
     }
 
     // MARK: Zoom
+
+    /// Space opened this photo zoomed from the grid, so Space again goes back to the grid.
+    private var zoomedFromGrid = false
+
+    /// Space: zoom in, then out again. From the grid it opens the photo at 100% and the second
+    /// press goes back to the grid, like Quick Look.
+    func spacePressed() {
+        if mode == .grid {
+            mode = .single
+            zoomOnFace = false
+            zoomed = true
+            zoomedFromGrid = true
+        } else if zoomed && zoomedFromGrid {
+            zoomedFromGrid = false
+            mode = .grid
+        } else {
+            zoomedFromGrid = false
+            toggleZoom(onFace: false)
+        }
+    }
 
     func toggleZoom(onFace: Bool) {
         guard mode != .grid else { return }

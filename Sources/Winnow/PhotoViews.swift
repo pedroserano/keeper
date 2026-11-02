@@ -88,7 +88,8 @@ struct GridView: View {
                     proxy.scrollTo(session.cursor, anchor: .center)
                 }
                 .onChange(of: columns) { session.gridColumns = columns }
-                .onChange(of: session.cursor) { proxy.scrollTo(session.cursor) }
+                // Groups: centre the photo, so its group's header is in view and not under the pinned ones.
+                .onChange(of: session.cursor) { proxy.scrollTo(session.cursor, anchor: session.sections == nil ? nil : .center) }
             }
         }
     }

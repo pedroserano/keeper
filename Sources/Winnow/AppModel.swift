@@ -24,6 +24,8 @@ final class AppModel: ObservableObject {
     }
 
     @Published var state: State = .choosing
+    /// The System Photo Library, once the chooser has found it; the Open panel starts in its folder.
+    @Published var systemLibrary: URL?
     private var library: PhotoLibrary?
 
     var session: CullingSession? {
@@ -75,6 +77,17 @@ final class AppModel: ObservableObject {
             state = .ready(CullingSession(library: library, store: store, libraryURL: url))
         } catch {
             state = .problem(url, .other("Couldn't open Winnow's database: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Which of these libraries is the System Photo Library, trying the last one used first. Only
+    /// when Winnow already has Photos access, so the chooser never asks for it.
+    func findSystemLibrary(among urls: [URL]) async {
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+        let ordered = urls.sorted { a, _ in a.path == lastLibraryPath }
+        for url in ordered where (try? await isSystemLibrary(url).get()) == true {
+            systemLibrary = url
+            return
         }
     }
 

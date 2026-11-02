@@ -486,3 +486,54 @@ extension PhotosDatabase {
         return out
     }
 }
+
+/// What Photos' face analysis says about a photo's main faces: the biggest one, and any at least
+/// half its size (people in the background don't count).
+public struct FaceInfo: Sendable, Equatable {
+    /// Some main face has its eyes closed or out of sight (a blink, but also looking down or laughing).
+    public var eyesClosed: Bool
+    /// Photos' face capture quality, 0…1, of the worst main face.
+    public var quality: Double?
+
+    public init(eyesClosed: Bool, quality: Double? = nil) {
+        self.eyesClosed = eyesClosed
+        self.quality = quality
+    }
+}
+
+extension PhotosDatabase {
+    /// Smallest face counted, as a fraction of the photo's width.
+    public static let mainFaceSize = 0.03
+
+    /// Faces for every photo Photos has analysed faces in, keyed by UUID. Empty when the library's
+    /// database has no face table Winnow recognises.
+    public static func readFaceInfo(inLibrary library: URL) throws -> [String: FaceInfo] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains),
+              tables.contains("ZDETECTEDFACE") else { return [:] }
+        let f = Set(try db.rows("PRAGMA table_info(ZDETECTEDFACE)").compactMap { $0[1] })
+        guard f.isSuperset(of: ["ZASSETFORFACE", "ZSIZE", "ZEYESSTATE", "ZQUALITY"]) else { return [:] }
+        // ZEYESSTATE: 0 not analysed, 1 closed, 2 open. ZDETECTIONTYPE 1 is a person (others are pets).
+        let sql = """
+            WITH face AS (
+                SELECT ZASSETFORFACE AS asset, ZSIZE AS size, ZEYESSTATE AS eyes, ZQUALITY AS quality,
+                       MAX(ZSIZE) OVER (PARTITION BY ZASSETFORFACE) AS biggest
+                FROM ZDETECTEDFACE
+                WHERE ZASSETFORFACE IS NOT NULL\(f.contains("ZDETECTIONTYPE") ? " AND ZDETECTIONTYPE = 1" : "")
+            )
+            SELECT a.ZUUID, MAX(face.eyes = 1), MIN(CASE WHEN face.quality >= 0 THEN face.quality END)
+            FROM face JOIN \(q(assetTable)) a ON a.Z_PK = face.asset
+            WHERE face.size >= face.biggest * 0.5 AND face.size >= \(mainFaceSize) AND face.eyes != 0
+            GROUP BY a.ZUUID
+            """
+        var out: [String: FaceInfo] = [:]
+        try db.forEachRow(sql) { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            out[uuid] = FaceInfo(eyesClosed: sqlite3_column_int(stmt, 1) == 1,
+                                 quality: sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 2))
+        }
+        return out
+    }
+}

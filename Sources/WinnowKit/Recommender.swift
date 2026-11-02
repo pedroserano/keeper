@@ -12,6 +12,9 @@
 // how good a photo looks, so a photo Photos ranks highly is never put forward as a reject.
 // The exception is duplicates and similar shots: the best of each group is kept, so the others
 // are suggested even when they're precious.
+//
+// How readily photos are suggested as rejects is one setting, aggressiveness (0…1, 0.5 the
+// default), which moves every reject threshold and how much curation protects together.
 
 import WinnowCore
 
@@ -24,6 +27,8 @@ public enum Reason: String, Sendable, CaseIterable {
     case lowScore = "Low score"
     case duplicate = "Duplicate"
     case similar = "Similar shot"
+    /// Someone's eyes are closed, and another take of the moment has them open.
+    case eyesClosed = "Eyes closed"
 }
 
 /// Where a photo sits in its look-alike group.
@@ -61,18 +66,34 @@ public struct Suggestion: Sendable, Equatable {
 }
 
 public struct Recommender: Sendable {
-    /// First-guess thresholds on Apple's scores. Raw values show in the app (I) so they can be tuned.
-    public enum Threshold {
-        public static let failure = -0.25    // ZFAILURESCORE, 0 = fine, −1 = failed
-        public static let blurriness = 0.3   // ZBLURRINESSSCORE, library average is about 0.88
+    /// Cut-offs on Apple's scores for suggesting a reject. Raw values show in the app (I) so they can
+    /// be tuned. Each moves with aggressiveness: conservative at 0, the defaults at 0.5, aggressive at 1.
+    public struct Thresholds: Sendable, Equatable {
+        public let failure: Double          // ZFAILURESCORE, 0 = fine, −1 = failed
+        public let blurriness: Double       // ZBLURRINESSSCORE, library average is about 0.88
         /// A photo whose subject scores at least this sharp isn't blurry, however soft the rest is.
-        public static let sharpSubject = 0.2 // ZSHARPLYFOCUSEDSUBJECTSCORE, 0…0.88
+        public let sharpSubject = 0.2       // ZSHARPLYFOCUSEDSUBJECTSCORE, 0…0.88
         /// Nor is one whose blur Photos considers deliberate (bokeh, motion pans).
-        public static let tastefulBlur = 0.1 // ZTASTEFULLYBLURREDSCORE, −1…1
-        public static let exposure = 0.3     // ZEXPOSURESCORE, library average is about 0.86
-        public static let noise = -0.5       // ZNOISESCORE, 0 = clean, −1 = noisy
-        /// Photos in the top 30% by curation are protected from reject suggestions.
-        public static let protectPercentile = 0.70
+        public let tastefulBlur = 0.1       // ZTASTEFULLYBLURREDSCORE, −1…1
+        public let exposure: Double         // ZEXPOSURESCORE, library average is about 0.86
+        public let noise: Double            // ZNOISESCORE, 0 = clean, −1 = noisy
+        /// Photos in the bottom this-fraction of the library are a "Low score".
+        public let lowScorePercentile: Double
+        /// Photos above this percentile by curation are protected from reject suggestions.
+        public let protectPercentile: Double
+
+        public init(aggressiveness a: Double = 0.5) {
+            let a = min(max(a, 0), 1)
+            func scale(_ conservative: Double, _ normal: Double, _ aggressive: Double) -> Double {
+                a < 0.5 ? conservative + (normal - conservative) * a * 2 : normal + (aggressive - normal) * (a - 0.5) * 2
+            }
+            failure = scale(-0.4, -0.25, -0.1)
+            blurriness = scale(0.15, 0.3, 0.45)
+            exposure = scale(0.15, 0.3, 0.45)
+            noise = scale(-0.7, -0.5, -0.3)
+            lowScorePercentile = scale(0.03, 0.10, 0.25)
+            protectPercentile = scale(0.55, 0.70, 0.90)
+        }
     }
 
     /// Percentiles of the score that separate 1★|2★|3★|4★|5★.
@@ -80,10 +101,16 @@ public struct Recommender: Sendable {
 
     public let scores: [String: AppleScores]
     public let screenshots: Set<String>
+    /// 0 = suggest rejects only when sure, 1 = suggest freely; 0.5 is the default.
+    public let aggressiveness: Double
+    public let thresholds: Thresholds
+    public let faces: [String: FaceInfo]
     /// Your taste, when there's enough of it; nil means stars rank by curation.
     public let model: RatingModel?
     /// Score cut-offs at `starPercentiles`, over analysed photos only.
     public let cutoffs: [Double]
+    /// Score below which a photo is a "Low score"; nil without scores.
+    let lowScoreCutoff: Double?
     /// Curation at `protectPercentile`; nil when the library has no curation scores.
     public let protectCutoff: Double?
     public let analysedCount: Int
@@ -95,9 +122,14 @@ public struct Recommender: Sendable {
     let similarIndex: [String: Int]
 
     public init(scores: [String: AppleScores], screenshots: Set<String> = [], model: RatingModel? = nil,
-                groups: [SimilarGroup] = [], files: [String: FileInfo] = [:]) {
+                groups: [SimilarGroup] = [], files: [String: FileInfo] = [:], faces: [String: FaceInfo] = [:],
+                aggressiveness: Double = 0.5) {
         self.scores = scores
         self.screenshots = screenshots
+        self.faces = faces
+        self.aggressiveness = aggressiveness
+        let thresholds = Thresholds(aggressiveness: aggressiveness)
+        self.thresholds = thresholds
         self.model = model
         self.groups = groups
         self.files = files
@@ -110,13 +142,14 @@ public struct Recommender: Sendable {
         let basis: [Double] = analysed.compactMap { s in model.map { $0.predict(s) } ?? s.curation ?? s.overall }
         analysedCount = basis.count
         cutoffs = percentiles(basis, Self.starPercentiles)
-        protectCutoff = percentiles(analysed.compactMap(\.curation), [Threshold.protectPercentile]).first
+        lowScoreCutoff = percentiles(basis, [thresholds.lowScorePercentile]).first
+        protectCutoff = percentiles(analysed.compactMap(\.curation), [thresholds.protectPercentile]).first
 
         func score(_ uuid: String) -> Double {
             guard let s = scores[uuid], s.isAnalysed else { return -.infinity }
             return model.map { $0.predict(s) } ?? s.curation ?? s.overall ?? -.infinity
         }
-        lookAlikes = LookAlikes.build(groups: groups, score: score, files: files)
+        lookAlikes = LookAlikes.build(groups: groups, score: score, files: files, faces: faces)
         var duplicates: [String: Int] = [:], similar: [String: Int] = [:]
         for (i, g) in lookAlikes.enumerated() {
             for m in g.members {
@@ -125,6 +158,12 @@ public struct Recommender: Sendable {
         }
         duplicateIndex = duplicates
         similarIndex = similar
+    }
+
+    /// The same suggestions with something changed; scores, screenshots, files and faces carry over.
+    public func with(model: RatingModel?? = nil, groups: [SimilarGroup]? = nil, aggressiveness: Double? = nil) -> Recommender {
+        Recommender(scores: scores, screenshots: screenshots, model: model ?? self.model, groups: groups ?? self.groups,
+                    files: files, faces: faces, aggressiveness: aggressiveness ?? self.aggressiveness)
     }
 
     /// The photo's group of the given kind, if it has one.
@@ -148,7 +187,10 @@ public struct Recommender: Sendable {
     func groupReasons(forUUID uuid: String) -> [Reason] {
         var out: [Reason] = []
         if let g = lookAlike(forUUID: uuid, kind: .duplicate), g.keeper != uuid { out.append(.duplicate) }
-        if let g = lookAlike(forUUID: uuid, kind: .similar), g.keeper != uuid { out.append(.similar) }
+        if let g = lookAlike(forUUID: uuid, kind: .similar), g.keeper != uuid {
+            out.append(.similar)
+            if LookAlikes.blinks(in: g.members, faces: faces).contains(uuid) { out.append(.eyesClosed) }
+        }
         return out
     }
 
@@ -178,17 +220,17 @@ public struct Recommender: Sendable {
 
         var reasons: [Reason] = []
         if isScreenshot { reasons.append(.screenshot) }
-        if let f = s.failure, f <= Threshold.failure { reasons.append(.failed) }
+        if let f = s.failure, f <= thresholds.failure { reasons.append(.failed) }
         // Blurriness measures the whole frame, so a portrait's soft background reads as blurry.
         // Only call it blurry when the subject isn't sharp and the blur doesn't look intentional.
-        if let b = s.blurriness, b <= Threshold.blurriness,
-           (s.sharpSubject ?? 0) < Threshold.sharpSubject,
-           (s.tastefullyBlurred ?? 0) < Threshold.tastefulBlur {
+        if let b = s.blurriness, b <= thresholds.blurriness,
+           (s.sharpSubject ?? 0) < thresholds.sharpSubject,
+           (s.tastefullyBlurred ?? 0) < thresholds.tastefulBlur {
             reasons.append(.blurry)
         }
-        if let e = s.exposure, e <= Threshold.exposure { reasons.append(.exposure) }
-        if let n = s.noise, n <= Threshold.noise { reasons.append(.noisy) }
-        if score < cutoffs[0] { reasons.append(.lowScore) }
+        if let e = s.exposure, e <= thresholds.exposure { reasons.append(.exposure) }
+        if let n = s.noise, n <= thresholds.noise { reasons.append(.noisy) }
+        if let low = lowScoreCutoff, score < low { reasons.append(.lowScore) }
         reasons += groupReasons
 
         // Screenshots are never protected: they're rarely what anyone means by a keepsake.

@@ -20,7 +20,8 @@ then pick a source in the sidebar and cull from the keyboard. Press **?** for ev
 | H | Hide | Hides it |
 | ← → ↑ ↓ | Move (decisions move on to the next photo automatically) | |
 | Return, Esc | Grid ↔ single photo | |
-| Space, Z | 100% zoom; Z centres on the main face | |
+| Space, Z | 100% zoom, and again to zoom back out (from the grid, Space opens the photo zoomed and the next Space goes back); Z centres on the main face | |
+| G | In Duplicates or Similar Shots: tick or untick the group | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
@@ -29,9 +30,23 @@ then pick a source in the sidebar and cull from the keyboard. Press **?** for ev
 (near-identical copies) and **Similar Shots** (takes of the same moment). Every photo in a group looks
 like every other one, and all were taken within a minute of each other. The suggested keeper leans
 towards the bigger file: for duplicates it's the largest copy (most pixels, then biggest file); for
-similar shots, file size counts twice as much as how good the photo looks. To keep a different photo,
-click **Keep** under it (or select it and press K). Groups are listed one section at a time with each
-photo's time, dimensions and file size; press C to compare a group.
+similar shots, file size counts twice as much as how good the photo looks, faces count as much as looks
+(Photos' own face quality), and a take where someone's eyes are closed is never suggested while another
+take has them open; it gets an "Eyes closed" label instead. To keep a different photo,
+click **Keep** under it (or select it and press K); your picks are saved with the library. Groups are listed one section at a time with each
+photo's time, dimensions and file size; ↑ ↓ move a group at a time, G ticks or unticks the
+group (ticks are saved), and C compares it.
+
+**Reject suggestions** can be made more conservative or more aggressive with the slider under
+Suggestions in the sidebar. While you drag, it previews how many photos would land in Suggested Rejects
+and Best Shots. It moves every reject threshold and how much of the library Photos' curation protects;
+stars don't change.
+
+**Date Range** in the sidebar shows only the photos taken between two days (or a quick pick like Last
+Year), for culling one trip or month at a time.
+
+If macOS won't let Winnow read the library's database (it needs Full Disk Access for Apple's scores,
+file sizes and faces), a banner says what's missing and opens the right System Settings pane.
 
 **Merge** a group (or Select All, then Merge Selected) and the kept photo gets the group's best rating,
 its Favorite and every album the others were in, like Photos' own duplicate merge. The others move to

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import WinnowKit
 import WinnowCore
@@ -589,5 +590,99 @@ import WinnowCore
         let store = try DecisionStore()
         try store.save([Decision(assetID: "k", addedAlbums: ["album-1"])])
         #expect(try store.all()["k"]?.addedAlbums == ["album-1"])
+    }
+}
+
+@Suite struct AggressivenessTests {
+    func library() -> [String: AppleScores] {
+        var out: [String: AppleScores] = [:]
+        for i in 0..<200 {
+            let x = Double(i) / 200
+            out["p\(i)"] = AppleScores(overall: 0.5, curation: x, failure: -0.5 * (1 - x), noise: -0.8 * (1 - x),
+                                       blurriness: x, exposure: x)
+        }
+        return out
+    }
+
+    @Test func defaultIsWhatItWas() {
+        let t = Recommender.Thresholds()
+        #expect(t.failure == -0.25 && t.blurriness == 0.3 && t.exposure == 0.3 && t.noise == -0.5)
+        #expect(t.lowScorePercentile == 0.10 && t.protectPercentile == 0.70)
+    }
+
+    @Test func moreAggressiveSuggestsMoreRejects() {
+        let r = Recommender(scores: library())
+        let counts = [0.0, 0.25, 0.5, 0.75, 1.0].map { r.with(aggressiveness: $0).counts().rejects }
+        #expect(counts == counts.sorted())
+        #expect(counts.first! < counts.last!)
+    }
+
+    @Test func starsDontMove() {
+        let r = Recommender(scores: library())
+        for id in ["p3", "p77", "p150", "p199"] {
+            #expect(r.with(aggressiveness: 0).suggestion(forUUID: id)?.stars == r.with(aggressiveness: 1).suggestion(forUUID: id)?.stars)
+        }
+    }
+}
+
+@Suite struct FaceTests {
+    func score(_ id: String) -> Double { Double(id.dropFirst()) ?? 0 }
+    let big = FileInfo(width: 4032, height: 3024, bytes: 3_000_000)
+    let small = FileInfo(width: 1024, height: 768, bytes: 200_000)
+
+    @Test func blinkIsNotSuggestedWhenAnotherTakeHasEyesOpen() {
+        // p90 is the biggest and best-looking, but someone blinked.
+        let faces = ["p90": FaceInfo(eyesClosed: true, quality: 0.4), "p50": FaceInfo(eyesClosed: false, quality: 0.4)]
+        let g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p50"], kind: .similar)], score: score,
+                                 files: ["p90": big, "p50": small], faces: faces)[0]
+        #expect(g.keeper == "p50")
+    }
+
+    @Test func everyoneBlinkingChangesNothing() {
+        let faces = ["p90": FaceInfo(eyesClosed: true), "p50": FaceInfo(eyesClosed: true)]
+        #expect(LookAlikes.blinks(in: ["p90", "p50"], faces: faces).isEmpty)
+        let g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p50"], kind: .similar)], score: score,
+                                 files: ["p90": big, "p50": small], faces: faces)[0]
+        #expect(g.keeper == "p90")
+    }
+
+    @Test func eyesClosedIsAReasonOnlyNextToAnOpenTake() {
+        var scores: [String: AppleScores] = [:]
+        for i in 0..<100 {
+            scores["p\(i)"] = AppleScores(overall: 0.5, curation: Double(i) / 100, failure: 0, noise: -0.05,
+                                          blurriness: 0.9, exposure: 0.9)
+        }
+        let faces = ["p60": FaceInfo(eyesClosed: true), "p40": FaceInfo(eyesClosed: false), "p20": FaceInfo(eyesClosed: true)]
+        let r = Recommender(scores: scores, groups: [SimilarGroup(members: ["p60", "p40"], kind: .similar)], faces: faces)
+        #expect(r.suggestion(forUUID: "p60")!.reasons.contains(.eyesClosed))
+        #expect(r.suggestion(forUUID: "p40")!.group?.isBest == true)
+        #expect(!(r.suggestion(forUUID: "p20")?.reasons.contains(.eyesClosed) ?? false)) // on its own: maybe deliberate
+    }
+
+    @Test func readsMainFacesFromPhotosDatabase() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let library = dir.appendingPathComponent("Test.photoslibrary")
+        try FileManager.default.createDirectory(at: library.appendingPathComponent("database"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(library.appendingPathComponent("database/Photos.sqlite").path, &db) == SQLITE_OK)
+        let sql = """
+            CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZUUID TEXT);
+            CREATE TABLE ZDETECTEDFACE (Z_PK INTEGER PRIMARY KEY, ZASSETFORFACE INTEGER, ZSIZE REAL, ZEYESSTATE INTEGER,
+                                        ZQUALITY REAL, ZDETECTIONTYPE INTEGER);
+            INSERT INTO ZASSET VALUES (1, 'blink'), (2, 'open'), (3, 'background-blink'), (4, 'pet');
+            INSERT INTO ZDETECTEDFACE (ZASSETFORFACE, ZSIZE, ZEYESSTATE, ZQUALITY, ZDETECTIONTYPE) VALUES
+                (1, 0.20, 2, 0.6, 1), (1, 0.15, 1, 0.3, 1),   -- two main faces, one blinking
+                (2, 0.20, 2, 0.5, 1),
+                (3, 0.30, 2, 0.7, 1), (3, 0.05, 1, 0.2, 1),   -- the blinker is small, in the background
+                (4, 0.30, 1, 0.5, 3);                          -- not a person
+            """
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        let faces = try PhotosDatabase.readFaceInfo(inLibrary: library)
+        #expect(faces["blink"] == FaceInfo(eyesClosed: true, quality: 0.3))
+        #expect(faces["open"] == FaceInfo(eyesClosed: false, quality: 0.5))
+        #expect(faces["background-blink"] == FaceInfo(eyesClosed: false, quality: 0.7))
+        #expect(faces["pet"] == nil)
     }
 }

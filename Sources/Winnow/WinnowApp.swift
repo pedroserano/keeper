@@ -62,9 +62,10 @@ struct RootView: View {
 // MARK: - Choosing a library
 
 enum LibraryFinder {
-    /// Photos libraries Spotlight knows about, plus anything in ~/Pictures it may have missed.
-    /// Skips temporary, trashed and app-container copies.
-    static func find() async -> [URL] {
+    /// Photos libraries Spotlight knows about, plus anything in ~/Pictures it may have missed and
+    /// the last one used (Spotlight often skips external drives). Skips temporary, trashed and
+    /// app-container copies.
+    static func find(lastUsed: String?) async -> [URL] {
         await Task.detached {
             var urls: [URL] = []
             let mdfind = Process()
@@ -82,6 +83,7 @@ enum LibraryFinder {
             if let items = try? FileManager.default.contentsOfDirectory(at: pictures, includingPropertiesForKeys: nil) {
                 urls += items.filter { $0.pathExtension == "photoslibrary" }
             }
+            if let lastUsed, FileManager.default.fileExists(atPath: lastUsed) { urls.append(URL(fileURLWithPath: lastUsed)) }
             let hidden = ["/private/var/folders/", "/var/folders/", "/.Trash/", "/Library/Containers/"]
             var seen = Set<String>()
             return urls
@@ -91,14 +93,16 @@ enum LibraryFinder {
         }.value
     }
 
-    static func chooseOther() -> URL? {
+    /// Starts in the folder holding the System Photo Library (or the last library used), if known.
+    static func chooseOther(near library: URL?) -> URL? {
         let panel = NSOpenPanel()
         panel.title = "Choose a Photos Library"
         panel.prompt = "Choose"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [UTType("com.apple.photos.library")].compactMap { $0 }
-        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures")
+        panel.directoryURL = library?.deletingLastPathComponent()
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures")
         return panel.runModal() == .OK ? panel.url : nil
     }
 }
@@ -123,7 +127,9 @@ struct LibraryChooserView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack {
                             Text(url.deletingPathExtension().lastPathComponent)
-                            if url.path == model.lastLibraryPath {
+                            if url == model.systemLibrary {
+                                Text("System Photo Library").font(.caption).foregroundStyle(.secondary)
+                            } else if url.path == model.lastLibraryPath {
                                 Text("Last used").font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -152,7 +158,7 @@ struct LibraryChooserView: View {
             }
             HStack {
                 Button("Other Library…") {
-                    if let url = LibraryFinder.chooseOther() { Task { await model.open(url) } }
+                    if let url = LibraryFinder.chooseOther(near: model.systemLibrary ?? model.lastLibraryPath.map { URL(fileURLWithPath: $0) }) { Task { await model.open(url) } }
                 }
                 Spacer()
                 Button("Choose Library") {
@@ -164,9 +170,14 @@ struct LibraryChooserView: View {
         }
         .padding(20)
         .task {
-            libraries = await LibraryFinder.find()
-            searching = false
+            libraries = await LibraryFinder.find(lastUsed: model.lastLibraryPath)
             selection = libraries.first { $0.path == model.lastLibraryPath } ?? libraries.first
+            await model.findSystemLibrary(among: libraries)
+            searching = false
+            if let system = model.systemLibrary {
+                libraries = [system] + libraries.filter { $0 != system }
+                selection = system
+            }
         }
     }
 }

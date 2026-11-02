@@ -17,6 +17,12 @@ struct ContentView: View {
         } detail: {
             detail
                 .overlay(alignment: .top) { toast }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    VStack(spacing: 0) {
+                        if let gap = session.accessGap { AccessBanner(gap: gap, session: session) }
+                        if session.source == .dateRange { DateRangeBar(session: session) }
+                    }
+                }
                 .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar(session: session) }
                 .toolbar { toolbar }
                 .navigationTitle(session.source.title)
@@ -134,13 +140,15 @@ struct ContentView: View {
         switch event.keyCode {
         case 123: s.move(by: -1)                                           // ←
         case 124: s.move(by: 1)                                            // →
-        case 126: s.move(by: s.mode == .grid ? -s.gridColumns : -1)        // ↑
-        case 125: s.move(by: s.mode == .grid ? s.gridColumns : 1)          // ↓
+        case 126, 125:                                                     // ↑, ↓
+            let step = event.keyCode == 126 ? -1 : 1
+            if s.mode == .grid && s.sections != nil { s.moveGroup(by: step) }   // a group at a time
+            else { s.move(by: s.mode == .grid ? step * s.gridColumns : step) }
         case 36, 76: s.mode = s.mode == .grid ? .single : .grid            // Return, Enter
         case 53:                                                           // Esc
             if s.zoomed { s.zoomed = false } else if s.mode != .grid { s.mode = .grid } else { return false }
         case 49:                                                           // Space
-            if s.mode == .grid { s.mode = .single } else { s.toggleZoom(onFace: false) }
+            s.spacePressed()
         case 51, 117: s.perform(.reject)                                   // ⌫, ⌦
         default:
             // Shift is kept, so "?" arrives as "?".
@@ -153,6 +161,7 @@ struct ContentView: View {
             case "z": s.toggleZoom(onFace: true)
             case "c": s.mode = s.mode == .compare ? .single : .compare
             case "k": s.keepFocusedRejectRest()
+            case "g": s.toggleSelectionAtCursor()
             case "a": s.acceptSuggestedRating()
             case "i": s.showingScores.toggle()
             case "?", "/": showingShortcuts = true
@@ -174,6 +183,7 @@ struct Sidebar: View {
                 row(.allPhotos)
                 row(.unreviewed)
                 row(.favorites)
+                row(.dateRange)
             }
             Section {
                 row(.suggestedRejects)
@@ -187,6 +197,7 @@ struct Sidebar: View {
                         Text(note).font(.caption).foregroundStyle(.secondary)
                     }
                     if session.suggestionsStatus == .ready {
+                        AggressivenessSlider(session: session)
                         Button(session.learning == .learning ? "Learning…" : "Learn from My Ratings") {
                             session.learnFromRatings()
                         }
@@ -396,3 +407,142 @@ struct RatingLabel: View {
     let minutes = Int((Double(left.components.seconds) / 60).rounded(.up))
     return minutes <= 1 ? ", about a minute left" : ", about \(minutes) minutes left"
 }
+
+/// FR-15: how readily photos are suggested as rejects, with a preview of what lands in each queue.
+struct AggressivenessSlider: View {
+    @ObservedObject var session: CullingSession
+    @State private var value: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Reject suggestions: \(label(value ?? session.aggressiveness))").font(.caption)
+            Slider(value: Binding(get: { value ?? session.aggressiveness },
+                                  set: { value = $0; session.previewAggressiveness($0) }),
+                   in: 0...1, step: 0.05) { editing in
+                if !editing, let value { session.setAggressiveness(value) }
+            }
+            .controlSize(.mini)
+            .help("Conservative suggests a reject only when a photo is clearly bad and leaves more photos "
+                  + "protected; aggressive suggests more. Stars don't change.")
+            HStack {
+                Text("Conservative")
+                Spacer()
+                Text("Aggressive")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            if let p = session.aggressivenessPreview {
+                Text("\(p.rejects.formatted()) suggested rejects · \(p.best.formatted()) best shots")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: session.aggressiveness) { value = nil }
+    }
+
+    private func label(_ v: Double) -> String {
+        switch v {
+        case ..<0.3: "conservative"
+        case ..<0.45: "cautious"
+        case ...0.55: "balanced"
+        case ...0.7: "keen"
+        default: "aggressive"
+        }
+    }
+}
+
+/// Explains what Winnow can't see and how to let it.
+struct AccessBanner: View {
+    let gap: CullingSession.AccessGap
+    @ObservedObject var session: CullingSession
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.semibold)
+                Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Open System Settings") { NSWorkspace.shared.open(settingsURL) }
+            Button("Not Now") { session.dismissAccessGap() }
+        }
+        .font(.callout)
+        .padding(10)
+        .background(.yellow.opacity(0.12))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var title: String {
+        switch gap {
+        case .limitedPhotos: "Winnow can see only some of your photos"
+        case .noDatabase: "Winnow can't read this library's database"
+        }
+    }
+
+    private var detail: String {
+        switch gap {
+        case .limitedPhotos:
+            "You gave Winnow access to selected photos only, so counts, suggestions and look-alikes cover just "
+                + "those. Allow full access in Privacy & Security → Photos, then reopen the library."
+        case .noDatabase:
+            "You can still cull by hand, but suggestions, file sizes, faces and look-alike keepers need Apple's "
+                + "scores from it. Turn on Winnow in Privacy & Security → Full Disk Access, then reopen the library."
+        }
+    }
+
+    private var settingsURL: URL {
+        switch gap {
+        case .limitedPhotos: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!
+        case .noDatabase: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
+        }
+    }
+}
+
+/// Above Date Range: which days to show.
+struct DateRangeBar: View {
+    @ObservedObject var session: CullingSession
+
+    var body: some View {
+        HStack(spacing: 10) {
+            DatePicker("From", selection: Binding(get: { session.dateRange.lowerBound },
+                                                  set: { session.setDateRange(from: $0, to: session.dateRange.upperBound) }),
+                       displayedComponents: .date)
+            DatePicker("To", selection: Binding(get: { session.dateRange.upperBound },
+                                                set: { session.setDateRange(from: session.dateRange.lowerBound, to: $0) }),
+                       displayedComponents: .date)
+            Menu("Quick Pick") {
+                Button("Last 30 Days") { last(days: 30) }
+                Button("Last 12 Months") { last(days: 365) }
+                Divider()
+                Button("This Year") { year(offset: 0) }
+                Button("Last Year") { year(offset: -1) }
+            }
+            .fixedSize()
+            Spacer()
+            if let n = session.counts[.dateRange] {
+                Text("\(n.formatted()) photos").foregroundStyle(.secondary).monospacedDigit()
+            }
+        }
+        .datePickerStyle(.field)
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func last(days: Int) {
+        let today = Date()
+        session.setDateRange(from: Calendar.current.date(byAdding: .day, value: 1 - days, to: today)!, to: today)
+    }
+
+    private func year(offset: Int) {
+        let calendar = Calendar.current
+        let year = calendar.component(.year, from: Date()) + offset
+        let first = calendar.date(from: DateComponents(year: year, month: 1, day: 1))!
+        let last = calendar.date(from: DateComponents(year: year, month: 12, day: 31))!
+        session.setDateRange(from: first, to: last)
+    }
+}
+
