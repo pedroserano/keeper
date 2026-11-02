@@ -1,8 +1,10 @@
 // Read-only access to an Apple Photos library's own database (Photos.sqlite).
 //
-// The live library is never opened: Photos.sqlite (+ -wal/-shm) is copied to a temporary
-// folder, the copy is opened read-only, and the copy is deleted when this object goes away.
-// Nothing here ever writes to a library; all changes go through PhotoKit.
+// Two ways in, neither of which ever writes to a library (all changes go through PhotoKit):
+// - `PhotosDatabase` copies Photos.sqlite (+ -wal/-shm) to a temporary folder and reads the copy.
+//   Thorough but slow for big libraries; the spike uses it to survey every score column.
+// - `PhotosDatabase.countPhotos(withUUIDs:inLibrary:)` runs one query on the live file opened
+//   read-only (`mode=ro`). Fast at any library size; used when opening a library.
 
 import Foundation
 import SQLite3
@@ -32,14 +34,30 @@ final class Database {
         handle = h
     }
 
+    /// Opens a database another process is using, read-only. In WAL mode this never blocks Photos.
+    init(liveReadOnly path: String) throws {
+        let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        var h: OpaquePointer?
+        guard sqlite3_open_v2("file:\(encoded)?mode=ro", &h, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK,
+              let h else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Cannot open \(path)")
+        }
+        sqlite3_busy_timeout(h, 2000)
+        handle = h
+    }
+
     deinit { sqlite3_close(handle) }
 
-    func rows(_ sql: String) throws -> [[String?]] {
+    func rows(_ sql: String, _ arguments: [String] = []) throws -> [[String?]] {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw PhotosDatabaseError(kind: .sql, message: "SQL error: \(String(cString: sqlite3_errmsg(handle)))\n\(sql)")
         }
         defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (i, value) in arguments.enumerated() {
+            sqlite3_bind_text(stmt, Int32(i + 1), value, -1, transient)
+        }
         var out: [[String?]] = []
         let n = sqlite3_column_count(stmt)
         while sqlite3_step(stmt) == SQLITE_ROW {
@@ -50,7 +68,9 @@ final class Database {
         return out
     }
 
-    func column(_ sql: String) throws -> [String] { try rows(sql).compactMap { $0.first ?? nil } }
+    func column(_ sql: String, _ arguments: [String] = []) throws -> [String] {
+        try rows(sql, arguments).compactMap { $0.first ?? nil }
+    }
 }
 
 func q(_ identifier: String) -> String { "\"\(identifier)\"" }
@@ -130,6 +150,31 @@ public final class PhotosDatabase {
     deinit {
         db = nil // close before deleting the files under it
         try? FileManager.default.removeItem(at: snapshotDir)
+    }
+
+    /// How many of these asset UUIDs are in the library's own database. One query on the live
+    /// file opened read-only, so it takes milliseconds whatever the library's size.
+    public static func countPhotos(withUUIDs uuids: [String], inLibrary library: URL) throws -> Int {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.fileExists(atPath: library.path) else {
+            throw PhotosDatabaseError(kind: .notFound, message: "No Photos library at \(library.path).")
+        }
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: """
+                Winnow can't read this library's database. Give it Full Disk Access in \
+                System Settings › Privacy & Security › Full Disk Access, then try again.
+                """)
+        }
+        guard !uuids.isEmpty else { return 0 }
+        let db = try Database(liveReadOnly: path)
+        let tables = try db.column("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ZASSET', 'ZGENERICASSET')")
+        guard let table = tables.first else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema,
+                                      message: "This library's database has no asset table Winnow recognises.")
+        }
+        let placeholders = Array(repeating: "?", count: uuids.count).joined(separator: ",")
+        let count = try db.column("SELECT COUNT(*) FROM \(q(table)) WHERE ZUUID IN (\(placeholders))", uuids).first
+        return Int(count ?? "0") ?? 0
     }
 
     private var database: Database { db! }

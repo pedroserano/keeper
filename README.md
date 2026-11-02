@@ -3,12 +3,38 @@
 A personal, keyboard-first photo culling app for Apple Photos on Apple Silicon Macs.
 The spec lives in the Winnow PRD v2 doc.
 
-This repository is at **Phase 0**: a spike app that settles the open risks before the Alpha. It answers which of
-Photos' own score columns exist on this macOS, how fast PhotoKit loads and Vision scores photos, how closely
-Vision agrees with Photos, and how a batch delete feels. Its interface is deliberately rough: the real one is
-built in the Alpha.
+## Winnow (Alpha)
 
-Code: `Sources/WinnowSpike` (the app) and `Sources/WinnowCore` (reading a library's database).
+Open **build/Winnow.app**. Choose a library (it must be the System Photo Library; Winnow tells you if it isn't),
+then pick a source in the sidebar and cull from the keyboard. Press **?** for every shortcut.
+
+| Key | Does | In Photos |
+| --- | --- | --- |
+| P | Pick | Marks it a Favorite |
+| X or ⌫ | Reject | Adds it to the "Winnow – Rejected" album |
+| U | Clear pick or reject | Puts Favorite back the way it was |
+| 1–5, 0 | Star rating, clear rating | Nothing (Photos has no ratings; Winnow keeps them) |
+| H | Hide | Hides it |
+| ← → ↑ ↓ | Move (decisions move on to the next photo automatically) | |
+| Return, Esc | Grid ↔ single photo | |
+| Space, Z | 100% zoom; Z centres on the main face | |
+| C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
+| ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
+
+Rejected photos are only deleted when you click **Delete Rejected** in the toolbar: one batch, one macOS
+confirmation, and they go to Recently Deleted for 30 days.
+
+Winnow keeps its own data (stars, picks, rejects, where you were) in
+`~/Library/Application Support/Winnow/`, one database per library.
+
+Code: `Sources/Winnow` (the app), `Sources/WinnowKit` (decisions, their database, undo; unit-tested in
+`Tests/WinnowKitTests`), `Sources/WinnowCore` (reading a library's own database).
+
+## Phase 0 spike
+
+The spike app answers which of Photos' own score columns exist on this macOS, how fast PhotoKit loads and
+Vision scores photos, how closely Vision agrees with Photos, and how a batch delete feels. Its interface is
+deliberately rough. Code: `Sources/WinnowSpike`.
 
 ## Using the spike app
 
@@ -46,13 +72,9 @@ is signed ad hoc, and macOS may ask for those permissions again after each rebui
 
 ## For development
 
-The app is built from the Swift package:
+Build either app with `./scripts/make-winnow-app.sh` or `./scripts/make-spike-app.sh`, and run the unit tests with `swift test`.
 
-```bash
-./scripts/make-spike-app.sh
-```
-
-`winnow-scores` is a command-line front end to the same code, used for automated tests:
+`winnow-scores` is a command-line front end to WinnowCore, used for automated tests:
 
 ```bash
 swift run winnow-scores schema --library "PATH/TO/Library.photoslibrary"

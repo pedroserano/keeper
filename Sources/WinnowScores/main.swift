@@ -36,6 +36,13 @@ do {
             print("  \(s.id.padding(toLength: 58, withPad: " ", startingAt: 0)) n=\(s.nonNull) min=\(fmt(s.min)) max=\(fmt(s.max)) mean=\(fmt(s.mean))\(join)")
         }
 
+    case "count" where library != nil:
+        // Same live read-only lookup Winnow uses to check a library when opening it.
+        let uuids = Array(args.drop { $0 != "--uuids" }.dropFirst())
+        let started = ContinuousClock.now
+        let found = try PhotosDatabase.countPhotos(withUUIDs: uuids, inLibrary: library!)
+        print("\(found) of \(uuids.count) found in \(started.duration(to: .now))")
+
     case "export" where library != nil:
         let db = try PhotosDatabase(library: library!)
         let export = try db.exportRows()
