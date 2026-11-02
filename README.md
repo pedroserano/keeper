@@ -8,7 +8,8 @@ The spec lives in the Winnow PRD v2 doc.
 ## Winnow (Alpha)
 
 Open **build/Winnow.app**. Choose a library (it must be the System Photo Library; Winnow tells you if it isn't),
-then pick a source in the sidebar and cull from the keyboard. Press **?** for every shortcut.
+then pick a source in the sidebar and cull from the keyboard. Press **?** for every shortcut. Right-click any photo
+for **Show in Photos**, which opens Photos with that photo selected.
 
 | Key | Does | In Photos |
 | --- | --- | --- |

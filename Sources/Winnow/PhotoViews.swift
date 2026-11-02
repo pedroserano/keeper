@@ -104,6 +104,7 @@ extension GridView {
                         isKeeper: details && session.isKeeper(asset),
                         keep: details ? { session.keepInGroup(asset) } : nil)
             .id(i)
+            .photoContextMenu(asset, session: session)
             .onTapGesture(count: 2) {
                 session.select(index: i)
                 session.mode = .single
@@ -303,6 +304,8 @@ struct SingleView: View {
                     }
                 }
             }
+            .contentShape(Rectangle())
+            .modifier(CurrentPhotoMenu(session: session))
             .overlay(alignment: .topTrailing) {
                 if session.showingScores, let asset = session.current {
                     ScoresPanel(scores: session.recommender?.scores[String(asset.localIdentifier.split(separator: "/").first ?? "")])
@@ -542,6 +545,17 @@ struct CompareView: View {
                                                            lineWidth: focused ? 3 : 1)
         }
         .contentShape(Rectangle())
+        .photoContextMenu(asset, session: session)
         .onTapGesture { session.focusCompare(index) }
     }
 }
+
+/// Single view's right-click menu, for whichever photo is showing.
+private struct CurrentPhotoMenu: ViewModifier {
+    @ObservedObject var session: CullingSession
+
+    func body(content: Content) -> some View {
+        if let asset = session.current { content.photoContextMenu(asset, session: session) } else { content }
+    }
+}
+
