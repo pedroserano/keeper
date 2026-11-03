@@ -21,7 +21,7 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | H | Hide | Hides it |
 | ← → ↑ ↓ | Move (decisions move on to the next photo automatically) | |
 | Return, Esc | Grid ↔ single photo | |
-| Space, Z | 100% zoom, and again to zoom back out (from the grid, Space opens the photo zoomed and the next Space goes back); Z centres on the main face | |
+| Space, Z | In the grid, Space shows the photo filling the window and Space again goes back; in a photo, 100% zoom on and off. Z zooms on the main face | |
 | G | In Duplicates or Similar Shots: tick or untick the group | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |

@@ -66,7 +66,7 @@ struct ShortcutsSheet: View {
                   ("↑ ↓", "Row up / down in the grid; in Duplicates or Similar Shots, previous / next group"),
                   ("Return", "Switch between grid and single photo"),
                   ("Esc", "Back out of zoom, then back to the grid")]),
-        ("Look closer", [("Space", "Zoom to 100%; Space again zooms back out (from the grid: back to the grid)"),
+        ("Look closer", [("Space", "In the grid: show the photo filling the window, Space again to go back. In a photo: 100% zoom on and off"),
                          ("Z", "100% zoom on the main face"),
                          ("C", "Compare with its look-alikes, burst frames or nearby shots"),
                          ("G", "In Duplicates or Similar Shots: tick or untick the group"),

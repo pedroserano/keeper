@@ -144,7 +144,7 @@ struct ContentView: View {
             let step = event.keyCode == 126 ? -1 : 1
             if s.mode == .grid && s.sections != nil { s.moveGroup(by: step) }   // a group at a time
             else { s.move(by: s.mode == .grid ? step * s.gridColumns : step) }
-        case 36, 76: s.mode = s.mode == .grid ? .single : .grid            // Return, Enter
+        case 36, 76: s.openWithReturn()                                    // Return, Enter
         case 53:                                                           // Esc
             if s.zoomed { s.zoomed = false } else if s.mode != .grid { s.mode = .grid } else { return false }
         case 49:                                                           // Space

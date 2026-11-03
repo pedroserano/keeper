@@ -857,6 +857,7 @@ final class CullingSession: ObservableObject {
 
     private func modeChanged(from old: Mode) {
         zoomed = false
+        openedWithSpace = false // spacePressed sets it again after opening
         if mode == .compare { rebuildCompareGroup() }
         if mode != .grid { markSeen(current) }
     }
@@ -1058,24 +1059,29 @@ final class CullingSession: ObservableObject {
 
     // MARK: Zoom
 
-    /// Space opened this photo zoomed from the grid, so Space again goes back to the grid.
-    private var zoomedFromGrid = false
+    /// Space opened this photo from the grid, so Space again goes back to the grid.
+    private var openedWithSpace = false
 
-    /// Space: zoom in, then out again. From the grid it opens the photo at 100% and the second
-    /// press goes back to the grid, like Quick Look.
+    /// Space, like Quick Look: from the grid it shows the photo filling the window, and the next
+    /// press goes back to the grid. In a photo opened with Return, it switches 100% zoom on and off.
     func spacePressed() {
         if mode == .grid {
             mode = .single
-            zoomOnFace = false
-            zoomed = true
-            zoomedFromGrid = true
-        } else if zoomed && zoomedFromGrid {
-            zoomedFromGrid = false
+            openedWithSpace = true
+        } else if zoomed {
+            zoomed = false
+        } else if openedWithSpace && mode == .single {
+            openedWithSpace = false
             mode = .grid
         } else {
-            zoomedFromGrid = false
             toggleZoom(onFace: false)
         }
+    }
+
+    /// Return: between the grid and the photo; a photo opened this way zooms with Space.
+    func openWithReturn() {
+        openedWithSpace = false
+        mode = mode == .grid ? .single : .grid
     }
 
     func toggleZoom(onFace: Bool) {
