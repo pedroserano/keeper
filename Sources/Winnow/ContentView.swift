@@ -66,7 +66,13 @@ struct ContentView: View {
     }
 
     private var emptyTitle: String {
-        session.filter == .all ? "No photos in \(session.source.title)" : "No \(session.filter.rawValue.lowercased()) photos"
+        switch session.filter {
+        case .all: "No photos in \(session.source.title)"
+        case .notRejected: "Every photo here is rejected"
+        case .unrated: "Every photo here has a rating"
+        case .favorites: "No favorites"
+        case .rejects: "No rejected photos"
+        }
     }
 
     private var emptyDetail: String {

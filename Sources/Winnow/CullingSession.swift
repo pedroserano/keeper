@@ -54,7 +54,7 @@ final class CullingSession: ObservableObject {
     enum Mode: String { case grid, single, compare }
 
     enum Filter: String, CaseIterable, Identifiable, Sendable {
-        case all = "All", unflagged = "Unflagged", favorites = "Favorites", rejects = "Rejects"
+        case all = "All", notRejected = "Not Rejected", unrated = "Unrated", favorites = "Favorites", rejects = "Rejects"
         var id: String { rawValue }
     }
 
@@ -715,7 +715,8 @@ final class CullingSession: ObservableObject {
                     let flag = d?.flag ?? .none
                     switch filter {
                     case .all: break
-                    case .unflagged: if flag != .none { return }
+                    case .notRejected: if flag != .none { return }
+                    case .unrated: if flag != .none || asset.rating.rawValue != 0 { return } // still to rate
                     case .favorites: if !asset.isFavorite { return }
                     case .rejects: if flag != .reject { return }
                     }
