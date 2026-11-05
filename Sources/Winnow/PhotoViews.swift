@@ -1,3 +1,4 @@
+import AppKit
 import Photos
 import SwiftUI
 import Vision
@@ -26,7 +27,9 @@ struct AssetImage: View {
                 Image(systemName: "icloud").font(.title).foregroundStyle(.secondary)
             }
         }
-        .task(id: "\(asset.localIdentifier)|\(Int(pointSize.width))x\(Int(pointSize.height))") {
+        // The modification date too, so an edit (a rotation) loads the new image.
+        .task(id: "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)|"
+                  + "\(Int(pointSize.width))x\(Int(pointSize.height))") {
             let target = CGSize(width: pointSize.width * backingScale, height: pointSize.height * backingScale)
             var gotImage = false
             var inCloud = false
@@ -69,7 +72,9 @@ struct GridView: View {
                                 } header: {
                                     if session.sectionGroups.indices.contains(n) {
                                         GroupHeader(group: session.sectionGroups[n], range: range,
-                                                    number: n + 1, of: sections.count)
+                                                    number: n + 1, of: sections.count,
+                                                    highlighted: session.groupAnchor != nil
+                                                        && session.highlightedSections?.contains(n) == true)
                                     }
                                 }
                             }
@@ -109,7 +114,7 @@ extension GridView {
                 session.select(index: i)
                 session.mode = .single
             }
-            .onTapGesture { session.select(index: i) }
+            .onTapGesture { session.select(index: i, extending: NSEvent.modifierFlags.contains(.shift)) }
     }
 }
 
@@ -120,6 +125,8 @@ struct GroupHeader: View {
     let range: Range<Int>
     let number: Int
     let of: Int
+    /// One of several groups Shift-selected, which G ticks or unticks together.
+    var highlighted = false
 
     var body: some View {
         let dates = range.compactMap { session.list.asset(at: $0).creationDate }
@@ -148,7 +155,19 @@ struct GroupHeader: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
+        .background {
+            ZStack {
+                Rectangle().fill(.bar)
+                if highlighted { Color.accentColor.opacity(0.25) }
+            }
+        }
+        .overlay(alignment: .leading) {
+            if highlighted { Rectangle().fill(Color.accentColor).frame(width: 3) }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            session.select(index: range.lowerBound, extending: NSEvent.modifierFlags.contains(.shift))
+        }
     }
 
     private var kind: String {

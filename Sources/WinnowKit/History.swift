@@ -1,18 +1,24 @@
-// Undo and redo for decisions. Each entry is one key press, which may touch several photos
-// (for example "keep this frame, reject the rest" in compare view).
+// Undo and redo for decisions and rotations. Each entry is one key press, which may touch several
+// photos (for example "keep this frame, reject the rest" in compare view).
 
 public struct Change: Equatable, Sendable {
     public let label: String
     public let before: [Decision]
     public let after: [Decision]
+    /// Photos to rotate (local identifier → degrees clockwise). A rotation is an edit in Photos,
+    /// so undoing one rotates back the other way.
+    public let rotations: [String: Int]
 
-    public init(label: String, before: [Decision], after: [Decision]) {
+    public init(label: String, before: [Decision], after: [Decision], rotations: [String: Int] = [:]) {
         self.label = label
         self.before = before
         self.after = after
+        self.rotations = rotations
     }
 
-    public var reversed: Change { Change(label: label, before: after, after: before) }
+    public var reversed: Change {
+        Change(label: label, before: after, after: before, rotations: rotations.mapValues { -$0 })
+    }
 }
 
 public struct History: Sendable {

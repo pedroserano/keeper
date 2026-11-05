@@ -217,12 +217,28 @@ final class CullingSession: ObservableObject {
             log.notice("similarity: \(result.groups.count) groups in \(started.duration(to: .now))")
             self.groups = result.groups
             self.groupLocalIDs = result.localIDs
+            self.carryOverDuplicateChoices(previous: result.previousDuplicates)
             self.similarity = .ready(groups: result.groups.count)
             self.inputsVersion += 1
             await self.rebuildRecommender()
             if self.source.isSuggestion { self.reload() }
             self.refreshCounts()
         }
+    }
+
+    /// Once, after duplicates came to need a shared capture moment: ticks and keeper picks on
+    /// duplicate groups that changed move to the groups now holding their photos (often in Similar
+    /// Shots), so they're there to review.
+    nonisolated static let duplicatesRule = "sameMoment"
+
+    private func carryOverDuplicateChoices(previous: [SimilarGroup]) {
+        let rule = Self.duplicatesRule
+        guard !groups.isEmpty, ((try? store.setting("duplicatesRule")) ?? nil) != rule else { return }
+        let r = GroupCarryOver.map(selected: selectedGroups, choices: keeperChoices, groups: groups, previous: previous)
+        if r.selected != selectedGroups { selectedGroups = r.selected }
+        if r.choices != keeperChoices { keeperChoices = r.choices }
+        try? store.setSetting("duplicatesRule", to: rule)
+        log.notice("similarity: carried over \(r.moved) ticks and picks to new groups, left \(r.leftAlone) as they were")
     }
 
     /// The photos in this photo's group, the one to keep first: the group this list shows, or
@@ -309,18 +325,32 @@ final class CullingSession: ObservableObject {
         sections?.firstIndex { $0.contains(cursor) }
     }
 
-    /// G in a group list: tick or untick the group the cursor is in.
+    /// Where a Shift-selection of groups started (a group's index); nil when just one is selected.
+    @Published private(set) var groupAnchor: Int?
+
+    /// The groups Shift-selected, from the anchor to the group the cursor is in.
+    var highlightedSections: ClosedRange<Int>? {
+        guard let n = cursorSection else { return nil }
+        guard let a = groupAnchor else { return n...n }
+        return min(a, n)...max(a, n)
+    }
+
+    /// G in a group list: tick or untick the group the cursor is in, and every other Shift-selected
+    /// group the same way (so after Select All, Shift-select some and G unticks them all).
     func toggleSelectionAtCursor() {
-        guard let n = cursorSection, sectionGroups.indices.contains(n) else { return }
-        toggleSelection(sectionGroups[n])
+        guard let n = cursorSection, sectionGroups.indices.contains(n), let range = highlightedSections else { return }
+        let tick = !selectedGroups.contains(sectionGroups[n].id)
+        let ids = range.filter(sectionGroups.indices.contains).map { sectionGroups[$0].id }
+        if tick { selectedGroups.formUnion(ids) } else { selectedGroups.subtract(ids) }
     }
 
     /// ↑ ↓ in a group list: to the first photo (the one kept) of the previous or next group.
-    func moveGroup(by delta: Int) {
+    /// With Shift, the groups passed over stay selected.
+    func moveGroup(by delta: Int, extending: Bool = false) {
         guard let sections, let n = cursorSection else { return }
         let target = min(max(n + delta, 0), sections.count - 1)
         zoomed = false
-        select(index: sections[target].lowerBound)
+        select(index: sections[target].lowerBound, extending: extending, from: n)
     }
 
     /// Merges each group into its keeper (see WinnowKit.Merge), as one undoable step, then takes
@@ -741,6 +771,7 @@ final class CullingSession: ObservableObject {
 
     private func setList(_ newList: AssetList, keeping asset: PHAsset?) {
         list = newList
+        groupAnchor = nil
         if let asset, let i = newList.index(of: asset) {
             cursor = i
         } else {
@@ -812,6 +843,11 @@ final class CullingSession: ObservableObject {
             var updated = AssetList(result: after, positions: list.positions)
             updated.ascending = list.ascending
             list = updated
+            // Compare holds its own photos: swap in the changed ones, so a rotation shows there too.
+            let changed = Dictionary(details.changedObjects.map { ($0.localIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
+            if mode == .compare, compareGroup.contains(where: { changed[$0.localIdentifier] != nil }) {
+                compareGroup = compareGroup.map { changed[$0.localIdentifier] ?? $0 }
+            }
             return
         }
 
@@ -828,8 +864,12 @@ final class CullingSession: ObservableObject {
 
     // MARK: Moving
 
-    func select(index: Int) {
+    /// `extending` (Shift) selects every group from the one the cursor was in to this photo's.
+    func select(index: Int, extending: Bool = false, from section: Int? = nil) {
         guard list.indices.contains(index) else { return }
+        if sections != nil {
+            groupAnchor = extending ? (groupAnchor ?? section ?? cursorSection) : nil
+        }
         cursor = index
         if mode != .grid { markSeen(current) }
         if mode == .compare { rebuildCompareGroup() }
@@ -969,7 +1009,7 @@ final class CullingSession: ObservableObject {
     }
 
     private func revealFirst(of change: Change) {
-        guard mode != .compare, let id = change.after.first?.assetID,
+        guard mode != .compare, let id = change.after.first?.assetID ?? change.rotations.keys.first,
               let asset = library.assets(withIDs: [id]).first, let i = list.index(of: asset) else { return }
         select(index: i)
     }
@@ -987,7 +1027,9 @@ final class CullingSession: ObservableObject {
         } catch {
             show("Couldn't save: \(error.localizedDescription)")
         }
-        if record { history.record(Change(label: change.label, before: change.before, after: after)) }
+        if record {
+            history.record(Change(label: change.label, before: change.before, after: after, rotations: change.rotations))
+        }
 
         let pairs = Array(zip(change.before, after))
         // Ratings and Favorites live in Photos; hold the new values until Photos reports them.
@@ -1012,7 +1054,11 @@ final class CullingSession: ObservableObject {
                 return (asset, PhotosChange(from: before, to: after))
             }
             do {
-                try await self.library.apply(items)
+                if !items.isEmpty { try await self.library.apply(items) }
+                try await self.rotate(change.rotations)
+            } catch let error as PhotoRotator.RotateError {
+                if record { self.history.discardLast() }
+                self.show("Couldn't rotate: \(error.localizedDescription)")
             } catch {
                 // Roll back so Winnow never shows a state Photos doesn't have.
                 for id in photosIDs {
@@ -1025,6 +1071,28 @@ final class CullingSession: ObservableObject {
                 self.show("Couldn't update Photos: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// R: turn the photo 90° clockwise, as an edit in Photos (the original is kept). ⌘Z turns it back.
+    func rotateTarget() {
+        guard let asset = target else { return }
+        commit(Change(label: "Rotate", before: [], after: [], rotations: [asset.localIdentifier: 90]))
+    }
+
+    private func rotate(_ rotations: [String: Int]) async throws {
+        guard !rotations.isEmpty else { return }
+        show("Rotating…")
+        for asset in library.assets(withIDs: Array(rotations.keys)) {
+            let rotation = Rotation(degrees: rotations[asset.localIdentifier] ?? 0)
+            do {
+                try await PhotoRotator.rotate(asset, by: rotation)
+            } catch let error as PhotoRotator.RotateError {
+                throw error
+            } catch {
+                throw PhotoRotator.RotateError.renderFailed(error.localizedDescription)
+            }
+        }
+        message = nil
     }
 
     // MARK: Delete queue

@@ -78,3 +78,52 @@ public enum LookAlikes {
         return members.filter { faces[$0]?.eyesClosed == true }
     }
 }
+
+/// Moves saved ticks and keeper picks onto the groups that now hold their photos, after the
+/// grouping rules change. Group ids are the kind plus the smallest member, so a duplicate group
+/// that lost members, or whose photos are now similar shots instead, has a new id.
+/// Entries with no new home are left as they are: nothing is dropped.
+public enum GroupCarryOver {
+    public struct Result: Equatable, Sendable {
+        public var selected: Set<String>
+        public var choices: [String: String]
+        public var moved: Int
+        public var leftAlone: Int
+    }
+
+    /// Carries over entries for duplicate groups ("d:" ids) that no longer exist. `previous` are the
+    /// duplicate groups under the old rule, so a tick reaches every group its photos are now in.
+    public static func map(selected: Set<String>, choices: [String: String],
+                           groups: [SimilarGroup], previous: [SimilarGroup]) -> Result {
+        func id(_ g: SimilarGroup) -> String { (g.kind == .duplicate ? "d:" : "s:") + (g.members.min() ?? "") }
+        var ids = Set<String>(), duplicateOf: [String: String] = [:], similarOf: [String: String] = [:]
+        for g in groups where g.members.count > 1 {
+            ids.insert(id(g))
+            for m in g.members {
+                if g.kind == .duplicate { duplicateOf[m] = id(g) } else { similarOf[m] = id(g) }
+            }
+        }
+        var oldMembers: [String: [String]] = [:]
+        for g in previous where g.kind == .duplicate { oldMembers[id(g)] = g.members }
+        func home(_ uuid: String) -> String? { duplicateOf[uuid] ?? similarOf[uuid] }
+        func isStale(_ id: String) -> Bool { id.hasPrefix("d:") && !ids.contains(id) }
+
+        var out = Result(selected: selected, choices: choices, moved: 0, leftAlone: 0)
+        for old in selected.sorted() where isStale(old) {
+            let members = oldMembers[old] ?? [String(old.dropFirst(2))]
+            let targets = Set(members.compactMap(home))
+            if targets.isEmpty { out.leftAlone += 1; continue }
+            out.selected.remove(old)
+            out.selected.formUnion(targets)
+            out.moved += 1
+        }
+        for (old, keeper) in choices.sorted(by: { $0.key < $1.key }) where isStale(old) {
+            if let target = home(keeper), out.choices[target] == nil {
+                out.choices[old] = nil
+                out.choices[target] = keeper
+                out.moved += 1
+            } else { out.leftAlone += 1 }
+        }
+        return out
+    }
+}

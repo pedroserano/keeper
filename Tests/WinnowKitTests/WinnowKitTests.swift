@@ -418,10 +418,31 @@ import WinnowCore
             "take":  vector(0, wobble: 0.35),                          // same scene, different take
             "other": vector(5),                                         // different scene, same minute
         ]
-        let dupes = Similarity.groups(clusters: [ids], vectors: vectors, dates: dates(ids), kind: .duplicate)
-        let similar = Similarity.groups(clusters: [ids], vectors: vectors, dates: dates(ids), kind: .similar)
+        let when = ["copy1": date(0), "copy2": date(0), "take": date(1), "other": date(2)] // a copy keeps the time
+        let dupes = Similarity.groups(clusters: [ids], vectors: vectors, dates: when, kind: .duplicate)
+        let similar = Similarity.groups(clusters: [ids], vectors: vectors, dates: when, kind: .similar)
         #expect(dupes == [SimilarGroup(members: ["copy1", "copy2"], kind: .duplicate)])
         #expect(similar == [SimilarGroup(members: ["copy1", "copy2", "take"], kind: .similar)])
+    }
+
+    @Test func burstFramesAreSimilarNotDuplicates() {
+        let ids = ["f1", "f2"]
+        let vectors = ["f1": vector(0), "f2": vector(0, wobble: 0.01)]        // as alike as copies
+        let when = ["f1": date(10.1), "f2": date(10.4)]                       // but 0.3 s apart
+        #expect(Similarity.groups(clusters: [ids], vectors: vectors, dates: when, kind: .duplicate).isEmpty)
+        #expect(Similarity.groups(clusters: [ids], vectors: vectors, dates: when, kind: .similar)
+                == [SimilarGroup(members: ids, kind: .similar)])
+    }
+
+    @Test func copyWithoutSubsecondsIsStillADuplicate() {
+        #expect(Similarity.sameMoment(date(5), date(5.43)))
+        #expect(Similarity.sameMoment(date(5.43), date(5.435)))
+        #expect(!Similarity.sameMoment(date(5.1), date(5.43)))   // two frames of a burst
+        #expect(!Similarity.sameMoment(date(5), date(6.2)))
+        let ids = ["original", "copy"]
+        let vectors = ["original": vector(0), "copy": vector(0, wobble: 0.01)]
+        #expect(Similarity.groups(clusters: [ids], vectors: vectors, dates: ["original": date(5.43), "copy": date(5)],
+                                  kind: .duplicate) == [SimilarGroup(members: ids, kind: .duplicate)])
     }
 
     @Test func groupsDontChainAcrossGraduallyChangingShots() {
@@ -684,5 +705,64 @@ import WinnowCore
         #expect(faces["open"] == FaceInfo(eyesClosed: false, quality: 0.5))
         #expect(faces["background-blink"] == FaceInfo(eyesClosed: false, quality: 0.7))
         #expect(faces["pet"] == nil)
+    }
+}
+
+@Suite struct GroupCarryOverTests {
+    let groups = [SimilarGroup(members: ["a1", "a2"], kind: .duplicate),          // was a1, a2, a3
+                  SimilarGroup(members: ["b1", "b2", "b3"], kind: .similar),       // was duplicates b1, b2
+                  SimilarGroup(members: ["c2", "c3"], kind: .duplicate)]           // was c1, c2, c3
+    let previous = [SimilarGroup(members: ["a1", "a2", "a3"], kind: .duplicate),
+                    SimilarGroup(members: ["b1", "b2"], kind: .duplicate),
+                    SimilarGroup(members: ["c1", "c2", "c3"], kind: .duplicate)]
+
+    func map(_ selected: Set<String>, _ choices: [String: String] = [:]) -> GroupCarryOver.Result {
+        GroupCarryOver.map(selected: selected, choices: choices, groups: groups, previous: previous)
+    }
+
+    @Test func tickOnAGoneDuplicateMovesToTheSimilarGroupHoldingItsPhotos() {
+        let r = map(["d:b1", "s:x"])
+        #expect(r.selected == ["s:b1", "s:x"])
+        #expect(r.moved == 1 && r.leftAlone == 0)
+    }
+
+    @Test func tickOnADuplicateWhoseIdChangedFollowsIt() {
+        // c1 dropped out, so the group is now named after c2.
+        let r = map(["d:a1", "d:c1"])
+        #expect(r.selected == ["d:a1", "d:c2"])
+        #expect(r.moved == 1)
+    }
+
+    @Test func keeperPickFollowsThePickedPhoto() {
+        let r = map([], ["d:b1": "b2", "d:c1": "c3", "s:b1": "b3"])
+        #expect(r.choices == ["d:b1": "b2", "d:c2": "c3", "s:b1": "b3"])  // s:b1 already had a pick: kept
+        #expect(r.moved == 1 && r.leftAlone == 1)
+    }
+
+    @Test func entriesWithNoNewHomeAreLeftAsTheyAre() {
+        let r = map(["d:zz"], ["d:zz": "zz2"])
+        #expect(r.selected == ["d:zz"] && r.choices == ["d:zz": "zz2"])
+        #expect(r.moved == 0 && r.leftAlone == 2)
+    }
+}
+
+@Suite struct RotationTests {
+    @Test func degreesWrapToQuarterTurns() {
+        #expect(Rotation(degrees: 90) == .clockwise90)
+        #expect(Rotation(degrees: -90) == .clockwise270)
+        #expect(Rotation(degrees: 360) == Rotation.none)
+        #expect(Rotation(degrees: 450) == .clockwise90)
+        #expect(Rotation.clockwise90.followed(by: .clockwise270) == Rotation.none)
+        #expect(Rotation.clockwise90.inverse == .clockwise270)
+    }
+
+    @Test func undoingARotationRotatesBack() {
+        let change = Change(label: "Rotate", before: [], after: [], rotations: ["p": 90])
+        #expect(change.reversed.rotations == ["p": -90])
+        #expect(Rotation(degrees: change.reversed.rotations["p"]!) == .clockwise270)
+        var history = History()
+        history.record(change)
+        #expect(history.undo()?.rotations == ["p": -90])
+        #expect(history.redo()?.rotations == ["p": 90])
     }
 }

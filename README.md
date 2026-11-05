@@ -22,21 +22,23 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | ← → ↑ ↓ | Move (decisions move on to the next photo automatically) | |
 | Return, Esc | Grid ↔ single photo | |
 | Space, Z | In the grid, Space shows the photo filling the window and Space again goes back; in a photo, 100% zoom on and off. Z zooms on the main face | |
-| G | In Duplicates or Similar Shots: tick or untick the group | |
+| R | Rotate 90° clockwise | An edit in Photos: the original is kept, and Revert to Original restores it. ⌘Z rotates back |
+| G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
 **Look-alikes.** In the background, Winnow fingerprints photos taken within 30 seconds of another
 (Apple's Vision feature print) and groups the ones that look alike, in two lists: **Duplicates**
-(near-identical copies) and **Similar Shots** (takes of the same moment). Every photo in a group looks
-like every other one, and all were taken within a minute of each other. The suggested keeper leans
+(near-identical copies with the same capture time: re-imports, edits saved twice) and **Similar Shots** (takes of the same moment). Every photo in a group looks
+like every other one, and all were taken within a minute of each other; burst frames, however alike,
+are similar shots. The suggested keeper leans
 towards the bigger file: for duplicates it's the largest copy (most pixels, then biggest file); for
 similar shots, file size counts twice as much as how good the photo looks, faces count as much as looks
 (Photos' own face quality), and a take where someone's eyes are closed is never suggested while another
 take has them open; it gets an "Eyes closed" label instead. To keep a different photo,
 click **Keep** under it (or select it and press K); your picks are saved with the library. Groups are listed one section at a time with each
 photo's time, dimensions and file size; ↑ ↓ move a group at a time, G ticks or unticks the
-group (ticks are saved), and C compares it.
+group (ticks are saved); Shift ↑ ↓ or Shift-click selects several groups so G ticks or unticks them all, and C compares it.
 
 **Reject suggestions** can be made more conservative or more aggressive with the slider under
 Suggestions in the sidebar. While you drag, it previews how many photos would land in Suggested Rejects

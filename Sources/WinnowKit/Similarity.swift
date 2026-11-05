@@ -6,6 +6,9 @@
 // 768 numbers per photo, normalised, where the cosine distance between two photos is about
 // 0.002 for a resized copy, 0.01 for a slightly rotated one, 0.05 for a cropped one, 0.15 for two
 // different scenes in a similar style, and 0.65 for unrelated images.
+// Prints come from small previews, so even exact copies are up to about 0.02 apart, as close as
+// two frames of a burst. What sets copies apart is time: a copy keeps the original's capture time,
+// so duplicates must also share a capture moment (`sameMoment`); bursts are similar shots.
 
 import Foundation
 
@@ -47,7 +50,7 @@ public struct FeatureVector: Sendable, Equatable {
 /// and all were taken within `Similarity.groupSpan` of each other.
 public struct SimilarGroup: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
-        /// Near-identical copies: re-imports, edits, the same frame saved twice.
+        /// Near-identical copies with the same capture time: re-imports, edits, the same frame saved twice.
         case duplicate
         /// Takes of the same moment that look alike.
         case similar
@@ -76,6 +79,15 @@ public enum Similarity {
     public static let duplicateDistance: Float = 0.02
     public static let similarDistance: Float = 0.10
 
+    /// Taken at the same moment, as a copy and its original are: the same time to the hundredth of
+    /// a second, or the same second when one of them has no fraction (a copy that lost it on import).
+    public static func sameMoment(_ a: Date, _ b: Date) -> Bool {
+        let x = a.timeIntervalSinceReferenceDate, y = b.timeIntervalSinceReferenceDate
+        if abs(x - y) <= 0.01 { return true }
+        let wholeX = x == x.rounded(.down), wholeY = y == y.rounded(.down)
+        return (wholeX || wholeY) && x.rounded(.down) == y.rounded(.down)
+    }
+
     /// Chains photos (sorted by date) into runs where each is within `clusterGap` of the one before.
     /// Returns only runs of two or more.
     public static func timeClusters(_ photos: [(uuid: String, date: Date)]) -> [[String]] {
@@ -98,9 +110,10 @@ public enum Similarity {
     /// Groups of photos that all look alike (complete linkage: each new member must be within the
     /// kind's distance of every member already there, not just one of them, so groups can't chain
     /// across a run of gradually changing shots) and were all taken within `groupSpan` of each other.
-    /// Clusters must be in date order, as `timeClusters` returns them.
+    /// Duplicates must also all share a capture moment (`sameMomentDuplicates: false` is the old
+    /// rule, kept to carry saved ticks over). Clusters must be in date order, as `timeClusters` returns them.
     public static func groups(clusters: [[String]], vectors: [String: FeatureVector], dates: [String: Date],
-                              kind: SimilarGroup.Kind) -> [SimilarGroup] {
+                              kind: SimilarGroup.Kind, sameMomentDuplicates: Bool = true) -> [SimilarGroup] {
         let limit = kind.distance
         var out: [SimilarGroup] = []
         for cluster in clusters {
@@ -119,6 +132,7 @@ public enum Similarity {
                 // Join the open group this photo is closest to, if it's close to all of its members.
                 var best: (index: Int, distance: Float)?
                 for (i, group) in open.enumerated() {
+                    if kind == .duplicate, sameMomentDuplicates, !group.allSatisfy({ sameMoment(dates[$0]!, date) }) { continue }
                     let farthest = group.map { v.distance(to: vectors[$0]!) }.max() ?? .infinity
                     if farthest <= limit, farthest < (best?.distance ?? .infinity) { best = (i, farthest) }
                 }

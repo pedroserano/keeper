@@ -18,6 +18,9 @@ enum SimilarityIndexer {
         let localIDs: [String: String]
         let candidates: Int
         let histogram: [(upTo: Float, count: Int)]
+        /// Duplicates under the old rule (no shared capture moment needed), only until saved ticks
+        /// have been carried over to the new groups.
+        let previousDuplicates: [SimilarGroup]
     }
 
     /// `progress(done, total)` is called after each batch; return false from `keepGoing` to stop.
@@ -76,10 +79,14 @@ enum SimilarityIndexer {
         let vectors = (try? store.featurePrints(for: Set(candidates))) ?? [:]
         let groups = Similarity.groups(clusters: clusters, vectors: vectors, dates: dates, kind: .duplicate)
             + Similarity.groups(clusters: clusters, vectors: vectors, dates: dates, kind: .similar)
+        let carriedOver = ((try? store.setting("duplicatesRule")) ?? nil) == CullingSession.duplicatesRule
+        let previous = carriedOver ? [] : Similarity.groups(clusters: clusters, vectors: vectors, dates: dates,
+                                                             kind: .duplicate, sameMomentDuplicates: false)
         let grouped = Set(groups.flatMap(\.members))
         return Result(groups: groups, localIDs: localIDs.filter { grouped.contains($0.key) },
                       candidates: candidates.count,
-                      histogram: Similarity.nearestNeighbourHistogram(clusters: clusters, vectors: vectors))
+                      histogram: Similarity.nearestNeighbourHistogram(clusters: clusters, vectors: vectors),
+                      previousDuplicates: previous)
     }
 
     /// Vision feature print of a small preview. Photos only stored in iCloud still have a local

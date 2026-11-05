@@ -97,10 +97,21 @@ struct ContentView: View {
             .help("Grid, single photo or compare (⌘1, ⌘2, ⌘3)")
         }
         ToolbarItem {
-            Picker("Show", selection: $session.filter) {
-                ForEach(CullingSession.Filter.allCases) { Text($0.rawValue).tag($0) }
+            // A toolbar menu button (icon and the current choice) rather than a labelled menu picker,
+            // which sits off-centre in the toolbar. The icon fills in while a filter is on.
+            Menu {
+                Picker("Show", selection: $session.filter) {
+                    ForEach(CullingSession.Filter.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Label(session.filter.rawValue,
+                      systemImage: session.filter == .all ? "line.3.horizontal.decrease.circle"
+                                                          : "line.3.horizontal.decrease.circle.fill")
+                    .labelStyle(.titleAndIcon)
             }
-            .pickerStyle(.menu)
+            .fixedSize()
             .help("Which photos to show")
         }
         ToolbarItem {
@@ -142,7 +153,9 @@ struct ContentView: View {
         case 124: s.move(by: 1)                                            // →
         case 126, 125:                                                     // ↑, ↓
             let step = event.keyCode == 126 ? -1 : 1
-            if s.mode == .grid && s.sections != nil { s.moveGroup(by: step) }   // a group at a time
+            if s.mode == .grid && s.sections != nil {                          // a group at a time
+                s.moveGroup(by: step, extending: event.modifierFlags.contains(.shift))
+            }
             else { s.move(by: s.mode == .grid ? step * s.gridColumns : step) }
         case 36, 76: s.openWithReturn()                                    // Return, Enter
         case 53:                                                           // Esc
@@ -162,6 +175,7 @@ struct ContentView: View {
             case "c": s.mode = s.mode == .compare ? .single : .compare
             case "k": s.keepFocusedRejectRest()
             case "g": s.toggleSelectionAtCursor()
+            case "r": s.rotateTarget()
             case "a": s.acceptSuggestedRating()
             case "i": s.showingScores.toggle()
             case "?", "/": showingShortcuts = true
