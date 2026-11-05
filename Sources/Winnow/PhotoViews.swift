@@ -107,14 +107,22 @@ extension GridView {
                         isFavorite: session.isFavorite(asset), selected: i == session.cursor, size: cell,
                         file: details ? session.fileInfo(asset) : nil, showDetails: details,
                         isKeeper: details && session.isKeeper(asset),
-                        keep: details ? { session.keepInGroup(asset) } : nil)
+                        keep: details ? { session.keepInGroup(asset) } : nil,
+                        checked: session.selectsPhotos ? session.selectedPhotos.contains(asset.localIdentifier) : nil,
+                        selecting: !session.selectedPhotos.isEmpty,
+                        toggleChecked: { session.togglePhoto(at: i) })
             .id(i)
             .photoContextMenu(asset, session: session)
             .onTapGesture(count: 2) {
                 session.select(index: i)
                 session.mode = .single
             }
-            .onTapGesture { session.select(index: i, extending: NSEvent.modifierFlags.contains(.shift)) }
+            .onTapGesture {
+                let keys = NSEvent.modifierFlags
+                if session.selectsPhotos, keys.contains(.command) { session.togglePhoto(at: i) }
+                else if session.selectsPhotos, keys.contains(.shift) { session.selectPhotos(through: i) }
+                else { session.select(index: i, extending: keys.contains(.shift)) }
+            }
     }
 }
 
@@ -246,6 +254,12 @@ struct GridCell: View {
     var isKeeper = false
     /// In a group: makes this the photo to keep.
     var keep: (() -> Void)? = nil
+    /// Picked to accept its suggested rating (Unreviewed); nil where photos can't be picked.
+    var checked: Bool? = nil
+    /// Some photo is picked, so every photo shows its circle.
+    var selecting = false
+    var toggleChecked: (() -> Void)? = nil
+    @State private var hovering = false
 
     var body: some View {
         if showDetails {
@@ -295,6 +309,26 @@ struct GridCell: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .opacity(decision.flag == .reject ? 0.35 : 1)
             .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite) }
+            .overlay {
+                if checked == true { RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) }
+            }
+            // The selection circle, top left as in Photos: filled when picked, empty while picking or
+            // on hover. Clicking it picks or unpicks the photo.
+            .overlay(alignment: .topLeading) {
+                if let checked, checked || selecting || hovering {
+                    Button { toggleChecked?() } label: {
+                        Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, checked ? Color.accentColor : .black.opacity(0.25))
+                            .shadow(color: .black.opacity(0.5), radius: 1.5)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(5)
+                    .help(checked ? "Deselect (⌘-click or G)" : "Select (⌘-click or G)")
+                }
+            }
+            .onHover { hovering = $0 }
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 3)

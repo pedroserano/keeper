@@ -23,7 +23,7 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | Return, Esc | Grid ↔ single photo | |
 | Space, Z | In the grid, Space shows the photo filling the window and Space again goes back; in a photo, 100% zoom on and off. Z zooms on the main face | |
 | R | Rotate 90° clockwise | An edit in Photos: the original is kept, and Revert to Original restores it. ⌘Z rotates back |
-| G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click | |
+| G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click. In Unreviewed: select or deselect the photo | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
@@ -39,6 +39,11 @@ take has them open; it gets an "Eyes closed" label instead. To keep a different 
 click **Keep** under it (or select it and press K); your picks are saved with the library. Groups are listed one section at a time with each
 photo's time, dimensions and file size; ↑ ↓ move a group at a time, G ticks or unticks the
 group (ticks are saved); Shift ↑ ↓ or Shift-click selects several groups so G ticks or unticks them all, and C compares it.
+
+**Accept Suggested Ratings**, above Unreviewed, gives the selected photos that have no stars yet
+their suggested rating in one step (A does it for one photo). Select them with Select All, the circle at a
+photo's top left, ⌘-click, Shift-click or G; Shift-click on a selected photo deselects the run. Photos you've rated or rejected are left alone, the rated ones leave Unreviewed,
+and ⌘Z undoes the lot.
 
 **Reject suggestions** can be made more conservative or more aggressive with the slider under
 Suggestions in the sidebar. While you drag, it previews how many photos would land in Suggested Rejects

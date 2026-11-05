@@ -21,6 +21,10 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         if let gap = session.accessGap { AccessBanner(gap: gap, session: session) }
                         if session.source == .dateRange { DateRangeBar(session: session) }
+                        if session.source == .unreviewed, session.suggestionsStatus == .ready,
+                           !session.list.isEmpty {
+                            AcceptRatingsBar(session: session)
+                        }
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar(session: session) }
@@ -305,8 +309,15 @@ struct Sidebar: View {
 
     private func row(_ source: Source) -> some View {
         Label(source.title, systemImage: source.systemImage)
-            .badge(session.counts[source] ?? 0)
+            .badge(badge(source))
             .tag(source)
+    }
+
+    /// A count of 0 hides a badge, so lists you work through to the end show "0" instead.
+    private func badge(_ source: Source) -> Text? {
+        guard let n = session.counts[source] else { return nil }
+        if n == 0, ![.unreviewed, .duplicates, .similarShots, .suggestedRejects].contains(source) { return nil }
+        return Text(n.formatted())
     }
 }
 
@@ -566,3 +577,58 @@ struct DateRangeBar: View {
     }
 }
 
+
+/// Above Unreviewed: pick photos (Select All, ⌘-click, Shift-click, G), then give the picked ones
+/// with no rating yet their suggested stars.
+struct AcceptRatingsBar: View {
+    @ObservedObject var session: CullingSession
+    @State private var counting = false
+    @State private var pending: Change?
+
+    var body: some View {
+        let selected = session.selectedPhotos.count
+        let allSelected = selected > 0 && selected >= session.list.count
+        HStack(spacing: 12) {
+            Button(allSelected ? "Deselect All" : "Select All") {
+                if allSelected { session.deselectAllPhotos() } else { Task { await session.selectAllPhotos() } }
+            }
+            .disabled(session.selectingAll)
+            Text(selected == 0 ? "⌘-click, Shift-click or press G to select photos"
+                               : "\(selected.formatted()) of \(session.list.count.formatted()) photos selected")
+                .foregroundStyle(.secondary)
+            Spacer()
+            if counting || session.selectingAll { ProgressView().controlSize(.small) }
+            Button("Accept Suggested Ratings…") {
+                counting = true
+                Task {
+                    pending = await session.suggestedRatingsToAccept()
+                    counting = false
+                    if pending == nil { session.show("None of the selected photos is unrated with a suggested rating.") }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selected == 0 || counting)
+            .help("Rate the selected photos that have no stars yet with Photos' suggested rating")
+        }
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .confirmationDialog(title, isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+            Button("Rate \(pending?.after.count.formatted() ?? "") Photos") {
+                if let change = pending { session.acceptSuggestedRatings(change) }
+                pending = nil
+            }
+        } message: {
+            Text("""
+                Each gets the stars shown on it, saved in Photos, and leaves Unreviewed. \
+                Selected photos you've already rated or rejected are left alone. ⌘Z undoes them all.
+                """)
+        }
+    }
+
+    private var title: String {
+        let n = pending?.after.count ?? 0
+        return "Accept suggested ratings for \(n.formatted()) \(n == 1 ? "photo" : "photos")?"
+    }
+}

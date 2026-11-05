@@ -338,6 +338,7 @@ final class CullingSession: ObservableObject {
     /// G in a group list: tick or untick the group the cursor is in, and every other Shift-selected
     /// group the same way (so after Select All, Shift-select some and G unticks them all).
     func toggleSelectionAtCursor() {
+        if selectsPhotos { togglePhoto(at: cursor); return }
         guard let n = cursorSection, sectionGroups.indices.contains(n), let range = highlightedSections else { return }
         let tick = !selectedGroups.contains(sectionGroups[n].id)
         let ids = range.filter(sectionGroups.indices.contains).map { sectionGroups[$0].id }
@@ -618,6 +619,97 @@ final class CullingSession: ObservableObject {
         perform(.rate(s.stars))
     }
 
+    // MARK: Selecting photos (Unreviewed)
+
+    /// Photos picked to accept suggested ratings for, by local identifier. Apart from the cursor:
+    /// ⌘-click or G picks one, Shift-click a run, Select All the lot.
+    @Published private(set) var selectedPhotos: Set<String> = []
+    @Published private(set) var selectingAll = false
+    private var photoAnchor: Int?
+
+    var selectsPhotos: Bool { source == .unreviewed && sections == nil }
+
+    func togglePhoto(at i: Int) {
+        guard selectsPhotos, list.indices.contains(i) else { return }
+        let id = list.asset(at: i).localIdentifier
+        if selectedPhotos.contains(id) { selectedPhotos.remove(id) } else { selectedPhotos.insert(id) }
+        photoAnchor = i
+        select(index: i)
+    }
+
+    /// Shift-click: every photo from the last one picked (or the cursor) to this one. They're picked,
+    /// or unpicked when this one was picked, so a run can be taken out again.
+    func selectPhotos(through i: Int) {
+        guard selectsPhotos, list.indices.contains(i) else { return }
+        let from = photoAnchor ?? cursor
+        let list = list
+        let ids = (min(from, i)...max(from, i)).filter(list.indices.contains).map { list.asset(at: $0).localIdentifier }
+        if selectedPhotos.contains(list.asset(at: i).localIdentifier) { selectedPhotos.subtract(ids) }
+        else { selectedPhotos.formUnion(ids) }
+        photoAnchor = i
+        select(index: i)
+    }
+
+    func selectAllPhotos() async {
+        let list = list
+        selectingAll = true
+        let ids = await Task.detached(priority: .userInitiated) { list.indices.map { list.asset(at: $0).localIdentifier } }.value
+        selectedPhotos = Set(ids)
+        selectingAll = false
+    }
+
+    func deselectAllPhotos() {
+        selectedPhotos = []
+        photoAnchor = nil
+    }
+
+    /// Unreviewed: the photos shown with no rating yet that have a suggested one, as decisions
+    /// before and after taking it (marked seen, so they leave Unreviewed). Worked out in the
+    /// background: Unreviewed can hold most of the library.
+    func suggestedRatingsToAccept() async -> Change? {
+        guard source == .unreviewed, let recommender, recommender.hasScores, !selectedPhotos.isEmpty else { return nil }
+        let list = list, snapshot = decisions, chosen = selectedPhotos
+        let (before, after) = await Task.detached(priority: .userInitiated) { () -> ([Decision], [Decision]) in
+            var before: [Decision] = [], after: [Decision] = []
+            let now = Date()
+            for i in list.indices {
+                let asset = list.asset(at: i)
+                guard chosen.contains(asset.localIdentifier) else { continue }
+                var d = snapshot[asset.localIdentifier] ?? .untouched(asset.localIdentifier)
+                guard d.seenAt == nil, d.flag == .none, asset.rating.rawValue == 0 else { continue }
+                let uuid = String(asset.localIdentifier.split(separator: "/").first ?? "")
+                guard let stars = recommender.suggestion(forUUID: uuid)?.stars, stars > 0 else { continue }
+                d.rating = 0
+                d.favorite = asset.isFavorite
+                var a = d.applying(.rate(stars), currentFavorite: asset.isFavorite, at: now)
+                a.seenAt = now
+                before.append(d)
+                after.append(a)
+            }
+            // Looked up here, not on the main thread, where commit would otherwise do it.
+            let missing = after.filter { $0.cloudID == nil }.map(\.assetID)
+            var cloud: [String: String] = [:]
+            for start in stride(from: 0, to: missing.count, by: 1000) {
+                let chunk = Array(missing[start..<min(start + 1000, missing.count)])
+                for (id, result) in PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: chunk) {
+                    if case .success(let c) = result { cloud[id] = c.archivalStringValue }
+                }
+            }
+            for i in after.indices where after[i].cloudID == nil { after[i].cloudID = cloud[after[i].assetID] }
+            return (before, after)
+        }.value
+        guard !after.isEmpty else { return nil }
+        return Change(label: "Accept \(after.count.formatted()) Suggested Ratings", before: before, after: after)
+    }
+
+    /// Rates them all in one step (⌘Z undoes it), then lists what's left to review.
+    func acceptSuggestedRatings(_ change: Change) {
+        commit(change)
+        deselectAllPhotos()
+        show("Rated \(change.after.count.formatted()) photos with their suggested stars. ⌘Z undoes.")
+        reload()
+    }
+
     // MARK: State
 
     var current: PHAsset? { list.indices.contains(cursor) ? list.asset(at: cursor) : nil }
@@ -649,6 +741,8 @@ final class CullingSession: ObservableObject {
         guard newSource != source else { return }
         if source == .calibrate { learnFromRatings() }
         saveCursor()
+        selectedPhotos = []
+        photoAnchor = nil
         source = newSource
         if let data = try? JSONEncoder().encode(newSource) {
             try? store.setSetting("source", to: String(decoding: data, as: UTF8.self))
@@ -783,10 +877,22 @@ final class CullingSession: ObservableObject {
 
     /// Sidebar counts, worked out in the background. Unreviewed is "all photos minus the ones
     /// you've looked at", from Winnow's own records, so it never scans the library.
+    /// After decisions and photos you've seen: counts again once you pause, so the sidebar keeps up
+    /// (Duplicates going to 0 as you resolve its groups) without recounting on every key press.
+    private func scheduleCountsRefresh() {
+        countsDebounce?.cancel()
+        countsDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(0.8))
+            if !Task.isCancelled { self?.refreshCounts() }
+        }
+    }
+    private var countsDebounce: Task<Void, Never>?
+
     func refreshCounts() {
+        countsDebounce?.cancel()
         countsTask?.cancel()
         let library = library
-        let seen = decisions.values.filter { $0.seenAt != nil }.count
+        let seenIDs = decisions.values.filter { $0.seenAt != nil }.map(\.assetID)
         let range = dateRange
         let albums = library.albums.map { Source.album(id: $0.localIdentifier, title: $0.localizedTitle ?? "Untitled") }
         let recommender = recommender
@@ -802,7 +908,8 @@ final class CullingSession: ObservableObject {
                 var out: [Source: Int] = [:]
                 let all = library.fetch(.allPhotos, newestFirst: false).count
                 out[.allPhotos] = all
-                out[.unreviewed] = max(all - seen, 0)
+                // Only seen photos still in the library count, so deleted ones can't hold it above 0.
+                out[.unreviewed] = max(all - library.assets(withIDs: seenIDs).count, 0)
                 if let recommender, recommender.hasScores {
                     let c = recommender.counts()
                     out[.suggestedRejects] = c.rejects
@@ -914,6 +1021,7 @@ final class CullingSession: ObservableObject {
         d.updatedAt = Date()
         decisions[asset.localIdentifier] = d
         try? store.save([d])
+        scheduleCountsRefresh()
     }
 
     // MARK: Compare
@@ -1031,6 +1139,7 @@ final class CullingSession: ObservableObject {
         if record {
             history.record(Change(label: change.label, before: change.before, after: after, rotations: change.rotations))
         }
+        if !after.isEmpty { scheduleCountsRefresh() }
 
         let pairs = Array(zip(change.before, after))
         // Ratings and Favorites live in Photos; hold the new values until Photos reports them.
