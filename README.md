@@ -87,7 +87,9 @@ deliberately rough. Code: `Sources/WinnowSpike`.
 Open **build/Winnow Spike.app** from Finder.
 
 1. **Choose a library.** A window lists the Photos libraries on this Mac, like the one Photos shows when you hold ⌥.
-   Use **Other Library…** to pick one it didn't find. You can switch any time with File › Choose Library (⌘O).
+   Use **Other Library…** to pick one it didn't find. After that Winnow reopens the last library straight away
+   (the window comes back only if that library is gone, for example on a drive that isn't connected).
+   You can switch any time with File › Choose Library (⌘O).
 2. **Full Disk Access.** The first time, the app may say it can't read the library's database.
    Click **Open Privacy Settings**, add Winnow Spike, switch it on, and click **Try Again**.
    The app reads a temporary copy of the database and never changes your library.

@@ -37,6 +37,16 @@ final class AppModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "lastLibraryPath") }
     }
 
+    /// The chooser only comes up the first time, or when the last library is gone (its drive isn't
+    /// connected, say); otherwise Winnow reopens the last library. File › Choose Library switches.
+    init() {
+        if let path = lastLibraryPath, FileManager.default.fileExists(atPath: path) {
+            let url = URL(fileURLWithPath: path)
+            state = .opening(url)
+            Task { await open(url) }
+        }
+    }
+
     func chooseLibrary() {
         state = .choosing
     }
