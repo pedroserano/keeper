@@ -52,6 +52,34 @@ photo's top left, ⌘-click, Shift-click or G; Shift-click on a selected photo d
 and ⌘Z undoes the lot. **Rejected**, in the sidebar, lists every photo you've rejected; there the
 button is **Unreject Selected**.
 
+### How suggested ratings are made
+
+Every photo Photos has analysed gets a suggested star rating, shown in a grey capsule next to "Unrated"
+until you rate it (A takes it, Accept Suggested Ratings takes it for a selection).
+
+1. **One score per photo.** Winnow reads Photos' own scores from the library's database (see
+   Permissions). By default the score is Photos' **curation score**, its estimate of how much a photo is
+   worth showing, or its overall aesthetic score where there's no curation score.
+2. **Stars by where the photo ranks in your library**, not by a fixed cut-off: the bottom 10% of analysed
+   photos get ★, the next 20% ★★, the middle 40% ★★★, the next 20% ★★★★ and the top 10% ★★★★★.
+   So the stars are relative to this library, and the same score can get different stars in another one.
+3. **Learning your taste.** Once you've rated at least 50 photos in Photos (any app, any time) with at
+   least three different star values, Winnow fits a model to them: which mix of ten of Photos' scores
+   (overall, curation, failure, noise, blurriness, exposure, sharp subject, composition, lighting,
+   tasteful blur) best predicts the stars you gave, using ridge regression. It's tested on ratings it
+   wasn't fitted to (5-fold cross-validation, Spearman rank agreement), and used instead of the curation
+   score only when it agrees with your ratings clearly better than curation alone. Step 2 then ranks
+   photos by the model's prediction.
+
+   It learns when a library opens, when you click **Learn from My Ratings** in the sidebar, and each time
+   you leave **Rate to Calibrate**, which lists 150 unrated photos spread evenly from worst to best score,
+   so a short session teaches it the most. The sidebar says which it's using and how well each agrees
+   with you; `Documents/Winnow/out/rating-calibration.csv` has
+   the numbers and the model's weights (no per-photo data).
+
+Photos that Photos hasn't analysed yet (new imports, a library it hasn't processed) get no suggestion. The
+aggressiveness slider below changes reject suggestions only, never stars.
+
 **Reject suggestions** can be made more conservative or more aggressive with the slider under
 Suggestions in the sidebar. While you drag, it previews how many photos would land in Suggested Rejects
 and Best Shots. It moves every reject threshold and how much of the library Photos' curation protects;
