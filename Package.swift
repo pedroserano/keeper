@@ -16,8 +16,6 @@ let package = Package(
                 path: "Sources/WinnowKit"),
         // The app.
         .executableTarget(name: "Winnow", dependencies: ["WinnowCore", "WinnowKit"], path: "Sources/Winnow"),
-        // Phase 0 spike app: pick a library, map its scores, time PhotoKit + Vision, try batch delete.
-        .executableTarget(name: "WinnowSpike", dependencies: ["WinnowCore"], path: "Sources/WinnowSpike"),
         // Command-line front end to WinnowCore, for automated testing.
         .executableTarget(name: "winnow-scores", dependencies: ["WinnowCore"], path: "Sources/WinnowScores"),
         .testTarget(name: "WinnowKitTests", dependencies: ["WinnowKit", "WinnowCore"], path: "Tests/WinnowKitTests"),

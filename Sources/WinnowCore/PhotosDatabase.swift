@@ -2,7 +2,7 @@
 //
 // Two ways in, neither of which ever writes to a library (all changes go through PhotoKit):
 // - `PhotosDatabase` copies Photos.sqlite (+ -wal/-shm) to a temporary folder and reads the copy.
-//   Thorough but slow for big libraries; the spike uses it to survey every score column.
+//   Thorough but slow for big libraries; winnow-scores uses it to survey every score column.
 // - `PhotosDatabase.countPhotos(withUUIDs:inLibrary:)` runs one query on the live file opened
 //   read-only (`mode=ro`). Fast at any library size; used when opening a library.
 
