@@ -221,6 +221,9 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
                                           options: options) { image, info in
                 let degraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
                 let inCloud = info?[PHImageResultIsInCloudKey] as? Bool ?? false
+                if !degraded, image == nil, let error = info?[PHImageErrorKey] as? Error {
+                    log.notice("images: full-size image failed: \(error.localizedDescription, privacy: .public)")
+                }
                 continuation.yield(LoadedImage(image: image, isDegraded: degraded, isInCloud: inCloud))
                 if !degraded || image == nil { continuation.finish() }
             }
@@ -228,12 +231,28 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
     }
 
-    func startCaching(_ assets: [PHAsset], targetSize: CGSize) {
-        imageManager.startCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFit, options: nil)
+    private var cached: (assets: [PHAsset], size: CGSize) = ([], .zero)
+
+    /// Keeps just these photos rendered ahead at this size, and stops the ones you've moved past.
+    /// Left running, every step would queue more full-size renders (slow for RAW files) ahead of
+    /// the photo on screen, which then stayed on its blurry preview.
+    func cacheWindow(_ assets: [PHAsset], targetSize: CGSize) {
+        let ids = Set(assets.map(\.localIdentifier))
+        let stale = cached.size == targetSize ? cached.assets.filter { !ids.contains($0.localIdentifier) } : cached.assets
+        if !stale.isEmpty {
+            imageManager.stopCachingImages(for: stale, targetSize: cached.size, contentMode: .aspectFit, options: nil)
+        }
+        let had = cached.size == targetSize ? Set(cached.assets.map(\.localIdentifier)) : []
+        let new = assets.filter { !had.contains($0.localIdentifier) }
+        if !new.isEmpty {
+            imageManager.startCachingImages(for: new, targetSize: targetSize, contentMode: .aspectFit, options: nil)
+        }
+        cached = (assets, targetSize)
     }
 
-    func stopCaching(_ assets: [PHAsset], targetSize: CGSize) {
-        imageManager.stopCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFit, options: nil)
+    func stopCachingAll() {
+        imageManager.stopCachingImagesForAllAssets()
+        cached = ([], .zero)
     }
 
     // MARK: Writing

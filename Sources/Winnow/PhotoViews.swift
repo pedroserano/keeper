@@ -373,16 +373,18 @@ struct SingleView: View {
                 }
             }
             .task(id: session.cursor) { prefetch(size: geo.size) }
+            .onDisappear { library.stopCachingAll() }
         }
     }
 
-    /// Warm up the next three and previous one so stepping through feels instant.
+    /// Warm up the next two and the previous one so stepping through feels instant (not the
+    /// photo on screen: its own request is already loading it).
     private func prefetch(size: CGSize) {
         let list = session.list
         guard !list.isEmpty else { return }
-        let range = max(session.cursor - 1, 0)...min(session.cursor + 3, list.count - 1)
+        let range = max(session.cursor - 1, 0)...min(session.cursor + 2, list.count - 1)
         let target = CGSize(width: size.width * backingScale, height: size.height * backingScale)
-        library.startCaching(range.map { list.asset(at: $0) }, targetSize: target)
+        library.cacheWindow(range.filter { $0 != session.cursor }.map { list.asset(at: $0) }, targetSize: target)
     }
 }
 
