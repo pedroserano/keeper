@@ -929,7 +929,9 @@ final class CullingSession: ObservableObject {
         decision(asset).favorite ?? asset.isFavorite
     }
 
-    var rejectCount: Int { decisions.values.filter { $0.flag == .reject }.count }
+    /// Rejected photos still in the library. Ones already in Photos' Recently Deleted keep their
+    /// reject in Keeper's records (in case they're recovered) but aren't counted.
+    var rejectCount: Int { counts[.rejected] ?? 0 }
 
     // MARK: Sources and filters
 

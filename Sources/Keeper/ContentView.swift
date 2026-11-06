@@ -385,7 +385,6 @@ struct StatusBar: View {
             if !session.list.isEmpty {
                 Text("\(session.cursor + 1) of \(session.list.count)").monospacedDigit()
             }
-            Label("\(session.rejectCount) rejected", systemImage: "xmark.circle")
             Spacer()
             if session.zoomed { Text("100%").monospacedDigit() }
             Text("? for shortcuts").foregroundStyle(.tertiary)
