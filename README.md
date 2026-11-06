@@ -64,6 +64,7 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | R | Rotate 90° clockwise | An edit in Photos: the original is kept, and Revert to Original restores it. ⌘Z rotates back |
 | G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click. In other lists: select or deselect the photo | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
+| ⌘A, Esc | Select every photo in the list; deselect them | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
 **Look-alikes.** In the background, Keeper fingerprints photos taken within 30 seconds of another
@@ -84,8 +85,10 @@ group (ticks are saved); Shift ↑ ↓ or Shift-click selects several groups so 
 
 **Selecting photos.** In every list but Duplicates and Similar Shots (which pick whole groups),
 photos can be selected for a bulk step. **Accept Suggested Ratings** gives the selected photos that have no stars yet
-their suggested rating in one step (A does it for one photo). Select them with Select All, the circle at a
-photo's top left, ⌘-click, Shift-click or G; Shift-click on a selected photo deselects the run. Photos you've rated or rejected are left alone, the rated ones leave Unreviewed,
+their suggested rating in one step (A does it for one photo). Select them with ⌘A (every photo in the list),
+the circle at a photo's top left, ⌘-click, Shift-click, G, or a click-and-drag across them (⌘ or Shift adds to
+the selection); Shift-click on a selected photo deselects the run,
+and Esc or a click in the space around the photos deselects them all. The bar with the button appears once photos are selected. Photos you've rated or rejected are left alone, the rated ones leave Unreviewed,
 and ⌘Z undoes the lot. **Rejected**, in the sidebar, lists every photo you've rejected; there the
 button is **Unreject Selected**.
 

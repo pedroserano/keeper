@@ -74,6 +74,8 @@ struct ShortcutsSheet: View {
                          ("R", "Rotate 90° clockwise, as an edit in Photos (the original is kept; ⌘Z rotates back)"),
                          ("K", "In compare: keep this one, reject the others. In Duplicates or Similar Shots: keep this one when merging"),
                          ("I", "Show Apple Photos' scores for this photo")]),
+        ("Select", [("⌘A", "Select every photo in the list (not in Duplicates or Similar Shots)"),
+                    ("Esc", "In the grid: deselect them all")]),
         ("Undo", [("⌘Z", "Undo"), ("⇧⌘Z", "Redo")]),
     ]
 

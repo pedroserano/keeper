@@ -794,7 +794,7 @@ final class CullingSession: ObservableObject {
     // MARK: Selecting photos (Unreviewed)
 
     /// Photos picked to accept suggested ratings for, by local identifier. Apart from the cursor:
-    /// ⌘-click or G picks one, Shift-click a run, Select All the lot.
+    /// ⌘-click or G picks one, Shift-click a run, ⌘A the lot, Esc none.
     @Published private(set) var selectedPhotos: Set<String> = []
     @Published private(set) var selectingAll = false
     private var photoAnchor: Int?
@@ -829,6 +829,17 @@ final class CullingSession: ObservableObject {
         let ids = await Task.detached(priority: .userInitiated) { list.indices.map { list.asset(at: $0).localIdentifier } }.value
         selectedPhotos = Set(ids)
         selectingAll = false
+    }
+
+    /// Click-and-drag: exactly these photos (plus `base`, when ⌘ or Shift was held), as the
+    /// rectangle grows and shrinks.
+    func selectPhotos(indices: [Int], adding base: Set<String>) {
+        guard selectsPhotos else { return }
+        let list = list
+        var ids = base
+        for i in indices where list.indices.contains(i) { ids.insert(list.asset(at: i).localIdentifier) }
+        if ids != selectedPhotos { selectedPhotos = ids }
+        if let last = indices.last { photoAnchor = last }
     }
 
     func deselectAllPhotos() {

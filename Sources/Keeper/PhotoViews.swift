@@ -56,6 +56,11 @@ struct GridView: View {
     @EnvironmentObject private var session: CullingSession
     private let cell: CGFloat = 168
     private let spacing: CGFloat = 8
+    /// Click-and-drag selection: the rectangle being dragged, and what was selected before it began.
+    @State private var marquee: CGRect?
+    @State private var marqueeBase: Set<String> = []
+    /// Where the grid of photos sits in the scroll content, for working out which cells a drag covers.
+    @State private var gridOrigin: CGPoint = .zero
 
     var body: some View {
         GeometryReader { geo in
@@ -83,7 +88,36 @@ struct GridView: View {
                             ForEach(session.list.indices, id: \.self) { i in cellView(i, details: false) }
                         }
                     }
+                    .background {
+                        GeometryReader { g in
+                            Color.clear
+                                .onAppear { gridOrigin = g.frame(in: .named("gridContent")).origin }
+                                .onChange(of: g.frame(in: .named("gridContent")).origin) { gridOrigin = $1 }
+                        }
+                    }
                     .padding(spacing)
+                    // A click in the space around the photos (below the last row too) deselects
+                    // them all, as in Finder and Photos.
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .top)
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { session.deselectAllPhotos() }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if let marquee {
+                            Rectangle()
+                                .fill(Color.accentColor.opacity(0.15))
+                                .overlay(Rectangle().stroke(Color.accentColor.opacity(0.8), lineWidth: 1))
+                                .frame(width: marquee.width, height: marquee.height)
+                                .offset(x: marquee.minX, y: marquee.minY)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .coordinateSpace(name: "gridContent")
+                    // Click and drag, from a photo or the space around them, to select a block of
+                    // photos; ⌘ or Shift adds to what's selected.
+                    .simultaneousGesture(marqueeGesture(columns: columns), including: session.selectsPhotos ? .all : .subviews)
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if session.sections != nil, !session.sectionGroups.isEmpty { MergeBar() }
@@ -101,6 +135,46 @@ struct GridView: View {
 }
 
 extension GridView {
+    func marqueeGesture(columns: Int) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named("gridContent"))
+            .onChanged { drag in
+                guard session.selectsPhotos else { return }
+                if marquee == nil {
+                    let keys = NSEvent.modifierFlags
+                    marqueeBase = keys.contains(.command) || keys.contains(.shift) ? session.selectedPhotos : []
+                }
+                let rect = CGRect(x: min(drag.startLocation.x, drag.location.x), y: min(drag.startLocation.y, drag.location.y),
+                                  width: abs(drag.location.x - drag.startLocation.x),
+                                  height: abs(drag.location.y - drag.startLocation.y))
+                marquee = rect
+                session.selectPhotos(indices: cells(in: rect, columns: columns), adding: marqueeBase)
+            }
+            .onEnded { _ in marquee = nil }
+    }
+
+    /// The photos a rectangle (in content coordinates) touches. Every cell is the same size, so
+    /// this is arithmetic, not a lookup of each cell's frame.
+    func cells(in rect: CGRect, columns: Int) -> [Int] {
+        let step = cell + spacing
+        let local = rect.offsetBy(dx: -gridOrigin.x, dy: -gridOrigin.y)
+        let count = session.list.count
+        guard count > 0, local.maxX >= 0, local.maxY >= 0 else { return [] }
+        let rows = (count + columns - 1) / columns
+        let firstRow = max(0, Int(local.minY / step)), lastRow = min(rows - 1, Int(local.maxY / step))
+        let firstCol = max(0, Int(local.minX / step)), lastCol = min(columns - 1, Int(local.maxX / step))
+        guard firstRow <= lastRow, firstCol <= lastCol else { return [] }
+        var out: [Int] = []
+        for r in firstRow...lastRow {
+            for c in firstCol...lastCol {
+                // Only cells the rectangle actually overlaps, not the gaps between them.
+                let frame = CGRect(x: CGFloat(c) * step, y: CGFloat(r) * step, width: cell, height: cell)
+                let i = r * columns + c
+                if i < count, frame.intersects(local) { out.append(i) }
+            }
+        }
+        return out
+    }
+
     func cellView(_ i: Int, details: Bool) -> some View {
         let asset = session.list.asset(at: i)
         return GridCell(asset: asset, decision: session.decision(asset), suggestion: session.suggestion(asset),

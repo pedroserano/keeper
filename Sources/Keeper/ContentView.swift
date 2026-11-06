@@ -21,7 +21,9 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         if let gap = session.accessGap { AccessBanner(gap: gap, session: session) }
                         if session.source == .dateRange { DateRangeBar(session: session) }
+                        // Only while photos are selected (⌘A, ⌘-click, Shift-click or G).
                         if session.selectsPhotos, !session.list.isEmpty,
+                           !session.selectedPhotos.isEmpty || session.selectingAll,
                            session.source == .rejected || session.source == .sideways
                                || session.suggestionsStatus == .ready {
                             AcceptRatingsBar(session: session)
@@ -59,8 +61,10 @@ struct ContentView: View {
             ProgressView("Filtering \(session.source.title)…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if session.list.isEmpty {
+            // Filling the window keeps the status bar at the bottom and messages at the top.
             ContentUnavailableView(emptyTitle, systemImage: "photo.on.rectangle",
                                    description: Text(emptyDetail))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             switch session.mode {
             case .grid: GridView()
@@ -80,14 +84,20 @@ struct ContentView: View {
         }
     }
 
+    /// "0.4%" early on (so a long scan doesn't sit at 0%), "37%" later.
+    private func percent(_ done: Int, _ total: Int) -> String {
+        guard total > 0 else { return "0%" }
+        let p = Double(done) / Double(total) * 100
+        return p < 10 ? String(format: "%.1f%%", p) : "\(Int(p.rounded()))%"
+    }
+
     private var emptyDetail: String {
         if session.source.isGroups {
             switch session.similarity {
             case .waiting:
                 return "Keeper is about to scan for look-alikes."
             case .indexing(let done, let total):
-                let pct = total > 0 ? Int((Double(done) / Double(total) * 100).rounded()) : 0
-                return "Still scanning: \(pct)% done\(timeLeft(session)). Look-alikes appear here when the scan finishes."
+                return "Still scanning: \(percent(done, total)) done\(timeLeft(session)). Look-alikes appear here when the scan finishes."
             case .ready:
                 return "Every group of look-alikes has been merged or culled."
             }
@@ -97,8 +107,7 @@ struct ContentView: View {
             case .waiting:
                 return "Keeper checks which way up your photos are after the look-alikes scan."
             case .scanning(let done, let total):
-                let pct = total > 0 ? Int((Double(done) / Double(total) * 100).rounded()) : 0
-                return "Still checking: \(pct)% done. Photos that look sideways or upside down appear here as they're found."
+                return "Still checking: \(done.formatted()) of \(total.formatted()) photos (\(percent(done, total))). Photos that look sideways or upside down appear here as they're found."
             case .ready:
                 return "No photos look sideways at this confidence. Lower Minimum confidence in the sidebar to see less certain ones."
             }
@@ -167,8 +176,14 @@ struct ContentView: View {
         guard !showingDelete, !showingShortcuts, let window = event.window,
               window.identifier != SettingsWindowMarker.identifier,
               window.sheetParent == nil, window.attachedSheet == nil else { return false }
-        if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
         if let text = window.firstResponder as? NSText, text.isEditable { return false }
+        // ⌘A: select every photo in the list, as in Photos.
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "a", session.selectsPhotos, !session.list.isEmpty {
+            Task { await session.selectAllPhotos() }
+            return true
+        }
+        if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
 
         let s = session
         switch event.keyCode {
@@ -182,7 +197,8 @@ struct ContentView: View {
             else { s.move(by: s.mode == .grid ? step * s.gridColumns : step) }
         case 36, 76: s.openWithReturn()                                    // Return, Enter
         case 53:                                                           // Esc
-            if s.zoomed { s.zoomed = false } else if s.mode != .grid { s.mode = .grid } else { return false }
+            if s.zoomed { s.zoomed = false } else if s.mode != .grid { s.mode = .grid }
+            else if !s.selectedPhotos.isEmpty { s.deselectAllPhotos() } else { return false }
         case 49:                                                           // Space
             s.spacePressed()
         case 51, 117: s.perform(.reject)                                   // ⌫, ⌦
@@ -665,8 +681,8 @@ struct DateRangeBar: View {
 }
 
 
-/// Above every photo list but the group ones: pick photos (Select All, the circle, ⌘-click,
-/// Shift-click, G), then give the picked ones with no rating yet their suggested stars, or in
+/// Above every photo list but the group ones, while photos are picked (⌘A, the circle, ⌘-click,
+/// Shift-click, G; Esc unpicks them all): give the picked ones with no rating yet their suggested stars, or in
 /// Rejected take the reject off them.
 struct AcceptRatingsBar: View {
     @ObservedObject var session: CullingSession
@@ -675,14 +691,9 @@ struct AcceptRatingsBar: View {
 
     var body: some View {
         let selected = session.selectedPhotos.count
-        let allSelected = selected > 0 && selected >= session.list.count
         HStack(spacing: 12) {
-            Button(allSelected ? "Deselect All" : "Select All") {
-                if allSelected { session.deselectAllPhotos() } else { Task { await session.selectAllPhotos() } }
-            }
-            .disabled(session.selectingAll)
-            Text(selected == 0 ? "⌘-click, Shift-click or press G to select photos"
-                               : "\(selected.formatted()) of \(session.list.count.formatted()) photos selected")
+            Text(session.selectingAll ? "Selecting all photos…"
+                 : "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect")
                 .foregroundStyle(.secondary)
             Spacer()
             if counting || session.selectingAll { ProgressView().controlSize(.small) }
