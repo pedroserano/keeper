@@ -1,27 +1,27 @@
-<img src="Resources/AppIcon-1024.png" width="128" alt="Winnow icon: a smiling grain of wheat in front of two photos">
+<img src="Resources/AppIcon-1024.png" width="128" alt="Keeper icon: a photo with a sparkle">
 
-# Winnow
+# Keeper
 
 A personal, keyboard-first photo culling app for Apple Photos on Apple Silicon Macs.
-The spec lives in the Winnow PRD v2 doc.
+Keeper used to be called Winnow. The spec lives in the Winnow PRD v2 doc.
 
 ## Install
 
-Winnow needs a Mac with Apple silicon (M1 or later) running macOS 27. There's no Intel version.
+Keeper needs a Mac with Apple silicon (M1 or later) running macOS 27. There's no Intel version.
 
 ### Download the app
 
-1. Download `Winnow-<version>-arm64.zip` from the latest
-   [release](https://github.com/pedroserano/winnow/releases/latest), unzip it, and move **Winnow.app** to
+1. Download `Keeper-<version>-arm64.zip` from the latest
+   [release](https://github.com/pedroserano/keeper/releases/latest), unzip it, and move **Keeper.app** to
    Applications.
-2. Winnow isn't notarized (it's signed ad hoc), so macOS won't open it the first time. Open
-   **System Settings › Privacy & Security** and click **Open Anyway** next to Winnow, or run:
+2. Keeper isn't notarized (it's signed ad hoc), so macOS won't open it the first time. Open
+   **System Settings › Privacy & Security** and click **Open Anyway** next to Keeper, or run:
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/Winnow.app
+   xattr -dr com.apple.quarantine /Applications/Keeper.app
    ```
 
-3. Open Winnow and allow Photos access, then Full Disk Access when it asks (see
+3. Open Keeper and allow Photos access, then Full Disk Access when it asks (see
    [Permissions](#permissions)).
 
 ### Build from source
@@ -29,33 +29,34 @@ Winnow needs a Mac with Apple silicon (M1 or later) running macOS 27. There's no
 You need Xcode, or just its Command Line Tools, with Swift 6.
 
 ```bash
-git clone https://github.com/pedroserano/winnow.git
+git clone https://github.com/pedroserano/keeper.git
 ```
 
 ```bash
-cd winnow && ./scripts/make-winnow-app.sh
+cd keeper && ./scripts/make-keeper-app.sh
 ```
 
-That builds a release version for Apple silicon at **build/Winnow.app**; move it to Applications or open it
+That builds a release version for Apple silicon at **build/Keeper.app**; move it to Applications or open it
 from there. If your Mac has a free "Apple Development" certificate (add your Apple ID in Xcode › Settings ›
 Accounts), the script signs with it, and Photos and Full Disk Access stay granted across rebuilds;
 otherwise it signs ad hoc and macOS may ask again after each rebuild.
 
-## Using Winnow
+## Using Keeper
 
-Open **Winnow**. Choose a library (it must be the System Photo Library; Winnow tells you if it isn't),
-then pick a source in the sidebar and cull from the keyboard. After the first time, Winnow reopens the last
+Open **Keeper**. Choose a library (it must be the System Photo Library; Keeper tells you if it isn't),
+then pick a source in the sidebar and cull from the keyboard. After the first time, Keeper reopens the last
 library straight away; the chooser comes back only if that library is gone (on a drive that isn't connected,
 say), and File › Choose Library (⌘O) switches. Press **?** for every shortcut. Right-click any photo
 for **Show in Photos**, which opens Photos with that photo selected.
 
 | Key | Does | In Photos |
 | --- | --- | --- |
-| X or ⌫ | Reject | Adds it to the "Winnow – Rejected" album |
-| U | Clear a reject | Leaves the "Winnow – Rejected" album |
+| X or ⌫ | Reject | Adds it to the "Keeper – Rejected" album |
+| U | Clear a reject | Leaves the "Keeper – Rejected" album |
 | F | Favorite or unfavorite | Favorite |
 | 1–5, 0 | Star rating, clear rating | Photos' own rating (macOS 27) |
-| A, I | Accept the suggested rating; show Apple's scores for the photo | |
+| A, I | Accept the suggested rating (in Sideways Photos: rotate the way proposed); show Apple's scores for the photo | |
+| N | In Sideways Photos: not sideways, leave it as it is | |
 | H | Hide | Hides it |
 | ← → ↑ ↓ | Move (decisions move on to the next photo automatically) | |
 | Return, Esc | Grid ↔ single photo | |
@@ -65,11 +66,11 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
-**Look-alikes.** In the background, Winnow fingerprints photos taken within 30 seconds of another
+**Look-alikes.** In the background, Keeper fingerprints photos taken within 30 seconds of another
 (Apple's Vision feature print) and groups the ones that look alike, in two lists: **Duplicates**
 (near-identical copies with the same capture time: re-imports, edits saved twice) and **Similar Shots** (takes of the same moment). Every photo in a group looks
 like every other one, and all were taken within a minute of each other; burst frames, however alike,
-are similar shots. The photo to keep in each group is picked by rules. **Winnow › Settings… (⌘,)** holds the **keeper rules**: a list you
+are similar shots. The photo to keep in each group is picked by rules. **Keeper › Settings… (⌘,)** holds the **keeper rules**: a list you
 check, order (drag) and point either way, as in other duplicate finders. Each says which photos to
 mark (not keep): Rejected, Eyes (closed), Dimensions, File Type (non RAW+HEIC), File Size, Quality
 Score, Face Quality, Favorite, Rating, Album, Missing, Portrait, HDR, Live Photos, Keywords, Title,
@@ -93,14 +94,14 @@ button is **Unreject Selected**.
 Every photo Photos has analysed gets a suggested star rating, shown in a grey capsule next to "Unrated"
 until you rate it (A takes it, Accept Suggested Ratings takes it for a selection).
 
-1. **One score per photo.** Winnow reads Photos' own scores from the library's database (see
+1. **One score per photo.** Keeper reads Photos' own scores from the library's database (see
    Permissions). By default the score is Photos' **curation score**, its estimate of how much a photo is
    worth showing, or its overall aesthetic score where there's no curation score.
 2. **Stars by where the photo ranks in your library**, not by a fixed cut-off: the bottom 10% of analysed
    photos get ★, the next 20% ★★, the middle 40% ★★★, the next 20% ★★★★ and the top 10% ★★★★★.
    So the stars are relative to this library, and the same score can get different stars in another one.
 3. **Learning your taste.** Once you've rated at least 50 photos in Photos (any app, any time) with at
-   least three different star values, Winnow fits a model to them: which mix of ten of Photos' scores
+   least three different star values, Keeper fits a model to them: which mix of ten of Photos' scores
    (overall, curation, failure, noise, blurriness, exposure, sharp subject, composition, lighting,
    tasteful blur) best predicts the stars you gave, using ridge regression. It's tested on ratings it
    wasn't fitted to (5-fold cross-validation, Spearman rank agreement), and used instead of the curation
@@ -110,7 +111,7 @@ until you rate it (A takes it, Accept Suggested Ratings takes it for a selection
    It learns when a library opens, when you click **Learn from My Ratings** in the sidebar, and each time
    you leave **Rate to Calibrate**, which lists 150 unrated photos spread evenly from worst to best score,
    so a short session teaches it the most. The sidebar says which it's using and how well each agrees
-   with you; `Documents/Winnow/out/rating-calibration.csv` has
+   with you; `~/Library/Application Support/Keeper/Reports/rating-calibration.csv` has
    the numbers and the model's weights (no per-photo data).
 
 Photos that Photos hasn't analysed yet (new imports, a library it hasn't processed) get no suggestion. The
@@ -120,6 +121,42 @@ aggressiveness slider below changes reject suggestions only, never stars.
 Suggestions in the sidebar. While you drag, it previews how many photos would land in Suggested Rejects
 and Best Shots. It moves every reject threshold and how much of the library Photos' curation protects;
 stars don't change.
+
+### Sideways photos
+
+**Sideways Photos**, in the sidebar, lists photos that look sideways or upside down, each with the turn
+Keeper proposes and how sure it is (↻ 90° · 87%), surest first. Select them and click **Rotate Selected**
+(or press A for one photo), and each turns the way shown on it; ⌘Z turns them all back. **Not Sideways**
+(N) leaves photos as they are, and they stop showing until they change.
+
+In the background, after the look-alikes scan, Keeper checks every photo once from a small local preview
+(nothing is downloaded), newest first. The first run on a big library takes hours. It shows its progress in
+the sidebar, pauses when the Mac runs hot, and picks up where it left off; after that only new and changed
+photos are checked. Screenshots, and photos Photos won't let an app edit, are skipped.
+
+Each photo is judged from four cues, which vote on the turn that makes it upright:
+
+- **Faces**: Vision finds faces at any angle and reports how far each is tilted. A face tilted about 90°
+  means the photo needs a quarter turn. Faces are the strongest cue.
+- **People**: body pose, checked all four ways up. The way where the neck is above the hips gets the credit.
+- **Text**: checked all four ways up. The way with the most real dictionary words gets the credit, since
+  Vision reads upside-down text as gibberish and can't read sideways text at all.
+- **Scenes**: an image-recognition network (MobileNetV3) fine-tuned to tell which way a photo is turned,
+  for landscapes, buildings and objects. Most photos in a library are upright, so it's weighed by realistic
+  odds (90% upright, 4.5% each way sideways, 1% upside down). On photos it never saw in training, it found
+  about half of the sideways ones with no upright photos wrongly flagged at 50% confidence; on its own it
+  almost never proposes upside down, which faces, people and text still do.
+
+The percentage is how clearly the cues agree, not the chance a proposal is right. **Minimum confidence**,
+under Orientation in the sidebar (50% to start), shows fewer, surer proposals when raised, or more
+sideways photos with a few false alarms when lowered.
+
+Rotating is an edit in Photos, as with R: the original isn't touched, **Image › Revert to Original** in
+Photos brings it back, and the photo keeps its date, place, albums, keywords and people. Live Photos stay
+live.
+
+The detection and the network come from ApplePhotosRotator, an app by the same author that does only
+this.
 
 **Date Range** in the sidebar shows only the photos taken between two days (or a quick pick like Last
 Year), for culling one trip or month at a time.
@@ -133,18 +170,23 @@ the sidebar, and picks up where it left off; after that only new photos are fing
 Rejected photos are only deleted when you click **Delete Rejected** in the toolbar: one batch, one macOS
 confirmation, and they go to Recently Deleted for 30 days.
 
-Ratings and Favorites live in Photos. Winnow keeps only its own data (rejects, where you were) in
-`~/Library/Application Support/Winnow/`, one database per library.
+Ratings and Favorites live in Photos. Keeper stores only its own data (rejects, where you were, scans) in
+`~/Library/Application Support/Keeper/`, one database per library. **Keeper › Settings › Reset** starts over:
+**Scan Again** redoes the look-alike and orientation scans, **Reset This Library** forgets everything Keeper
+stored for the open library, and **Reset Keeper** removes all its data and settings. None of them changes
+Photos. Coming from Winnow, the first launch moves its data and settings over and renames the
+"Winnow – Rejected" album to "Keeper – Rejected".
 
-Code: `Sources/Winnow` (the app), `Sources/WinnowKit` (decisions, their database, undo; unit-tested in
-`Tests/WinnowKitTests`), `Sources/WinnowCore` (reading a library's own database).
+Code: `Sources/Keeper` (the app), `Sources/KeeperOrientation` (the sideways-photo cues; the network is
+`Resources/OrientationNet.mlpackage`), `Sources/KeeperKit` (decisions, their database, undo; unit-tested in
+`Tests/KeeperKitTests`), `Sources/KeeperCore` (reading a library's own database).
 
 ### Permissions
 
-Winnow asks for two:
+Keeper asks for two:
 
 - **Photos** (PhotoKit): the photos themselves, their dates, Favorite, Hidden, ratings and albums, and
-  writing your decisions back. Everything Winnow changes goes through this, so Photos stays in charge of
+  writing your decisions back. Everything Keeper changes goes through this, so Photos stays in charge of
   its library.
 - **Full Disk Access**: to read the library's own database (`database/Photos.sqlite` inside the
   `.photoslibrary` package). macOS protects that package, and Photos access doesn't cover reading files in
@@ -156,21 +198,21 @@ Winnow asks for two:
     whether the original is on this Mac, which most keeper rules use;
   - which library is the System Photo Library, checked when you open one.
 
-  Winnow opens it read-only and never changes it.
+  Keeper opens it read-only and never changes it.
 
-Without Full Disk Access you can still cull, rate, reject, favorite and rotate; a banner says what's missing
+Without Full Disk Access you can still cull, rate, reject, favorite and rotate, and Sideways Photos works in full (it needs only Photos access); a banner says what's missing
 and opens the right System Settings pane. Suggestions and the file details are missing, and Duplicates and
 Similar Shots still find look-alikes but have little for their keeper rules to go on. Granting it later and
 reopening the library brings them back.
 
 ## For development
 
-Build the app with `./scripts/make-winnow-app.sh`, and run the unit tests with `swift test`.
+Build the app with `./scripts/make-keeper-app.sh`, and run the unit tests with `swift test`.
 
-`winnow-scores` is a command-line front end to WinnowCore, used for automated tests:
+`keeper-scores` is a command-line front end to KeeperCore, used for automated tests:
 
 ```bash
-swift run winnow-scores schema --library "PATH/TO/Library.photoslibrary"
+swift run keeper-scores schema --library "PATH/TO/Library.photoslibrary"
 ```
 
 ## License

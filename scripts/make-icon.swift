@@ -1,5 +1,6 @@
-// Draws Winnow's app icon: the grain worth keeping (a smiling wheat grain with a sprout) in front
-// of two photo prints, on a mint-to-teal tile. Writes Resources/AppIcon-1024.png and Resources/Winnow.icns.
+// Draws Keeper's app icon in the macOS style: a continuous-corner tile with a soft glassy light,
+// one photo print turned slightly, and a sparkle: the library getting better.
+// Writes Resources/AppIcon-1024.png and Resources/Keeper.icns.
 //
 //   swift scripts/make-icon.swift
 
@@ -13,18 +14,17 @@ func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> NSColor {
             blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
 }
 
-func withShadow(_ blur: CGFloat, _ offset: CGSize, _ alpha: CGFloat, _ draw: () -> Void) {
+func withShadow(_ blur: CGFloat, _ offset: CGSize, _ shadowColor: NSColor, _ draw: () -> Void) {
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
     shadow.shadowBlurRadius = blur
     shadow.shadowOffset = offset
-    shadow.shadowColor = NSColor.black.withAlphaComponent(alpha)
+    shadow.shadowColor = shadowColor
     shadow.set()
     draw()
     NSGraphicsContext.restoreGraphicsState()
 }
 
-/// Runs `draw` rotated by `degrees` around `center`.
 func rotated(_ degrees: CGFloat, around center: CGPoint, _ draw: () -> Void) {
     NSGraphicsContext.saveGraphicsState()
     let t = NSAffineTransform()
@@ -36,158 +36,97 @@ func rotated(_ degrees: CGFloat, around center: CGPoint, _ draw: () -> Void) {
     NSGraphicsContext.restoreGraphicsState()
 }
 
-/// A white print with a little landscape: sky, sun, two hills.
-func photoCard(center: CGPoint, degrees: CGFloat, sky: (UInt32, UInt32), hills: (UInt32, UInt32)) {
-    rotated(degrees, around: center) {
-        let card = NSRect(x: center.x - 215, y: center.y - 180, width: 430, height: 360)
-        withShadow(28, CGSize(width: 0, height: -14), 0.22) {
-            color(0xFFFFFF).setFill()
-            NSBezierPath(roundedRect: card, xRadius: 34, yRadius: 34).fill()
-        }
-        let photo = card.insetBy(dx: 26, dy: 26)
-        let clip = NSBezierPath(roundedRect: photo, xRadius: 18, yRadius: 18)
-        NSGraphicsContext.saveGraphicsState()
-        clip.addClip()
-        NSGradient(starting: color(sky.0), ending: color(sky.1))!.draw(in: photo, angle: -90)
-        color(0xFFE27A).setFill()
-        NSBezierPath(ovalIn: NSRect(x: photo.maxX - 120, y: photo.maxY - 115, width: 76, height: 76)).fill()
-        color(hills.0).setFill()
-        NSBezierPath(ovalIn: NSRect(x: photo.minX - 80, y: photo.minY - 170, width: 330, height: 280)).fill()
-        color(hills.1).setFill()
-        NSBezierPath(ovalIn: NSRect(x: photo.minX + 130, y: photo.minY - 200, width: 360, height: 290)).fill()
-        NSGraphicsContext.restoreGraphicsState()
+/// A superellipse ("squircle"): the continuous corners of macOS icons, which a plain rounded
+/// rectangle only approximates.
+func squircle(_ rect: NSRect, exponent n: CGFloat = 5) -> NSBezierPath {
+    let path = NSBezierPath()
+    let a = rect.width / 2, b = rect.height / 2, c = CGPoint(x: rect.midX, y: rect.midY)
+    let steps = 720
+    for i in 0...steps {
+        let t = CGFloat(i) / CGFloat(steps) * 2 * .pi
+        let ct = cos(t), st = sin(t)
+        let x = c.x + a * (ct < 0 ? -1 : 1) * pow(abs(ct), 2 / n)
+        let y = c.y + b * (st < 0 ? -1 : 1) * pow(abs(st), 2 / n)
+        if i == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.line(to: CGPoint(x: x, y: y)) }
     }
+    path.close()
+    return path
+}
+
+/// A four-pointed sparkle with curved sides, centred on `c`.
+func sparklePath(_ c: CGPoint, _ r: CGFloat, waist: CGFloat = 0.18) -> NSBezierPath {
+    let p = NSBezierPath()
+    let tips = [CGPoint(x: c.x, y: c.y + r), CGPoint(x: c.x + r, y: c.y),
+                CGPoint(x: c.x, y: c.y - r), CGPoint(x: c.x - r, y: c.y)]
+    p.move(to: tips[0])
+    for i in 0..<4 {
+        let next = tips[(i + 1) % 4]
+        // Pull each side in towards the centre for the pinched star shape.
+        let control = CGPoint(x: c.x + (tips[i].x - c.x + next.x - c.x) * waist,
+                              y: c.y + (tips[i].y - c.y + next.y - c.y) * waist)
+        p.curve(to: next, controlPoint1: control, controlPoint2: control)
+    }
+    p.close()
+    return p
 }
 
 image.lockFocus()
 
-// Tile: the standard macOS icon area (824 of 1024) with soft corners.
+// Tile: the standard macOS icon area (824 of 1024), with its drop shadow.
 let tile = NSRect(x: 100, y: 100, width: 824, height: 824)
-let tilePath = NSBezierPath(roundedRect: tile, xRadius: 186, yRadius: 186)
-withShadow(30, CGSize(width: 0, height: -12), 0.28) {
-    color(0x6FCFBF).setFill()
+let tilePath = squircle(tile, exponent: 4.2)
+withShadow(28, CGSize(width: 0, height: -10), color(0x000000, 0.30)) {
+    color(0x2B4FD8).setFill()
     tilePath.fill()
 }
 NSGraphicsContext.saveGraphicsState()
 tilePath.addClip()
-NSGradient(starting: color(0x8EE0C9), ending: color(0x3E97C2))!.draw(in: tile, angle: -70)
-// A soft light from the top left, fading out with no edge.
-NSGradient(colors: [color(0xFFFFFF, 0.30), color(0xFFFFFF, 0.08), color(0xFFFFFF, 0)])!
-    .draw(in: tile, relativeCenterPosition: NSPoint(x: -0.7, y: 0.7))
+// Deep blue to violet, lit from the top.
+NSGradient(colors: [color(0x5AA2FF), color(0x3A5BEA), color(0x5B33C9)],
+           atLocations: [0, 0.55, 1], colorSpace: .sRGB)!.draw(in: tile, angle: -90)
+// Glass: a soft sheen over the top half, and a glow behind where the sparkle sits.
+NSGradient(colors: [color(0xFFFFFF, 0.28), color(0xFFFFFF, 0)])!
+    .draw(in: NSRect(x: tile.minX, y: tile.midY, width: tile.width, height: tile.height / 2), angle: -90)
+NSGradient(colors: [color(0xFFF4C2, 0.55), color(0xFFF4C2, 0)])!
+    .draw(fromCenter: CGPoint(x: 712, y: 700), radius: 0, toCenter: CGPoint(x: 712, y: 700), radius: 300, options: [])
 
-// Two prints, fanned.
-photoCard(center: CGPoint(x: 440, y: 615), degrees: 11, sky: (0xBFE3FF, 0xEAF6FF), hills: (0x8FD18A, 0x5FB46B))
-photoCard(center: CGPoint(x: 590, y: 590), degrees: -9, sky: (0xFFC7B5, 0xFFE8D6), hills: (0xF2A0A8, 0xE07C8E))
-
-// The grain: plump, golden, smiling, with a sprout.
-let grainCenter = CGPoint(x: 512, y: 378)
-rotated(-8, around: grainCenter) {
-    let body = NSRect(x: grainCenter.x - 150, y: grainCenter.y - 185, width: 300, height: 365)
-    let grain = NSBezierPath(ovalIn: body)
-
-    // Sprout first, so the grain sits in front of its stem. A white outline, like a sticker,
-    // lifts it off the photo behind.
-    let stem = NSBezierPath()
-    stem.move(to: CGPoint(x: grainCenter.x, y: body.maxY - 18))
-    stem.curve(to: CGPoint(x: grainCenter.x + 8, y: body.maxY + 70),
-               controlPoint1: CGPoint(x: grainCenter.x - 14, y: body.maxY + 22),
-               controlPoint2: CGPoint(x: grainCenter.x + 14, y: body.maxY + 44))
-    stem.lineCapStyle = .round
-    let leaves: [(CGPoint, CGFloat, UInt32)] = [
-        (CGPoint(x: grainCenter.x + 8 - 58, y: body.maxY + 84), 28, 0x57C266),
-        (CGPoint(x: grainCenter.x + 8 + 62, y: body.maxY + 84), -32, 0x6FD27A),
-    ]
-    func leaf(_ c: CGPoint) -> NSBezierPath { NSBezierPath(ovalIn: NSRect(x: c.x - 60, y: c.y - 25, width: 120, height: 50)) }
-    withShadow(14, CGSize(width: 0, height: -6), 0.25) {
-        color(0xFFFFFF).setStroke()
-        stem.lineWidth = 34
-        stem.stroke()
-        for (c, deg, _) in leaves {
-            rotated(deg, around: c) {
-                let l = leaf(c)
-                l.lineWidth = 18
-                l.stroke()
-                color(0xFFFFFF).setFill()
-                l.fill()
-            }
-        }
-    }
-    stem.lineWidth = 16
-    color(0x3E9E4F).setStroke()
-    stem.stroke()
-    for (c, deg, hex) in leaves {
-        rotated(deg, around: c) {
-            color(hex).setFill()
-            leaf(c).fill()
-        }
-    }
-
-    withShadow(26, CGSize(width: 0, height: -16), 0.30) {
-        color(0xF2B04A).setFill()
-        grain.fill()
-    }
-    NSGraphicsContext.saveGraphicsState()
-    grain.addClip()
-    NSGradient(colors: [color(0xFFE48C), color(0xF7BF52), color(0xE89A34)])!
-        .draw(in: grain, relativeCenterPosition: NSPoint(x: -0.35, y: 0.4))
-    // The grain's crease, drawn as a soft curve down one side.
-    let crease = NSBezierPath()
-    crease.move(to: CGPoint(x: body.midX + 92, y: body.maxY - 60))
-    crease.curve(to: CGPoint(x: body.midX + 96, y: body.minY + 70),
-                 controlPoint1: CGPoint(x: body.midX + 150, y: body.midY + 60),
-                 controlPoint2: CGPoint(x: body.midX + 150, y: body.midY - 70))
-    crease.lineWidth = 12
-    crease.lineCapStyle = .round
-    color(0xD98A2B, 0.55).setStroke()
-    crease.stroke()
-    // A highlight.
-    color(0xFFFFFF, 0.45).setFill()
-    rotated(-25, around: CGPoint(x: body.minX + 95, y: body.maxY - 110)) {
-        NSBezierPath(ovalIn: NSRect(x: body.minX + 60, y: body.maxY - 150, width: 70, height: 110)).fill()
-    }
-    NSGraphicsContext.restoreGraphicsState()
-    color(0xC9801F).setStroke()
-    grain.lineWidth = 9
-    grain.stroke()
-
-    // Face.
-    let eyeY = grainCenter.y + 30
-    for x in [grainCenter.x - 62, grainCenter.x + 52] {
-        color(0x3D2412).setFill()
-        NSBezierPath(ovalIn: NSRect(x: x - 21, y: eyeY - 26, width: 42, height: 52)).fill()
+// One print, turned a little, with a landscape: sky, sun, hills.
+rotated(-8, around: CGPoint(x: 492, y: 470)) {
+    let card = NSRect(x: 492 - 250, y: 470 - 205, width: 500, height: 410)
+    withShadow(36, CGSize(width: 0, height: -18), color(0x1A0F5C, 0.45)) {
         color(0xFFFFFF).setFill()
-        NSBezierPath(ovalIn: NSRect(x: x - 8, y: eyeY + 4, width: 15, height: 15)).fill()
+        NSBezierPath(roundedRect: card, xRadius: 40, yRadius: 40).fill()
     }
-    for x in [grainCenter.x - 108, grainCenter.x + 98] {
-        color(0xFF7F96, 0.55).setFill()
-        NSBezierPath(ovalIn: NSRect(x: x - 34, y: eyeY - 70, width: 68, height: 38)).fill()
-    }
-    let smile = NSBezierPath()
-    smile.appendArc(withCenter: CGPoint(x: grainCenter.x - 5, y: eyeY - 40), radius: 38,
-                    startAngle: 205, endAngle: 335)
-    smile.lineWidth = 13
-    smile.lineCapStyle = .round
-    color(0x3D2412).setStroke()
-    smile.stroke()
+    let photo = card.insetBy(dx: 28, dy: 28)
+    NSGraphicsContext.saveGraphicsState()
+    NSBezierPath(roundedRect: photo, xRadius: 20, yRadius: 20).addClip()
+    NSGradient(colors: [color(0xFFB27A), color(0xFFD9A8), color(0xBFE3FF)],
+               atLocations: [0, 0.45, 1], colorSpace: .sRGB)!.draw(in: photo, angle: 90)
+    color(0xFFF1B8).setFill()
+    NSBezierPath(ovalIn: NSRect(x: photo.minX + 70, y: photo.minY + 120, width: 92, height: 92)).fill()
+    color(0x4FA87A).setFill()
+    NSBezierPath(ovalIn: NSRect(x: photo.minX - 90, y: photo.minY - 190, width: 380, height: 300)).fill()
+    color(0x2F7F67).setFill()
+    NSBezierPath(ovalIn: NSRect(x: photo.minX + 150, y: photo.minY - 230, width: 420, height: 320)).fill()
+    NSGraphicsContext.restoreGraphicsState()
 }
 
-// A sparkle: this is the one you keep.
-func sparkle(at c: CGPoint, _ r: CGFloat) {
-    let p = NSBezierPath()
-    p.move(to: CGPoint(x: c.x, y: c.y + r))
-    p.curve(to: CGPoint(x: c.x + r, y: c.y), controlPoint1: CGPoint(x: c.x + r * 0.12, y: c.y + r * 0.12),
-            controlPoint2: CGPoint(x: c.x + r * 0.12, y: c.y + r * 0.12))
-    p.curve(to: CGPoint(x: c.x, y: c.y - r), controlPoint1: CGPoint(x: c.x + r * 0.12, y: c.y - r * 0.12),
-            controlPoint2: CGPoint(x: c.x + r * 0.12, y: c.y - r * 0.12))
-    p.curve(to: CGPoint(x: c.x - r, y: c.y), controlPoint1: CGPoint(x: c.x - r * 0.12, y: c.y - r * 0.12),
-            controlPoint2: CGPoint(x: c.x - r * 0.12, y: c.y - r * 0.12))
-    p.curve(to: CGPoint(x: c.x, y: c.y + r), controlPoint1: CGPoint(x: c.x - r * 0.12, y: c.y + r * 0.12),
-            controlPoint2: CGPoint(x: c.x - r * 0.12, y: c.y + r * 0.12))
-    color(0xFFFFFF).setFill()
-    p.fill()
+// The sparkle, big at the print's top right, with a small companion.
+let star = CGPoint(x: 712, y: 700)
+withShadow(30, CGSize(width: 0, height: -6), color(0xFFB300, 0.55)) {
+    NSGradient(colors: [color(0xFFFFFF), color(0xFFE48A)])!
+        .draw(in: sparklePath(star, 150), angle: -90)
 }
-sparkle(at: CGPoint(x: 748, y: 352), 50)
-sparkle(at: CGPoint(x: 806, y: 432), 24)
+withShadow(14, .zero, color(0xFFB300, 0.5)) {
+    color(0xFFFFFF).setFill()
+    sparklePath(CGPoint(x: 820, y: 560), 52).fill()
+}
+
+// A fine light edge, as glass catches light at its rim.
+color(0xFFFFFF, 0.22).setStroke()
+let rim = squircle(tile.insetBy(dx: 2, dy: 2), exponent: 4.2)
+rim.lineWidth = 4
+rim.stroke()
 NSGraphicsContext.restoreGraphicsState()
 
 image.unlockFocus()
@@ -205,7 +144,7 @@ NSGraphicsContext.restoreGraphicsState()
 let master = resources.appendingPathComponent("AppIcon-1024.png")
 try! rep.representation(using: .png, properties: [:])!.write(to: master)
 
-let iconset = FileManager.default.temporaryDirectory.appendingPathComponent("Winnow.iconset")
+let iconset = FileManager.default.temporaryDirectory.appendingPathComponent("Keeper.iconset")
 try? FileManager.default.removeItem(at: iconset)
 try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 for points in [16, 32, 128, 256, 512] {
@@ -225,7 +164,7 @@ for points in [16, 32, 128, 256, 512] {
 }
 let iconutil = Process()
 iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-iconutil.arguments = ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("Winnow.icns").path]
+iconutil.arguments = ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("Keeper.icns").path]
 try! iconutil.run()
 iconutil.waitUntilExit()
-print("Wrote \(master.path) and Resources/Winnow.icns")
+print("Wrote \(master.path) and Resources/Keeper.icns")

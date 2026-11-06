@@ -20,6 +20,17 @@ if [ -n "$ICON" ]; then
   cp "$ICON" "$APP/Contents/Resources/"
 fi
 
+# Keeper's orientation network (Sideways Photos): compiled now when Xcode's Core ML compiler is
+# installed; otherwise bundled as is, and Keeper compiles it once on first use.
+if [ "$PRODUCT" = "Keeper" ] && [ -d Resources/OrientationNet.mlpackage ]; then
+  mkdir -p "$APP/Contents/Resources"
+  if xcrun --find coremlcompiler >/dev/null 2>&1; then
+    xcrun coremlcompiler compile Resources/OrientationNet.mlpackage "$APP/Contents/Resources" >/dev/null
+  else
+    cp -R Resources/OrientationNet.mlpackage "$APP/Contents/Resources/"
+  fi
+fi
+
 IDENTITY="${WINNOW_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')}"
 codesign --force --sign "${IDENTITY:--}" "$APP"
 echo "Built $APP (signed: ${IDENTITY:-ad-hoc})"
