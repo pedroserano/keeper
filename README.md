@@ -23,7 +23,7 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | Return, Esc | Grid ↔ single photo | |
 | Space, Z | In the grid, Space shows the photo filling the window and Space again goes back; in a photo, 100% zoom on and off. Z zooms on the main face | |
 | R | Rotate 90° clockwise | An edit in Photos: the original is kept, and Revert to Original restores it. ⌘Z rotates back |
-| G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click. In Unreviewed: select or deselect the photo | |
+| G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click. In other lists: select or deselect the photo | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
@@ -31,19 +31,24 @@ for **Show in Photos**, which opens Photos with that photo selected.
 (Apple's Vision feature print) and groups the ones that look alike, in two lists: **Duplicates**
 (near-identical copies with the same capture time: re-imports, edits saved twice) and **Similar Shots** (takes of the same moment). Every photo in a group looks
 like every other one, and all were taken within a minute of each other; burst frames, however alike,
-are similar shots. The suggested keeper leans
-towards the bigger file: for duplicates it's the largest copy (most pixels, then biggest file); for
-similar shots, file size counts twice as much as how good the photo looks, faces count as much as looks
-(Photos' own face quality), and a take where someone's eyes are closed is never suggested while another
-take has them open; it gets an "Eyes closed" label instead. To keep a different photo,
+are similar shots. The photo to keep in each group is picked by rules. **Winnow › Settings… (⌘,)** holds the **keeper rules**: a list you
+check, order (drag) and point either way, as in other duplicate finders. Each says which photos to
+mark (not keep): Rejected, Eyes (closed), Dimensions, File Type (non RAW+HEIC), File Size, Quality
+Score, Face Quality, Favorite, Rating, Album, Missing, Portrait, HDR, Live Photos, Keywords, Title,
+Caption, Geo Location, Metadata, Referenced, File Name, Capture, Created and Modified Date. The first
+checked rule where a group's photos differ picks the keeper; sizes within 5% count as the same, so
+with the default order a RAW original wins when it's about as big as the biggest copy. The group
+header says which rule decided. To keep a different photo,
 click **Keep** under it (or select it and press K); your picks are saved with the library. Groups are listed one section at a time with each
 photo's time, dimensions and file size; ↑ ↓ move a group at a time, G ticks or unticks the
 group (ticks are saved); Shift ↑ ↓ or Shift-click selects several groups so G ticks or unticks them all, and C compares it.
 
-**Accept Suggested Ratings**, above Unreviewed, gives the selected photos that have no stars yet
+**Selecting photos.** In every list but Duplicates and Similar Shots (which pick whole groups),
+photos can be selected for a bulk step. **Accept Suggested Ratings** gives the selected photos that have no stars yet
 their suggested rating in one step (A does it for one photo). Select them with Select All, the circle at a
 photo's top left, ⌘-click, Shift-click or G; Shift-click on a selected photo deselects the run. Photos you've rated or rejected are left alone, the rated ones leave Unreviewed,
-and ⌘Z undoes the lot.
+and ⌘Z undoes the lot. **Rejected**, in the sidebar, lists every photo you've rejected; there the
+button is **Unreject Selected**.
 
 **Reject suggestions** can be made more conservative or more aggressive with the slider under
 Suggestions in the sidebar. While you drag, it previews how many photos would land in Suggested Rejects

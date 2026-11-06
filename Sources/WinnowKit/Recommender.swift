@@ -116,6 +116,7 @@ public struct Recommender: Sendable {
     public let analysedCount: Int
     public let groups: [SimilarGroup]
     public let files: [String: FileInfo]
+    public let keeperRules: KeeperRules
     /// Duplicates and similar shots, the photo to keep first. A photo can be in one group of each kind.
     public let lookAlikes: [LookAlikeGroup]
     let duplicateIndex: [String: Int]
@@ -123,8 +124,9 @@ public struct Recommender: Sendable {
 
     public init(scores: [String: AppleScores], screenshots: Set<String> = [], model: RatingModel? = nil,
                 groups: [SimilarGroup] = [], files: [String: FileInfo] = [:], faces: [String: FaceInfo] = [:],
-                aggressiveness: Double = 0.5) {
+                aggressiveness: Double = 0.5, keeperRules: KeeperRules = .standard) {
         self.scores = scores
+        self.keeperRules = keeperRules
         self.screenshots = screenshots
         self.faces = faces
         self.aggressiveness = aggressiveness
@@ -145,11 +147,9 @@ public struct Recommender: Sendable {
         lowScoreCutoff = percentiles(basis, [thresholds.lowScorePercentile]).first
         protectCutoff = percentiles(analysed.compactMap(\.curation), [thresholds.protectPercentile]).first
 
-        func score(_ uuid: String) -> Double {
-            guard let s = scores[uuid], s.isAnalysed else { return -.infinity }
-            return model.map { $0.predict(s) } ?? s.curation ?? s.overall ?? -.infinity
-        }
-        lookAlikes = LookAlikes.build(groups: groups, score: score, files: files, faces: faces)
+        lookAlikes = LookAlikes.build(groups: groups, facts: Self.keeperFacts(scores: scores, model: model,
+                                                                              files: files, faces: faces),
+                                      rules: keeperRules)
         var duplicates: [String: Int] = [:], similar: [String: Int] = [:]
         for (i, g) in lookAlikes.enumerated() {
             for m in g.members {
@@ -161,9 +161,34 @@ public struct Recommender: Sendable {
     }
 
     /// The same suggestions with something changed; scores, screenshots, files and faces carry over.
-    public func with(model: RatingModel?? = nil, groups: [SimilarGroup]? = nil, aggressiveness: Double? = nil) -> Recommender {
+    public func with(model: RatingModel?? = nil, groups: [SimilarGroup]? = nil, aggressiveness: Double? = nil,
+                     keeperRules: KeeperRules? = nil) -> Recommender {
         Recommender(scores: scores, screenshots: screenshots, model: model ?? self.model, groups: groups ?? self.groups,
-                    files: files, faces: faces, aggressiveness: aggressiveness ?? self.aggressiveness)
+                    files: files, faces: faces, aggressiveness: aggressiveness ?? self.aggressiveness,
+                    keeperRules: keeperRules ?? self.keeperRules)
+    }
+
+    /// What the keeper rules look at; how good a photo looks is the same score stars come from.
+    static func keeperFacts(scores: [String: AppleScores], model: RatingModel?, files: [String: FileInfo],
+                            faces: [String: FaceInfo], rejected: Set<String> = []) -> KeeperFacts {
+        KeeperFacts(score: { uuid in
+            guard let s = scores[uuid], s.isAnalysed else { return -.infinity }
+            return model.map { $0.predict(s) } ?? s.curation ?? s.overall ?? -.infinity
+        }, files: files, faces: faces, rejected: rejected)
+    }
+
+    /// The keeper for a group once some of its photos are rejected (by default a rejected photo is
+    /// never kept while another isn't). The groups themselves are built without rejects, which
+    /// change with every key press.
+    public func keeper(of group: LookAlikeGroup, rejected: Set<String>) -> String {
+        let facts = Self.keeperFacts(scores: scores, model: model, files: files, faces: faces, rejected: rejected)
+        return LookAlikes.suggestedKeeper(group.members, facts: facts, rules: keeperRules)
+    }
+
+    /// The rule that picked this group's keeper, for the group's header.
+    public func keeperReason(of group: LookAlikeGroup, rejected: Set<String>) -> KeeperRule? {
+        let facts = Self.keeperFacts(scores: scores, model: model, files: files, faces: faces, rejected: rejected)
+        return LookAlikes.decidingRule(group.members, facts: facts, rules: keeperRules).rule
     }
 
     /// The photo's group of the given kind, if it has one.

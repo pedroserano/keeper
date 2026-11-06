@@ -69,12 +69,14 @@ final class Database {
     }
 
     /// Calls `body` with each result row's statement, for typed reads of large results.
-    func forEachRow(_ sql: String, _ body: (OpaquePointer) -> Void) throws {
+    func forEachRow(_ sql: String, _ arguments: [String] = [], _ body: (OpaquePointer) -> Void) throws {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
             throw PhotosDatabaseError(kind: .sql, message: "SQL error: \(String(cString: sqlite3_errmsg(handle)))\n\(sql)")
         }
         defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (i, value) in arguments.enumerated() { sqlite3_bind_text(stmt, Int32(i + 1), value, -1, transient) }
         while sqlite3_step(stmt) == SQLITE_ROW { body(stmt) }
     }
 
@@ -426,26 +428,59 @@ extension PhotosDatabase {
 
 // MARK: - File details
 
-/// What Photos records about a photo's original file. nil = not in this macOS version's schema.
+/// What Photos records about a photo and its original file, for showing file details and for the
+/// keeper rules (KeeperRules). nil = not in this macOS version's schema.
 public struct FileInfo: Sendable, Equatable {
     public var width: Int?
     public var height: Int?
     public var bytes: Int?
     public var filename: String?
+    /// The original is a camera RAW file (CR2, NEF, DNG, ARW…), from its file type in Photos.
+    public var isRaw = false
+    public var isHEIC = false
+    public var favorite = false
+    /// Stars in Photos, 0–5.
+    public var rating = 0
+    public var portrait = false
+    public var hdr = false
+    public var live = false
+    public var hasLocation = false
+    public var hasTitle = false
+    public var hasCaption = false
+    public var hasKeywords = false
+    /// In one of your albums (not shared or smart albums, not Winnow's Rejected album).
+    public var inAlbum = false
+    /// Camera make or model recorded.
+    public var hasCameraMetadata = false
+    /// The original is a file outside the library.
+    public var referenced = false
+    /// The original isn't on this Mac (only in iCloud, or a referenced file that's gone).
+    public var missing = false
+    /// Seconds since 2001, as Photos stores them.
+    public var captureDate: Double?
+    public var addedDate: Double?
+    public var modifiedDate: Double?
 
-    public init(width: Int? = nil, height: Int? = nil, bytes: Int? = nil, filename: String? = nil) {
+    public init(width: Int? = nil, height: Int? = nil, bytes: Int? = nil, filename: String? = nil,
+                isRaw: Bool = false) {
         self.width = width
         self.height = height
         self.bytes = bytes
         self.filename = filename
+        self.isRaw = isRaw
     }
 
     public var pixels: Int? { width.flatMap { w in height.map { w * $0 } } }
+
+    /// Photos' file type names RAW formats "….raw-image" (com.canon.cr2-raw-image, com.adobe.raw-image).
+    public static func isRawType(_ uti: String) -> Bool {
+        uti.hasSuffix("raw-image") || uti == "public.camera-raw-image"
+    }
 }
 
 extension PhotosDatabase {
-    /// Original file size, dimensions and name for every still photo, keyed by UUID. PhotoKit has
-    /// no public file size, so this comes from the library's own database (read-only, live).
+    /// Every photo's file details and keeper-rule facts, keyed by ZUUID. One read-only query, about
+    /// a second for 200,000 photos. Anything this macOS version's schema lacks is left unknown.
     public static func readFileInfo(inLibrary library: URL) throws -> [String: FileInfo] {
         let path = library.appendingPathComponent("database/Photos.sqlite").path
         guard FileManager.default.isReadableFile(atPath: path) else {
@@ -463,28 +498,106 @@ extension PhotosDatabase {
         let a = try columns(assetTable)
         let x = try columns("ZADDITIONALASSETATTRIBUTES")
         let xx = x.contains("ZASSET") ? x : []
+        let e = a.contains("ZEXTENDEDATTRIBUTES") ? try columns("ZEXTENDEDATTRIBUTES") : []
+        let d = xx.contains("ZASSETDESCRIPTION") ? try columns("ZASSETDESCRIPTION") : []
+        let r = try columns("ZINTERNALRESOURCE")
+        let g = try columns("ZGENERICALBUM")
         func pick(_ alias: String, _ available: Set<String>, _ name: String) -> String {
             available.contains(name) ? "\(alias).\(q(name))" : "NULL"
         }
-        let join = xx.isEmpty ? "" : " LEFT JOIN ZADDITIONALASSETATTRIBUTES x ON x.ZASSET = a.Z_PK"
+        func has(_ alias: String, _ available: Set<String>, _ name: String) -> String {
+            available.contains(name) ? "(\(alias).\(q(name)) IS NOT NULL AND \(alias).\(q(name)) != '')" : "0"
+        }
+        // Join tables are numbered by entity, and the numbers change between macOS versions:
+        // find the album↔asset table (Z_nnALBUMS, Z_nASSETS) and the keyword one (Z_nASSETATTRIBUTES).
+        var albumJoin: (table: String, album: String, asset: String)?
+        var keywordJoin: (table: String, attributes: String)?
+        for t in tables.sorted() where t.hasPrefix("Z_") {
+            let cols = try columns(t)
+            if t.hasSuffix("ASSETS"), let album = cols.first(where: { $0.hasSuffix("ALBUMS") && !$0.hasPrefix("Z_FOK") }),
+               let asset = cols.first(where: { $0.hasSuffix("ASSETS") && !$0.hasPrefix("Z_FOK") }) {
+                albumJoin = (t, album, asset)
+            }
+            if t.hasSuffix("KEYWORDS"), let attrs = cols.first(where: { $0.hasSuffix("ASSETATTRIBUTES") }) {
+                keywordJoin = (t, attrs)
+            }
+        }
+
+        var joins = xx.isEmpty ? "" : " LEFT JOIN ZADDITIONALASSETATTRIBUTES x ON x.ZASSET = a.Z_PK"
+        if !e.isEmpty { joins += " LEFT JOIN ZEXTENDEDATTRIBUTES e ON e.Z_PK = a.ZEXTENDEDATTRIBUTES" }
+        if !d.isEmpty { joins += " LEFT JOIN ZASSETDESCRIPTION d ON d.Z_PK = x.ZASSETDESCRIPTION" }
+        let present = r.contains("ZLOCALAVAILABILITY") && r.contains("ZRESOURCETYPE")
+            ? "EXISTS (SELECT 1 FROM ZINTERNALRESOURCE r WHERE r.ZASSET = a.Z_PK AND r.ZRESOURCETYPE = 0 AND r.ZLOCALAVAILABILITY = 1)"
+            : "1"
+        let referenced = r.contains("ZFILESYSTEMBOOKMARK")
+            ? "EXISTS (SELECT 1 FROM ZINTERNALRESOURCE r WHERE r.ZASSET = a.Z_PK AND r.ZFILESYSTEMBOOKMARK IS NOT NULL)"
+            : "0"
+        let inAlbum = albumJoin.map { j in
+            g.contains("ZKIND") && g.contains("ZTITLE")
+                ? """
+                  EXISTS (SELECT 1 FROM \(q(j.table)) j JOIN ZGENERICALBUM g ON g.Z_PK = j.\(q(j.album))
+                          WHERE j.\(q(j.asset)) = a.Z_PK AND g.ZKIND = 2 AND COALESCE(g.ZTRASHEDSTATE, 0) = 0
+                            AND COALESCE(g.ZTITLE, '') != ?)
+                  """
+                : "0"
+        } ?? "0"
+        let hasKeywords = (keywordJoin.map { j in
+            xx.isEmpty ? "0" : "EXISTS (SELECT 1 FROM \(q(j.table)) k WHERE k.\(q(j.attributes)) = x.Z_PK)"
+        }) ?? "0"
+        let location = a.contains("ZLATITUDE") ? "(a.ZLATITUDE IS NOT NULL AND a.ZLATITUDE != -180)" : "0"
+        let camera = e.isEmpty ? "0" : "(\(has("e", e, "ZCAMERAMAKE")) OR \(has("e", e, "ZCAMERAMODEL")))"
+
         // Original dimensions where recorded (an edit can change the current ones), else current.
         let sql = """
             SELECT a.ZUUID,
                    COALESCE(\(pick("x", xx, "ZORIGINALWIDTH")), \(pick("a", a, "ZWIDTH"))),
                    COALESCE(\(pick("x", xx, "ZORIGINALHEIGHT")), \(pick("a", a, "ZHEIGHT"))),
-                   \(pick("x", xx, "ZORIGINALFILESIZE")), \(pick("x", xx, "ZORIGINALFILENAME"))
-            FROM \(q(assetTable)) a\(join)
+                   \(pick("x", xx, "ZORIGINALFILESIZE")), \(pick("x", xx, "ZORIGINALFILENAME")),
+                   \(pick("a", a, "ZUNIFORMTYPEIDENTIFIER")),
+                   \(pick("a", a, "ZFAVORITE")), \(pick("a", a, "ZRATING")), \(pick("a", a, "ZDEPTHTYPE")),
+                   \(pick("a", a, "ZHDRTYPE")), \(pick("a", a, "ZKINDSUBTYPE")),
+                   \(location), \(has("x", xx, "ZTITLE")), \(has("d", d, "ZLONGDESCRIPTION")), \(hasKeywords),
+                   \(inAlbum), \(camera), \(referenced), \(present),
+                   \(pick("a", a, "ZDATECREATED")), \(pick("a", a, "ZADDEDDATE")), \(pick("a", a, "ZMODIFICATIONDATE"))
+            FROM \(q(assetTable)) a\(joins)
             \(a.contains("ZKIND") ? "WHERE a.ZKIND = 0" : "")
             """
         var out: [String: FileInfo] = [:]
-        try db.forEachRow(sql) { stmt in
+        try db.forEachRow(sql, inAlbum == "0" ? [] : [rejectAlbumTitle]) { stmt in
             guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
-            func i(_ c: Int32) -> Int? { sqlite3_column_type(stmt, c) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, c)) }
-            out[uuid] = FileInfo(width: i(1), height: i(2), bytes: i(3),
-                                 filename: sqlite3_column_text(stmt, 4).map { String(cString: $0) })
+            func null(_ c: Int32) -> Bool { sqlite3_column_type(stmt, c) == SQLITE_NULL }
+            func i(_ c: Int32) -> Int? { null(c) ? nil : Int(sqlite3_column_int64(stmt, c)) }
+            func b(_ c: Int32) -> Bool { (i(c) ?? 0) != 0 }
+            func t(_ c: Int32) -> String? { sqlite3_column_text(stmt, c).map { String(cString: $0) } }
+            func f(_ c: Int32) -> Double? { null(c) ? nil : sqlite3_column_double(stmt, c) }
+            var info = FileInfo(width: i(1), height: i(2), bytes: i(3), filename: t(4),
+                                isRaw: t(5).map(FileInfo.isRawType) ?? false)
+            info.isHEIC = t(5) == "public.heic"
+            info.favorite = b(6)
+            info.rating = i(7) ?? 0
+            info.portrait = (i(8) ?? 0) > 0
+            info.hdr = hdrTypes.contains(i(9) ?? 0)
+            info.live = i(10) == 2
+            info.hasLocation = b(11)
+            info.hasTitle = b(12)
+            info.hasCaption = b(13)
+            info.hasKeywords = b(14)
+            info.inAlbum = b(15)
+            info.hasCameraMetadata = b(16)
+            info.referenced = b(17)
+            info.missing = !b(18)
+            info.captureDate = f(19)
+            info.addedDate = f(20)
+            info.modifiedDate = f(21)
+            out[uuid] = info
         }
         return out
     }
+
+    /// Winnow's own album of rejected photos, which doesn't count as "added to an album".
+    public static let rejectAlbumTitle = "Winnow – Rejected"
+    /// ZHDRTYPE values PhotoKit reports as HDR (checked against mediaSubtypes; 4 and 10 aren't).
+    static let hdrTypes: Set<Int> = [2, 3]
 }
 
 /// What Photos' face analysis says about a photo's main faces: the biggest one, and any at least

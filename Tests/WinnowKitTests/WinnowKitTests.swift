@@ -766,3 +766,105 @@ import WinnowCore
         #expect(history.redo()?.rotations == ["p": 90])
     }
 }
+
+@Suite struct RawTypeTests {
+    @Test func rawFileTypesAreRecognised() {
+        for uti in ["com.canon.cr2-raw-image", "com.nikon.raw-image", "com.adobe.raw-image", "com.sony.arw-raw-image"] {
+            #expect(FileInfo.isRawType(uti))
+        }
+        for uti in ["public.jpeg", "public.heic", "public.png", "public.tiff"] { #expect(!FileInfo.isRawType(uti)) }
+    }
+}
+
+@Suite struct KeeperRulesTests {
+    func score(_ id: String) -> Double { Double(id.dropFirst()) ?? 0 } // "p70" scores 70
+    var jpeg: FileInfo { FileInfo(width: 6000, height: 4000, bytes: 9_000_000) }
+    var raw: FileInfo { FileInfo(width: 5900, height: 4000, bytes: 25_000_000, isRaw: true) }      // 98% of the pixels
+    var smallRaw: FileInfo { FileInfo(width: 3000, height: 2000, bytes: 8_000_000, isRaw: true) }  // 25%
+
+    func keeper(_ members: [String], _ files: [String: FileInfo], faces: [String: FaceInfo] = [:],
+                rejected: Set<String> = [], _ rules: KeeperRules = .standard) -> String {
+        let score = self.score
+        return LookAlikes.suggestedKeeper(members, facts: KeeperFacts(score: { score($0) }, files: files, faces: faces,
+                                                                      rejected: rejected), rules: rules)
+    }
+
+    func with(_ change: (inout [KeeperRuleSetting]) -> Void) -> KeeperRules {
+        var rules = KeeperRules.standard.rules
+        change(&rules)
+        return KeeperRules(rules: rules)
+    }
+
+    @Test func rawOfSimilarSizeIsKept() {
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": raw]) == "p10")
+        let facts = KeeperFacts(score: { _ in 0 }, files: ["p90": jpeg, "p10": raw])
+        #expect(LookAlikes.decidingRule(["p90", "p10"], facts: facts).rule == .fileType)
+    }
+
+    @Test func muchSmallerRawIsNot() {
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": smallRaw]) == "p90")
+    }
+
+    @Test func orderAndDirectionChangeTheKeeper() {
+        // File Type moved to the top: even a much smaller RAW wins.
+        let rawFirst = with { rules in
+            let i = rules.firstIndex { $0.rule == .fileType }!
+            rules.insert(rules.remove(at: i), at: 0)
+        }
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": smallRaw], rawFirst) == "p10")
+        // "mark RAW+HEIC": the JPEG wins.
+        let jpegFirst = with { rules in rules[rules.firstIndex { $0.rule == .fileType }!].keepHigher = false }
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": raw], jpegFirst) == "p90")
+    }
+
+    @Test func uncheckedRulesAreSkipped() {
+        let noSizes = with { rules in
+            for i in rules.indices where [.dimensions, .fileType, .fileSize].contains(rules[i].rule) { rules[i].enabled = false }
+        }
+        // Down to how good it looks.
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": raw], noSizes) == "p90")
+    }
+
+    @Test func closedEyesAndRejectsComeFirst() {
+        let faces = ["p10": FaceInfo(eyesClosed: true), "p90": FaceInfo(eyesClosed: false)]
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": raw], faces: faces) == "p90")
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": raw], rejected: ["p10"]) == "p90")
+        let eyesOff = with { rules in rules[rules.firstIndex { $0.rule == .eyes }!].enabled = false }
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": raw], faces: faces, eyesOff) == "p10")
+    }
+
+    @Test func closeSizesTieSoTheNextRuleDecides() {
+        let a = FileInfo(width: 4000, height: 3000, bytes: 3_000_000)
+        let b = FileInfo(width: 4000, height: 3000, bytes: 2_900_000)   // 3% smaller: a tie
+        #expect(keeper(["p10", "p90"], ["p10": a, "p90": b]) == "p90")   // quality decides
+        let c = FileInfo(width: 4000, height: 3000, bytes: 2_000_000)   // 33% smaller
+        #expect(keeper(["p10", "p90"], ["p10": a, "p90": c]) == "p10")
+    }
+
+    @Test func otherFactsCanDecide() {
+        var fav = jpeg; fav.favorite = true
+        let onlyFavorite = KeeperRules(rules: [KeeperRuleSetting(.favorite, true, keepHigher: true)])
+        #expect(keeper(["p90", "p10"], ["p90": jpeg, "p10": fav], onlyFavorite) == "p10")
+        var later = jpeg; later.captureDate = 2000
+        var earlier = jpeg; earlier.captureDate = 1000
+        let earliest = KeeperRules(rules: [KeeperRuleSetting(.captureDate, true, keepHigher: false)])
+        #expect(keeper(["p90", "p10"], ["p90": later, "p10": earlier], earliest) == "p10")
+    }
+
+    @Test func rulesSurviveSavingAndNewRulesAreAdded() throws {
+        let rules = with { $0.swapAt(0, 3); $0[5].enabled = false }
+        let back = try JSONDecoder().decode(KeeperRules.self, from: JSONEncoder().encode(rules))
+        #expect(back == rules)
+        // Saved by an older version with only two rules: the rest are added, unchecked.
+        let old = KeeperRules(rules: [KeeperRuleSetting(.fileSize, true, keepHigher: false),
+                                      KeeperRuleSetting(.rating, true, keepHigher: true)])
+        #expect(old.rules.count == KeeperRule.allCases.count)
+        #expect(old.rules.prefix(2).map(\.rule) == [.fileSize, .rating])
+        #expect(old.rules.dropFirst(2).allSatisfy { !$0.enabled })
+        // A rule this version doesn't know is skipped.
+        let json = #"{"rules":[{"rule":"sparkle","enabled":true,"keepHigher":true},{"rule":"title","enabled":true,"keepHigher":true}]}"#
+        let decoded = try JSONDecoder().decode(KeeperRules.self, from: Data(json.utf8))
+        #expect(decoded.rules.first?.rule == .title)
+    }
+}
+

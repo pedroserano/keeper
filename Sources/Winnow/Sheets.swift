@@ -69,7 +69,7 @@ struct ShortcutsSheet: View {
         ("Look closer", [("Space", "In the grid: show the photo filling the window, Space again to go back. In a photo: 100% zoom on and off"),
                          ("Z", "100% zoom on the main face"),
                          ("C", "Compare with its look-alikes, burst frames or nearby shots"),
-                         ("G", "In Duplicates or Similar Shots: tick or untick the group, or every group selected with ⇧↑ ⇧↓ or Shift-click. In Unreviewed: select or deselect the photo (⌘-click and Shift-click too)"),
+                         ("G", "In Duplicates or Similar Shots: tick or untick the group, or every group selected with ⇧↑ ⇧↓ or Shift-click. In other lists: select or deselect the photo (⌘-click and Shift-click too)"),
                          ("R", "Rotate 90° clockwise, as an edit in Photos (the original is kept; ⌘Z rotates back)"),
                          ("K", "In compare: keep this one, reject the others. In Duplicates or Similar Shots: keep this one when merging"),
                          ("I", "Show Apple Photos' scores for this photo")]),

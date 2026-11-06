@@ -8,6 +8,7 @@ import WinnowKit
 enum Source: Hashable, Codable {
     case allPhotos
     case unreviewed
+    case rejected
     case favorites
     case dateRange
     case screenshots
@@ -23,6 +24,7 @@ enum Source: Hashable, Codable {
         switch self {
         case .allPhotos: "All Photos"
         case .unreviewed: "Unreviewed"
+        case .rejected: "Rejected"
         case .favorites: "Favorites"
         case .dateRange: "Date Range"
         case .screenshots: "Screenshots"
@@ -40,6 +42,7 @@ enum Source: Hashable, Codable {
         switch self {
         case .allPhotos: "photo.on.rectangle"
         case .unreviewed: "eye.slash"
+        case .rejected: "xmark.bin"
         case .favorites: "heart"
         case .dateRange: "calendar"
         case .screenshots: "camera.viewfinder"
@@ -130,7 +133,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed, .dateRange, .suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots:
+        case .allPhotos, .unreviewed, .rejected, .dateRange, .suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)

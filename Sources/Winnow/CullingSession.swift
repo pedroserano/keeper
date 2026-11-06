@@ -8,6 +8,7 @@
 // in order on a serial queue. If a Photos write fails, that decision is rolled back.
 
 import AppKit
+import Combine
 import os
 import Photos
 import SwiftUI
@@ -160,6 +161,7 @@ final class CullingSession: ObservableObject {
     private var messageTask: Task<Void, Never>?
 
     init(library: PhotoLibrary, store: DecisionStore, libraryURL: URL) {
+        keeperRules = KeeperSettings.shared.rules
         self.library = library
         self.store = store
         self.libraryURL = libraryURL
@@ -193,6 +195,11 @@ final class CullingSession: ObservableObject {
         refreshCounts()
         loadSuggestions()
         findSimilarPhotos()
+        // Sliders send every step; re-pick once you stop.
+        keeperWatch = KeeperSettings.shared.$rules
+            .dropFirst()
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .sink { [weak self] in self?.keeperRulesChanged($0) }
     }
 
     // MARK: Duplicates and similar shots
@@ -278,8 +285,27 @@ final class CullingSession: ObservableObject {
     }
 
     /// The group as it will be merged: keeping your pick, if you made one.
+    /// The group as it will merge: your pick if you made one, otherwise the rules' keeper, which can
+    /// change once some of its photos are rejected.
     func chosen(_ group: LookAlikeGroup) -> LookAlikeGroup {
-        keeperChoices[group.id].map(group.keeping) ?? group
+        if let pick = keeperChoices[group.id] { return group.keeping(pick) }
+        let rejected = rejectedMembers(group)
+        guard !rejected.isEmpty, let recommender else { return group }
+        return group.keeping(recommender.keeper(of: group, rejected: rejected))
+    }
+
+    private func rejectedMembers(_ group: LookAlikeGroup) -> Set<String> {
+        Set(group.members.filter { id in groupLocalIDs[id].flatMap { decisions[$0] }?.flag == .reject })
+    }
+
+    /// Why the suggested photo is the one kept, for the group's header.
+    func keeperNote(_ group: LookAlikeGroup) -> String {
+        if isChosenByYou(group) { return "Keeping your pick" }
+        guard let recommender else { return "" }
+        guard let rule = recommender.keeperReason(of: group, rejected: rejectedMembers(group)) else {
+            return "Suggested: looks best"
+        }
+        return "Suggested by the \(rule.title) rule"
     }
 
     func isChosenByYou(_ group: LookAlikeGroup) -> Bool { keeperChoices[group.id] != nil }
@@ -288,7 +314,9 @@ final class CullingSession: ObservableObject {
     func keepInGroup(_ asset: PHAsset) {
         guard source.isGroups, let group = lookAlike(of: asset) else { return }
         let uuid = uuidOf(asset)
-        keeperChoices[group.id] = uuid == group.keeper ? nil : uuid
+        let rejected = rejectedMembers(group)
+        let suggested = rejected.isEmpty ? group.keeper : recommender?.keeper(of: group, rejected: rejected) ?? group.keeper
+        keeperChoices[group.id] = uuid == suggested ? nil : uuid
     }
 
     /// A group is done once at most one of its photos isn't rejected (merged, or culled by hand).
@@ -462,6 +490,22 @@ final class CullingSession: ObservableObject {
 
     /// The model fitted to your ratings, if it beats curation.
     private var fittedModel: RatingModel?
+    /// How Duplicates and Similar Shots pick keepers (Winnow › Settings › Keeper Rules).
+    private var keeperRules: KeeperRules
+    private var keeperWatch: AnyCancellable?
+
+    /// Settings changed: re-pick keepers and show them in the open list.
+    private func keeperRulesChanged(_ rules: KeeperRules) {
+        guard rules != keeperRules else { return }
+        keeperRules = rules
+        inputsVersion += 1
+        Task { [weak self] in
+            guard let self else { return }
+            await self.rebuildRecommender()
+            guard self.keeperRules == rules else { return }
+            if self.source.isGroups { self.reload() }
+        }
+    }
     /// Bumped whenever the groups, the model or the aggressiveness change.
     private var inputsVersion = 0
 
@@ -473,8 +517,9 @@ final class CullingSession: ObservableObject {
         while let base = recommender {
             let version = inputsVersion
             let groups = groups, model = fittedModel, aggressiveness = aggressiveness
+            let keeping = keeperRules
             let updated = await Task.detached(priority: .userInitiated) {
-                base.with(model: .some(model), groups: groups, aggressiveness: aggressiveness)
+                base.with(model: .some(model), groups: groups, aggressiveness: aggressiveness, keeperRules: keeping)
             }.value
             if version == inputsVersion {
                 recommender = updated
@@ -488,6 +533,7 @@ final class CullingSession: ObservableObject {
     func loadSuggestions() {
         suggestionsStatus = .loading
         let url = libraryURL, library = library, groups = groups, aggressiveness = aggressiveness
+        let keeping = keeperRules
         let version = inputsVersion
         Task { [weak self] in
             let started = ContinuousClock.now
@@ -498,7 +544,7 @@ final class CullingSession: ObservableObject {
                     let faces = (try? PhotosDatabase.readFaceInfo(inLibrary: url)) ?? [:]
                     return .success(Recommender(scores: scores, screenshots: library.uuids(in: .screenshots),
                                                 groups: groups, files: files, faces: faces,
-                                                aggressiveness: aggressiveness))
+                                                aggressiveness: aggressiveness, keeperRules: keeping))
                 } catch {
                     return .failure(error)
                 }
@@ -627,7 +673,8 @@ final class CullingSession: ObservableObject {
     @Published private(set) var selectingAll = false
     private var photoAnchor: Int?
 
-    var selectsPhotos: Bool { source == .unreviewed && sections == nil }
+    /// Every list but Duplicates and Similar Shots, where G and the checkboxes pick whole groups.
+    var selectsPhotos: Bool { !source.isGroups && sections == nil }
 
     func togglePhoto(at i: Int) {
         guard selectsPhotos, list.indices.contains(i) else { return }
@@ -663,11 +710,11 @@ final class CullingSession: ObservableObject {
         photoAnchor = nil
     }
 
-    /// Unreviewed: the photos shown with no rating yet that have a suggested one, as decisions
-    /// before and after taking it (marked seen, so they leave Unreviewed). Worked out in the
-    /// background: Unreviewed can hold most of the library.
+    /// The selected photos with no rating yet that have a suggested one, as decisions before and
+    /// after taking it (marked seen, so they leave Unreviewed). Worked out in the background: a
+    /// selection can hold most of the library.
     func suggestedRatingsToAccept() async -> Change? {
-        guard source == .unreviewed, let recommender, recommender.hasScores, !selectedPhotos.isEmpty else { return nil }
+        guard let recommender, recommender.hasScores, !selectedPhotos.isEmpty else { return nil }
         let list = list, snapshot = decisions, chosen = selectedPhotos
         let (before, after) = await Task.detached(priority: .userInitiated) { () -> ([Decision], [Decision]) in
             var before: [Decision] = [], after: [Decision] = []
@@ -676,7 +723,7 @@ final class CullingSession: ObservableObject {
                 let asset = list.asset(at: i)
                 guard chosen.contains(asset.localIdentifier) else { continue }
                 var d = snapshot[asset.localIdentifier] ?? .untouched(asset.localIdentifier)
-                guard d.seenAt == nil, d.flag == .none, asset.rating.rawValue == 0 else { continue }
+                guard d.flag == .none, asset.rating.rawValue == 0 else { continue }
                 let uuid = String(asset.localIdentifier.split(separator: "/").first ?? "")
                 guard let stars = recommender.suggestion(forUUID: uuid)?.stars, stars > 0 else { continue }
                 d.rating = 0
@@ -707,6 +754,18 @@ final class CullingSession: ObservableObject {
         commit(change)
         deselectAllPhotos()
         show("Rated \(change.after.count.formatted()) photos with their suggested stars. ⌘Z undoes.")
+        reload()
+    }
+
+    /// Rejected: take the reject off the selected photos, in one step (⌘Z undoes it).
+    func unrejectSelected() {
+        let assets = library.assets(withIDs: Array(selectedPhotos)).filter { decision($0).flag == .reject }
+        guard !assets.isEmpty else { return }
+        let before = assets.map(decision)
+        let after = assets.map { decision($0).applying(.clearFlag, currentFavorite: $0.isFavorite) }
+        commit(Change(label: "Unreject \(assets.count.formatted())", before: before, after: after))
+        deselectAllPhotos()
+        show("Took the reject off \(assets.count.formatted()) photos. ⌘Z undoes.")
         reload()
     }
 
@@ -766,7 +825,7 @@ final class CullingSession: ObservableObject {
         let keepAsset = keepingID.flatMap { library.assets(withIDs: [$0]).first }
 
         // The common case needs no scan: every photo in the source, straight from PhotoKit.
-        if filter == .all && source != .unreviewed && !source.isSuggestion {
+        if filter == .all && source != .unreviewed && source != .rejected && !source.isSuggestion {
             loading = false
             sections = nil
             sectionGroups = []
@@ -806,6 +865,7 @@ final class CullingSession: ObservableObject {
                 result.enumerateObjects { asset, i, _ in
                     let d = snapshot[asset.localIdentifier]
                     if source == .unreviewed, d?.seenAt != nil { return }
+                    if source == .rejected, d?.flag != .reject { return }
                     let flag = d?.flag ?? .none
                     switch filter {
                     case .all: break
@@ -893,6 +953,7 @@ final class CullingSession: ObservableObject {
         countsTask?.cancel()
         let library = library
         let seenIDs = decisions.values.filter { $0.seenAt != nil }.map(\.assetID)
+        let rejectedIDs = decisions.values.filter { $0.flag == .reject }.map(\.assetID)
         let range = dateRange
         let albums = library.albums.map { Source.album(id: $0.localIdentifier, title: $0.localizedTitle ?? "Untitled") }
         let recommender = recommender
@@ -910,6 +971,7 @@ final class CullingSession: ObservableObject {
                 out[.allPhotos] = all
                 // Only seen photos still in the library count, so deleted ones can't hold it above 0.
                 out[.unreviewed] = max(all - library.assets(withIDs: seenIDs).count, 0)
+                out[.rejected] = library.assets(withIDs: rejectedIDs).count
                 if let recommender, recommender.hasScores {
                     let c = recommender.counts()
                     out[.suggestedRejects] = c.rejects

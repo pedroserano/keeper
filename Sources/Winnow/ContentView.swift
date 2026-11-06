@@ -21,8 +21,8 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         if let gap = session.accessGap { AccessBanner(gap: gap, session: session) }
                         if session.source == .dateRange { DateRangeBar(session: session) }
-                        if session.source == .unreviewed, session.suggestionsStatus == .ready,
-                           !session.list.isEmpty {
+                        if session.selectsPhotos, !session.list.isEmpty,
+                           session.source == .rejected || session.suggestionsStatus == .ready {
                             AcceptRatingsBar(session: session)
                         }
                     }
@@ -153,6 +153,7 @@ struct ContentView: View {
     /// ⌘ ⌃ or ⌥ (they belong to the menus), typing in a text field, and anything while a sheet is open.
     private func handleKey(_ event: NSEvent) -> Bool {
         guard !showingDelete, !showingShortcuts, let window = event.window,
+              window.identifier != SettingsWindowMarker.identifier,
               window.sheetParent == nil, window.attachedSheet == nil else { return false }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
         if let text = window.firstResponder as? NSText, text.isEditable { return false }
@@ -207,6 +208,7 @@ struct Sidebar: View {
                 row(.allPhotos)
                 row(.unreviewed)
                 row(.favorites)
+                row(.rejected)
                 row(.dateRange)
             }
             Section {
@@ -349,6 +351,7 @@ struct PhotoBadges: View {
     let decision: Decision
     let suggestion: Suggestion?
     let isFavorite: Bool
+    var isRaw = false
     var large = false
 
     var body: some View {
@@ -356,6 +359,15 @@ struct PhotoBadges: View {
             HStack(alignment: .top) {
                 FlagIcon(flag: decision.flag)
                 Spacer(minLength: 0)
+                if isRaw {
+                    Text("RAW")
+                        .font(.system(size: large ? 11 : 8, weight: .bold))
+                        .padding(.horizontal, large ? 5 : 3)
+                        .padding(.vertical, 1)
+                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(.white)
+                        .help("RAW original")
+                }
                 if isFavorite {
                     Image(systemName: "heart.fill")
                         .foregroundStyle(.pink)
@@ -578,8 +590,9 @@ struct DateRangeBar: View {
 }
 
 
-/// Above Unreviewed: pick photos (Select All, ⌘-click, Shift-click, G), then give the picked ones
-/// with no rating yet their suggested stars.
+/// Above every photo list but the group ones: pick photos (Select All, the circle, ⌘-click,
+/// Shift-click, G), then give the picked ones with no rating yet their suggested stars, or in
+/// Rejected take the reject off them.
 struct AcceptRatingsBar: View {
     @ObservedObject var session: CullingSession
     @State private var counting = false
@@ -598,17 +611,24 @@ struct AcceptRatingsBar: View {
                 .foregroundStyle(.secondary)
             Spacer()
             if counting || session.selectingAll { ProgressView().controlSize(.small) }
-            Button("Accept Suggested Ratings…") {
-                counting = true
-                Task {
-                    pending = await session.suggestedRatingsToAccept()
-                    counting = false
-                    if pending == nil { session.show("None of the selected photos is unrated with a suggested rating.") }
+            if session.source == .rejected {
+                Button("Unreject Selected") { session.unrejectSelected() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selected == 0)
+                    .help("Take the reject off the selected photos (⌘Z undoes)")
+            } else {
+                Button("Accept Suggested Ratings…") {
+                    counting = true
+                    Task {
+                        pending = await session.suggestedRatingsToAccept()
+                        counting = false
+                        if pending == nil { session.show("None of the selected photos is unrated with a suggested rating.") }
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(selected == 0 || counting)
+                .help("Rate the selected photos that have no stars yet with Photos' suggested rating")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(selected == 0 || counting)
-            .help("Rate the selected photos that have no stars yet with Photos' suggested rating")
         }
         .font(.callout)
         .padding(.horizontal, 12)
@@ -621,7 +641,7 @@ struct AcceptRatingsBar: View {
             }
         } message: {
             Text("""
-                Each gets the stars shown on it, saved in Photos, and leaves Unreviewed. \
+                Each gets the stars shown on it, saved in Photos, and counts as reviewed. \
                 Selected photos you've already rated or rejected are left alone. ⌘Z undoes them all.
                 """)
         }

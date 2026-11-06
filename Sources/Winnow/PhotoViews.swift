@@ -110,7 +110,8 @@ extension GridView {
                         keep: details ? { session.keepInGroup(asset) } : nil,
                         checked: session.selectsPhotos ? session.selectedPhotos.contains(asset.localIdentifier) : nil,
                         selecting: !session.selectedPhotos.isEmpty,
-                        toggleChecked: { session.togglePhoto(at: i) })
+                        toggleChecked: { session.togglePhoto(at: i) },
+                        isRaw: session.fileInfo(asset)?.isRaw == true)
             .id(i)
             .photoContextMenu(asset, session: session)
             .onTapGesture(count: 2) {
@@ -183,8 +184,7 @@ struct GroupHeader: View {
     }
 
     private var keepNote: String {
-        if session.isChosenByYou(group) { return "Keeping your pick" }
-        return group.kind == .duplicate ? "Suggests the largest copy" : "Suggests the best, favoring bigger files"
+        session.keeperNote(group)
     }
 
     private func span(_ a: Date, _ b: Date) -> String {
@@ -259,6 +259,7 @@ struct GridCell: View {
     /// Some photo is picked, so every photo shows its circle.
     var selecting = false
     var toggleChecked: (() -> Void)? = nil
+    var isRaw = false
     @State private var hovering = false
 
     var body: some View {
@@ -308,7 +309,7 @@ struct GridCell: View {
             .background(.quaternary)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .opacity(decision.flag == .reject ? 0.35 : 1)
-            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite) }
+            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite, isRaw: isRaw) }
             .overlay {
                 if checked == true { RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) }
             }
@@ -592,7 +593,8 @@ struct CompareView: View {
         .clipped()
         .opacity(session.decision(asset).flag == .reject ? 0.45 : 1)
         .overlay { PhotoBadges(decision: session.decision(asset), suggestion: session.suggestion(asset),
-                                 isFavorite: session.isFavorite(asset), large: true) }
+                                 isFavorite: session.isFavorite(asset),
+                                 isRaw: session.fileInfo(asset)?.isRaw == true, large: true) }
         .overlay {
             RoundedRectangle(cornerRadius: 4).strokeBorder(focused ? Color.accentColor : .white.opacity(0.15),
                                                            lineWidth: focused ? 3 : 1)

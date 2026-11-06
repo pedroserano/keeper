@@ -36,6 +36,8 @@ struct WinnowApp: App {
                 Divider()
             }
         }
+
+        Settings { KeeperSettingsView() }
     }
 }
 
