@@ -5,9 +5,45 @@
 A personal, keyboard-first photo culling app for Apple Photos on Apple Silicon Macs.
 The spec lives in the Winnow PRD v2 doc.
 
-## Winnow (Alpha)
+## Install
 
-Open **build/Winnow.app**. Choose a library (it must be the System Photo Library; Winnow tells you if it isn't),
+Winnow needs a Mac with Apple silicon (M1 or later) running macOS 27. There's no Intel version.
+
+### Download the app
+
+1. Download `Winnow-<version>-arm64.zip` from the latest
+   [release](https://github.com/pedroserano/winnow/releases/latest), unzip it, and move **Winnow.app** to
+   Applications.
+2. Winnow isn't notarized (it's signed ad hoc), so macOS won't open it the first time. Open
+   **System Settings › Privacy & Security** and click **Open Anyway** next to Winnow, or run:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Winnow.app
+   ```
+
+3. Open Winnow and allow Photos access, then Full Disk Access when it asks (see
+   [Permissions](#permissions)).
+
+### Build from source
+
+You need Xcode, or just its Command Line Tools, with Swift 6.
+
+```bash
+git clone https://github.com/pedroserano/winnow.git
+```
+
+```bash
+cd winnow && ./scripts/make-winnow-app.sh
+```
+
+That builds a release version for Apple silicon at **build/Winnow.app**; move it to Applications or open it
+from there. If your Mac has a free "Apple Development" certificate (add your Apple ID in Xcode › Settings ›
+Accounts), the script signs with it, and Photos and Full Disk Access stay granted across rebuilds;
+otherwise it signs ad hoc and macOS may ask again after each rebuild.
+
+## Using Winnow
+
+Open **Winnow**. Choose a library (it must be the System Photo Library; Winnow tells you if it isn't),
 then pick a source in the sidebar and cull from the keyboard. After the first time, Winnow reopens the last
 library straight away; the chooser comes back only if that library is gone (on a drive that isn't connected,
 say), and File › Choose Library (⌘O) switches. Press **?** for every shortcut. Right-click any photo
@@ -129,7 +165,7 @@ reopening the library brings them back.
 
 ## For development
 
-Build either app with `./scripts/make-winnow-app.sh` or `./scripts/make-spike-app.sh`, and run the unit tests with `swift test`.
+Build the app with `./scripts/make-winnow-app.sh`, and run the unit tests with `swift test`.
 
 `winnow-scores` is a command-line front end to WinnowCore, used for automated tests:
 
