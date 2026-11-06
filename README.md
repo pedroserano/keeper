@@ -8,7 +8,9 @@ The spec lives in the Winnow PRD v2 doc.
 ## Winnow (Alpha)
 
 Open **build/Winnow.app**. Choose a library (it must be the System Photo Library; Winnow tells you if it isn't),
-then pick a source in the sidebar and cull from the keyboard. Press **?** for every shortcut. Right-click any photo
+then pick a source in the sidebar and cull from the keyboard. After the first time, Winnow reopens the last
+library straight away; the chooser comes back only if that library is gone (on a drive that isn't connected,
+say), and File › Choose Library (⌘O) switches. Press **?** for every shortcut. Right-click any photo
 for **Show in Photos**, which opens Photos with that photo selected.
 
 | Key | Does | In Photos |
@@ -58,9 +60,6 @@ stars don't change.
 **Date Range** in the sidebar shows only the photos taken between two days (or a quick pick like Last
 Year), for culling one trip or month at a time.
 
-If macOS won't let Winnow read the library's database (it needs Full Disk Access for Apple's scores,
-file sizes and faces), a banner says what's missing and opens the right System Settings pane.
-
 **Merge** a group (or Select All, then Merge Selected) and the kept photo gets the group's best rating,
 its Favorite and every album the others were in, like Photos' own duplicate merge. The others move to
 Rejected, and merged groups leave the list. Nothing is deleted until you use Delete Rejected; ⌘Z
@@ -76,6 +75,30 @@ Ratings and Favorites live in Photos. Winnow keeps only its own data (rejects, w
 Code: `Sources/Winnow` (the app), `Sources/WinnowKit` (decisions, their database, undo; unit-tested in
 `Tests/WinnowKitTests`), `Sources/WinnowCore` (reading a library's own database).
 
+### Permissions
+
+Winnow asks for two:
+
+- **Photos** (PhotoKit): the photos themselves, their dates, Favorite, Hidden, ratings and albums, and
+  writing your decisions back. Everything Winnow changes goes through this, so Photos stays in charge of
+  its library.
+- **Full Disk Access**: to read the library's own database (`database/Photos.sqlite` inside the
+  `.photoslibrary` package). macOS protects that package, and Photos access doesn't cover reading files in
+  it. The database holds what PhotoKit doesn't share:
+  - Photos' quality scores (aesthetic, curation, blur, exposure, noise…), behind Suggested Rejects, Best
+    Shots, the star suggestions and the Quality Score keeper rule;
+  - faces: closed eyes and face quality;
+  - file details: original size and dimensions, file type (the RAW tag), keywords, title, caption, and
+    whether the original is on this Mac, which most keeper rules use;
+  - which library is the System Photo Library, checked when you open one.
+
+  Winnow opens it read-only and never changes it.
+
+Without Full Disk Access you can still cull, rate, reject, favorite and rotate; a banner says what's missing
+and opens the right System Settings pane. Suggestions and the file details are missing, and Duplicates and
+Similar Shots still find look-alikes but have little for their keeper rules to go on. Granting it later and
+reopening the library brings them back.
+
 ## Phase 0 spike
 
 The spike app answers which of Photos' own score columns exist on this macOS, how fast PhotoKit loads and
@@ -87,9 +110,7 @@ deliberately rough. Code: `Sources/WinnowSpike`.
 Open **build/Winnow Spike.app** from Finder.
 
 1. **Choose a library.** A window lists the Photos libraries on this Mac, like the one Photos shows when you hold ⌥.
-   Use **Other Library…** to pick one it didn't find. After that Winnow reopens the last library straight away
-   (the window comes back only if that library is gone, for example on a drive that isn't connected).
-   You can switch any time with File › Choose Library (⌘O).
+   Use **Other Library…** to pick one it didn't find. You can switch any time with File › Choose Library (⌘O).
 2. **Full Disk Access.** The first time, the app may say it can't read the library's database.
    Click **Open Privacy Settings**, add Winnow Spike, switch it on, and click **Try Again**.
    The app reads a temporary copy of the database and never changes your library.
