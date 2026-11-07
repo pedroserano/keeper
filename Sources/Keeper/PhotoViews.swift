@@ -129,7 +129,11 @@ struct GridView: View {
                 }
                 .onChange(of: columns) { session.gridColumns = columns }
                 // Groups: centre the photo, so its group's header is in view and not under the pinned ones.
-                .onChange(of: session.cursor) { proxy.scrollTo(session.cursor, anchor: session.sections == nil ? nil : .center) }
+                // Only when the cursor moves to another photo: rotating or dismissing one earlier in the
+                // list shifts the cursor's index without moving it, and mustn't scroll you away.
+                .onChange(of: session.current?.localIdentifier) {
+                    proxy.scrollTo(session.cursor, anchor: session.sections == nil ? nil : .center)
+                }
             }
         }
     }

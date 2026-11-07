@@ -325,9 +325,37 @@ final class CullingSession: ObservableObject {
 
     /// The turn Keeper proposes for a photo in Sideways Photos (nil once it's out of date).
     func proposedRotation(_ asset: PHAsset) -> OrientationRecord? {
-        guard let r = sideways[asset.localIdentifier],
-              abs(r.modDate - OrientationScanner.modDate(asset)) < 1 else { return nil }
+        guard let r = sideways[asset.localIdentifier] else { return nil }
+        // A new modification date doesn't hide the proposal: Photos changes it just from opening the
+        // photo there. The photo is checked again in the background, which drops the proposal if
+        // it really was turned since.
+        if abs(r.modDate - OrientationScanner.modDate(asset)) >= 1 { recheckSideways(asset) }
         return r
+    }
+
+    /// Photos being checked again, with the modification date each was checked for.
+    private var rechecking: [String: Double] = [:]
+
+    /// A proposal's photo has a new modification date: check it again now (a moment, in the
+    /// background) rather than leave it without its label and buttons until the next scan.
+    private func recheckSideways(_ asset: PHAsset) {
+        let id = asset.localIdentifier, date = OrientationScanner.modDate(asset)
+        guard rechecking[id] != date else { return }
+        rechecking[id] = date
+        Task { [weak self] in
+            let fresh = await OrientationScanner.recheck(id)
+            log.notice("orientation: rechecked a changed photo: \(fresh.map { "\($0.status) \($0.rotation.degrees)° \($0.evidence)" } ?? "gone", privacy: .public)")
+            guard let self, var record = fresh, let old = self.sideways[id] else { return }
+            // A turn you picked stays yours.
+            if old.isChosenByYou {
+                record = old
+                record.modDate = fresh!.modDate
+            }
+            try? self.store.saveOrientation([record])
+            self.objectWillChange.send()
+            self.sideways[id] = record.status == .needsRotation ? record : nil
+            self.scheduleCountsRefresh()
+        }
     }
 
     /// The blue label's menu: the photo needs a different turn from the one proposed. Not a change to
@@ -1059,8 +1087,8 @@ final class CullingSession: ObservableObject {
                     }
                     if source == .sideways {
                         // Surest first; out of date once the photo has changed since it was checked.
-                        guard let r = sideways[asset.localIdentifier], r.confidence >= minConfidence,
-                              abs(r.modDate - OrientationScanner.modDate(asset)) < 1 else { return }
+                        // A moved modification date is checked again (proposedRotation), not dropped.
+                        guard let r = sideways[asset.localIdentifier], r.confidence >= minConfidence else { return }
                         // Photos already listed keep their places; new finds follow, surest first.
                         if let place = keepOrder[asset.localIdentifier] { out.append((i, Double(place) - 1_000_000)) }
                         else { out.append((i, -r.confidence)) }
@@ -1176,9 +1204,8 @@ final class CullingSession: ObservableObject {
                     out[.similarShots] = unresolvedPhotos[.similar] ?? 0
                 }
                 // Sideways Photos: proposals still matching the photo as it is now.
-                out[.sideways] = library.assets(withIDs: Array(sidewaysDates.keys)).filter {
-                    abs((sidewaysDates[$0.localIdentifier] ?? 0) - OrientationScanner.modDate($0)) < 1
-                }.count
+                // Still in the library (a moved modification date is checked again, not dropped).
+                out[.sideways] = library.assets(withIDs: Array(sidewaysDates.keys)).count
                 for s in [Source.favorites, .dateRange, .screenshots, .bursts] + albums {
                     if Task.isCancelled { break }
                     out[s] = library.fetch(s, newestFirst: false, range: range).count

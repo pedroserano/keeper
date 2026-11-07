@@ -141,6 +141,30 @@ enum OrientationScanner {
         return records
     }
 
+    /// Checks one photo again now, with the photos taken within a minute of it as neighbours: for a
+    /// photo whose modification date moved since its check (Photos does that just from opening a
+    /// photo there), so its proposal is right again without waiting for the next scan.
+    static func recheck(_ id: String) async -> OrientationRecord? {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else { return nil }
+        let analyzer = OrientationAnalyzer(network: OrientationNetDetector.builtIn, collectsPrints: true)
+        var photos = [asset]
+        if let date = asset.creationDate {
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@",
+                                            PHAssetMediaType.image.rawValue,
+                                            date.addingTimeInterval(-NeighbourCue.window) as NSDate,
+                                            date.addingTimeInterval(NeighbourCue.window) as NSDate)
+            PHAsset.fetchAssets(with: options).enumerateObjects { a, _, stop in
+                if a.localIdentifier != id { photos.append(a) }
+                if photos.count >= 5 { stop.pointee = true }
+            }
+        }
+        var checks: [Check] = []
+        for photo in photos { checks.append(await check(photo, analyzer: analyzer)) }
+        var previous: [Check] = []
+        return withNeighbours(checks, previous: &previous, decider: analyzer.decider).first
+    }
+
     static func modDate(_ asset: PHAsset) -> Double {
         (asset.modificationDate ?? asset.creationDate)?.timeIntervalSince1970 ?? 0
     }
@@ -185,6 +209,7 @@ extension OrientationAnalyzer {
     /// you judge as sideways. Local only: a photo with no local preview returns nil. **Blocking**:
     /// call it off the main thread.
     static func analysisImage(for asset: PHAsset, longEdge: Int) -> CGImage? {
+        ScreenImages.shared.waitUntilQuiet()
         let size = CGSize(width: longEdge, height: longEdge)
         for mode in [PHImageRequestOptionsDeliveryMode.highQualityFormat, .fastFormat] {
             let options = PHImageRequestOptions()

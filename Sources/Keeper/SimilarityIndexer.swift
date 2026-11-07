@@ -93,8 +93,9 @@ enum SimilarityIndexer {
     /// preview, so nothing is downloaded.
     static func featurePrint(_ asset: PHAsset, library: PhotoLibrary) async -> FeatureVector? {
         var image: NSImage?
+        await ScreenImages.shared.waitUntilQuiet()
         for await loaded in library.images(for: asset, targetSize: CGSize(width: 360, height: 360),
-                                           highQualityOnly: true) {
+                                           highQualityOnly: true, background: true) {
             image = loaded.image ?? image
         }
         guard let cg = image?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
