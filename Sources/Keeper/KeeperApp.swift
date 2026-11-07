@@ -24,15 +24,15 @@ struct KeeperApp: App {
                     .keyboardShortcut("o")
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("Undo") { model.session?.undo() }
+                Button("Undo") { model.cullingSession?.undo() }
                     .keyboardShortcut("z")
-                Button("Redo") { model.session?.redo() }
+                Button("Redo") { model.cullingSession?.redo() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandGroup(before: .toolbar) {
-                Button("Grid") { model.session?.mode = .grid }.keyboardShortcut("1")
-                Button("Single Photo") { model.session?.mode = .single }.keyboardShortcut("2")
-                Button("Compare") { model.session?.mode = .compare }.keyboardShortcut("3")
+                Button("Grid") { model.cullingSession?.mode = .grid }.keyboardShortcut("1")
+                Button("Single Photo") { model.cullingSession?.mode = .single }.keyboardShortcut("2")
+                Button("Compare") { model.cullingSession?.mode = .compare }.keyboardShortcut("3")
                 Divider()
                 Toggle("Newest First", isOn: Binding(get: { model.session?.newestFirst ?? false },
                                                      set: { model.session?.newestFirst = $0 }))

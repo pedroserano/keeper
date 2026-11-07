@@ -196,11 +196,45 @@ Photos. Coming from Winnow, the first launch moves its data and settings over an
 
 Code: `Sources/Keeper` (the app), `Sources/KeeperOrientation` (the sideways-photo cues; the network is
 `Resources/OrientationNet.mlpackage`), `Sources/KeeperKit` (decisions, their database, undo; unit-tested in
-`Tests/KeeperKitTests`), `Sources/KeeperCore` (reading a library's own database).
+`Tests/KeeperKitTests`), `Sources/KeeperCore` (reading a library's own database), and the Dates section:
+`Sources/DateGuessCore` (clues and combining them; tested in `Tests/DateGuessCoreTests`) and
+`Sources/DateGuesser` (its screens, state and PhotoKit work; tested in `Tests/DateGuesserTests`).
+
+### Dates
+
+The Dates section in the sidebar finds photos that **don't have a real date**, such as scanned prints, and
+estimates when each was taken. It comes from Photo Date Guesser, an app by the same author, and works the
+same way:
+
+- **Undated Photos**: Scan Library finds photos with no date, an impossible date or a camera's factory
+  date, and scans whose files carry no capture date. Each one gets a guess ("Summer 1976"), a confidence
+  and a checkbox. **Why?** lists every clue behind the guess. **Apply** sets the date for the checked
+  photos only, through PhotoKit, the same as *Adjust Date and Time* in Photos. The original file isn't
+  rewritten.
+- **Events**, **People** and **Cameras**: what you know. Group photos from one event or era, add birth
+  years (or read birthdays from Contacts), and the years you used each camera.
+- **Places**: guesses where photos without a location were taken.
+- **History**: every batch of dates you applied, each with Undo.
+
+Clues include filenames and album names, file formats and camera models, colour and print borders, scenes
+(Christmas, snow, the beach), how old the people in a photo look, look-alike photos, and dated photos of the
+same scene. Date Settings in the toolbar holds the options. Its data lives next to Keeper's own, one folder
+per library. The first time you open Dates, Keeper copies anything you'd already done in Photo Date
+Guesser (scans, people, groups, decisions and undo history), and leaves that app's files as they are.
+
+Places is the one part that uses the internet: place names, and what you type in its search box, go to
+Apple Maps.
+
+**Face age model.** Dates includes a face-age model based on
+[MiVOLO v2](https://huggingface.co/iitolstykh/mivolo_v2) by Maksim Kuprashevich, Irina Tolstykh et al.
+([code](https://github.com/WildChlamydia/MiVOLO), papers [2307.04616](https://arxiv.org/abs/2307.04616)
+and [2403.02302](https://arxiv.org/abs/2403.02302)), converted to Core ML. It's licensed
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): free for non-commercial use, with credit.
+It **isn't** covered by Keeper's MIT licence. What was changed is listed in `Resources/FaceAge-NOTICE.txt`.
 
 ### Permissions
 
-Keeper asks for two:
+Keeper asks for two, plus Contacts if you use birthdays in Dates:
 
 - **Photos** (PhotoKit): the photos themselves, their dates, Favorite, Hidden, ratings and albums, and
   writing your decisions back. Everything Keeper changes goes through this, so Photos stays in charge of
@@ -234,4 +268,6 @@ swift run keeper-scores schema --library "PATH/TO/Library.photoslibrary"
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Two bundled models have their own licences: the orientation network (MIT,
+`Resources/OrientationNet-LICENSE.txt`) and the face-age model (CC BY-NC 4.0,
+`Resources/FaceAge-NOTICE.txt`).

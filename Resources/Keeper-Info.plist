@@ -20,6 +20,8 @@
 	<string>27.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSContactsUsageDescription</key>
+	<string>Keeper reads birthdays from the contact cards your Photos people are linked to, so Dates can tell how old they are in a photo. It changes a card only if you turn on saving birthdays to Contacts in Date Settings.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Keeper scores your photos on this Mac to suggest which ones to keep or remove.</string>
 	<key>NSPrincipalClass</key>

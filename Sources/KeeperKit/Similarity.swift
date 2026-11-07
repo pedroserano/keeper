@@ -10,19 +10,37 @@
 // two frames of a burst. What sets copies apart is time: a copy keeps the original's capture time,
 // so duplicates must also share a capture moment (`sameMoment`); bursts are similar shots.
 
+import Accelerate
 import Foundation
 
 /// A feature print, stored compactly: one Float32 scale followed by one Int8 per element
 /// (about 0.8 KB per photo instead of 3 KB).
 public struct FeatureVector: Sendable, Equatable {
     public let values: [Float]
+    /// Length of `values`, worked out once: grouping compares each print with many others.
+    private let norm: Float
 
-    public init(_ values: [Float]) { self.values = values }
+    public init(_ values: [Float]) {
+        self.values = values
+        norm = Self.dot(values, values, count: values.count).squareRoot()
+    }
 
     public init?(quantized data: Data) {
         guard data.count > 4 else { return nil }
         let scale = data.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: Float.self) }
-        values = data.dropFirst(4).map { Float(Int8(bitPattern: $0)) * scale }
+        self.init(data.dropFirst(4).map { Float(Int8(bitPattern: $0)) * scale })
+    }
+
+    public static func == (a: FeatureVector, b: FeatureVector) -> Bool { a.values == b.values }
+
+    private static func dot(_ a: [Float], _ b: [Float], count: Int) -> Float {
+        var result: Float = 0
+        a.withUnsafeBufferPointer { pa in
+            b.withUnsafeBufferPointer { pb in
+                vDSP_dotpr(pa.baseAddress!, 1, pb.baseAddress!, 1, &result, vDSP_Length(count))
+            }
+        }
+        return result
     }
 
     public var quantized: Data {
@@ -35,14 +53,14 @@ public struct FeatureVector: Sendable, Equatable {
 
     /// 0 = same direction, 1 = unrelated, 2 = opposite.
     public func distance(to other: FeatureVector) -> Float {
-        var dot: Float = 0, a: Float = 0, b: Float = 0
-        for i in values.indices where i < other.values.count {
-            dot += values[i] * other.values[i]
-            a += values[i] * values[i]
-            b += other.values[i] * other.values[i]
-        }
+        let n = min(values.count, other.values.count)
+        guard n > 0 else { return 1 }
+        let d = Self.dot(values, other.values, count: n)
+        // Different lengths never happen with one Vision revision; compare the shared part then.
+        let a = n == values.count ? norm : Self.dot(values, values, count: n).squareRoot()
+        let b = n == other.values.count ? other.norm : Self.dot(other.values, other.values, count: n).squareRoot()
         guard a > 0, b > 0 else { return 1 }
-        return 1 - dot / (a.squareRoot() * b.squareRoot())
+        return 1 - d / (a * b)
     }
 }
 
@@ -150,8 +168,12 @@ public enum Similarity {
         return (counts, groups.map(\.members.count).max() ?? 0)
     }
 
-    /// Each compared photo's distance to its closest neighbour in its cluster, for tuning the
-    /// thresholds: a histogram in steps of 0.02 up to 0.3, plus everything above.
+    /// How many photos either side, in date order, the report compares each photo with. Long runs
+    /// (a day of bursts can chain thousands of photos) made comparing every pair take many seconds.
+    public static let histogramWindow = 32
+
+    /// Each compared photo's distance to its closest neighbour among the photos taken just before
+    /// and after it, for tuning the thresholds: a histogram in steps of 0.02 up to 0.3, plus everything above.
     public static func nearestNeighbourHistogram(clusters: [[String]], vectors: [String: FeatureVector]) -> [(upTo: Float, count: Int)] {
         let edges: [Float] = stride(from: 0.02, through: 0.3001, by: 0.02).map { Float($0) } + [.infinity]
         var counts = [Int](repeating: 0, count: edges.count)
@@ -159,7 +181,9 @@ public enum Similarity {
             let ids = cluster.filter { vectors[$0] != nil }
             for i in ids.indices {
                 var nearest = Float.infinity
-                for j in ids.indices where j != i { nearest = min(nearest, vectors[ids[i]]!.distance(to: vectors[ids[j]]!)) }
+                let v = vectors[ids[i]]!
+                let window = max(ids.startIndex, i - histogramWindow)..<min(ids.endIndex, i + histogramWindow + 1)
+                for j in window where j != i { nearest = min(nearest, v.distance(to: vectors[ids[j]]!)) }
                 if let bin = edges.firstIndex(where: { nearest <= $0 }), nearest.isFinite { counts[bin] += 1 }
             }
         }

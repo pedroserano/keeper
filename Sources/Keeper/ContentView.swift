@@ -2,6 +2,7 @@ import AppKit
 import Photos
 import SwiftUI
 import KeeperKit
+import DateGuesser
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
@@ -16,6 +17,18 @@ struct ContentView: View {
             Sidebar(session: session, library: session.library)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230)
         } detail: {
+            if let item = session.dates {
+                Group {
+                    if let dates = session.datesModel {
+                        DatesScreen(model: dates, item: item, select: { session.openDates($0) })
+                    } else {
+                        ProgressView("Loading Dates…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .navigationTitle(item.title)
+                    }
+                }
+                .navigationSubtitle(session.libraryName)
+            } else {
             detail
                 .overlay(alignment: .top) { toast }
                 .safeAreaInset(edge: .top, spacing: 0) {
@@ -37,6 +50,7 @@ struct ContentView: View {
                 .toolbar { toolbar }
                 .navigationTitle(session.source.title)
                 .navigationSubtitle(session.libraryName)
+            }
         }
         .environmentObject(session)
         .environmentObject(session.library)
@@ -184,7 +198,7 @@ struct ContentView: View {
     /// Returns true if the key was a culling key and has been used. Left alone: shortcuts with
     /// ⌘ ⌃ or ⌥ (they belong to the menus), typing in a text field, and anything while a sheet is open.
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard !showingDelete, !showingShortcuts, let window = event.window,
+        guard session.dates == nil, !showingDelete, !showingShortcuts, let window = event.window,
               window.identifier != SettingsWindowMarker.identifier,
               window.sheetParent == nil, window.attachedSheet == nil else { return false }
         if let text = window.firstResponder as? NSText, text.isEditable { return false }
@@ -243,7 +257,19 @@ struct Sidebar: View {
     @ObservedObject var library: PhotoLibrary
 
     var body: some View {
-        List(selection: Binding<Source?>(get: { session.source }, set: { if let s = $0 { session.select(s) } })) {
+        List(selection: Binding<SidebarPick?>(
+            get: { session.dates.map(SidebarPick.dates) ?? .source(session.source) },
+            set: {
+                // After this view update: changing published state during one is undefined.
+                let pick = $0
+                DispatchQueue.main.async {
+                    switch pick {
+                    case .source(let s)?: session.dates = nil; session.select(s)
+                    case .dates(let d)?: session.openDates(d)
+                    case nil: break
+                    }
+                }
+            })) {
             Section("Library") {
                 row(.allPhotos)
                 row(.unreviewed)
@@ -290,6 +316,22 @@ struct Sidebar: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(orientationNote).font(.caption).foregroundStyle(.secondary)
                     SidewaysConfidenceSlider(session: session)
+                }
+            }
+            Section {
+                ForEach(DatesItem.allCases) { item in
+                    Label(item.title, systemImage: item.systemImage)
+                        .badge(session.datesModel.map { $0.badge(for: item) }.flatMap { $0 > 0 ? Text($0.formatted()) : nil })
+                        .tag(SidebarPick.dates(item))
+                }
+            } header: {
+                Text("Dates")
+            } footer: {
+                if let dates = session.datesModel {
+                    DatesActivity(model: dates)
+                } else {
+                    Text("Find photos without a real date, like scanned prints, and estimate when they were taken.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Media Types") {
@@ -377,7 +419,7 @@ struct Sidebar: View {
     private func row(_ source: Source) -> some View {
         Label(source.title, systemImage: source.systemImage)
             .badge(badge(source))
-            .tag(source)
+            .tag(SidebarPick.source(source))
     }
 
     /// A count of 0 hides a badge, so lists you work through to the end show "0" instead.
@@ -386,6 +428,12 @@ struct Sidebar: View {
         if n == 0, ![.unreviewed, .duplicates, .similarShots, .suggestedRejects, .sideways].contains(source) { return nil }
         return Text(n.formatted())
     }
+}
+
+/// A sidebar row: a culling list, or a Dates screen.
+enum SidebarPick: Hashable {
+    case source(Source)
+    case dates(DatesItem)
 }
 
 struct StatusBar: View {

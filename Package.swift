@@ -16,14 +16,20 @@ let package = Package(
                 path: "Sources/KeeperKit"),
         // Which way up a photo is (Vision cues and the orientation network), for Sideways Photos.
         .target(name: "KeeperOrientation", dependencies: ["KeeperKit"], path: "Sources/KeeperOrientation"),
+        // Dates (from Photo Date Guesser): estimating when undated photos were taken. Pure logic…
+        .target(name: "DateGuessCore", path: "Sources/DateGuessCore"),
+        // …and its screens, state and PhotoKit/Vision work, shown in Keeper's Dates section.
+        .target(name: "DateGuesser", dependencies: ["DateGuessCore"], path: "Sources/DateGuesser"),
         // The app.
-        .executableTarget(name: "Keeper", dependencies: ["KeeperCore", "KeeperKit", "KeeperOrientation"],
+        .executableTarget(name: "Keeper", dependencies: ["KeeperCore", "KeeperKit", "KeeperOrientation", "DateGuesser"],
                           path: "Sources/Keeper"),
         // Measures the orientation cues on a folder of upright photos, each turned all four ways.
         .executableTarget(name: "orientation-eval", dependencies: ["KeeperKit", "KeeperOrientation"],
                           path: "Sources/OrientationEval"),
         // Command-line front end to KeeperCore, for automated testing.
         .executableTarget(name: "keeper-scores", dependencies: ["KeeperCore"], path: "Sources/KeeperScores"),
+        .testTarget(name: "DateGuessCoreTests", dependencies: ["DateGuessCore"], path: "Tests/DateGuessCoreTests"),
+        .testTarget(name: "DateGuesserTests", dependencies: ["DateGuesser", "DateGuessCore"], path: "Tests/DateGuesserTests"),
         .testTarget(name: "KeeperKitTests", dependencies: ["KeeperKit", "KeeperCore"], path: "Tests/KeeperKitTests"),
     ],
     swiftLanguageModes: [.v5]

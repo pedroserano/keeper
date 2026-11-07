@@ -51,6 +51,12 @@ final class AppModel: ObservableObject {
         state = .choosing
     }
 
+    /// The session, unless a Dates screen is showing (its own Undo lives in Dates ▸ History).
+    var cullingSession: CullingSession? {
+        guard let session, session.dates == nil else { return nil }
+        return session
+    }
+
     func open(_ url: URL, skipSystemCheck: Bool = false) async {
         state = .opening(url)
 

@@ -526,24 +526,30 @@ extension PhotosDatabase {
         var joins = xx.isEmpty ? "" : " LEFT JOIN ZADDITIONALASSETATTRIBUTES x ON x.ZASSET = a.Z_PK"
         if !e.isEmpty { joins += " LEFT JOIN ZEXTENDEDATTRIBUTES e ON e.Z_PK = a.ZEXTENDEDATTRIBUTES" }
         if !d.isEmpty { joins += " LEFT JOIN ZASSETDESCRIPTION d ON d.Z_PK = x.ZASSETDESCRIPTION" }
-        let present = r.contains("ZLOCALAVAILABILITY") && r.contains("ZRESOURCETYPE")
-            ? "EXISTS (SELECT 1 FROM ZINTERNALRESOURCE r WHERE r.ZASSET = a.Z_PK AND r.ZRESOURCETYPE = 0 AND r.ZLOCALAVAILABILITY = 1)"
-            : "1"
-        let referenced = r.contains("ZFILESYSTEMBOOKMARK")
-            ? "EXISTS (SELECT 1 FROM ZINTERNALRESOURCE r WHERE r.ZASSET = a.Z_PK AND r.ZFILESYSTEMBOOKMARK IS NOT NULL)"
-            : "0"
-        let inAlbum = albumJoin.map { j in
+        // Which assets have a local original, a referenced file, an album or keywords: one pass over
+        // each table into a set. Correlated EXISTS subqueries for these took ~20 s on 200,000 photos.
+        func ids(_ sql: String, _ arguments: [String] = []) throws -> Set<Int64> {
+            var out = Set<Int64>()
+            try db.forEachRow(sql, arguments) { out.insert(sqlite3_column_int64($0, 0)) }
+            return out
+        }
+        let present: Set<Int64>? = r.contains("ZLOCALAVAILABILITY") && r.contains("ZRESOURCETYPE")
+            ? try ids("SELECT ZASSET FROM ZINTERNALRESOURCE WHERE ZRESOURCETYPE = 0 AND ZLOCALAVAILABILITY = 1")
+            : nil
+        let referenced: Set<Int64> = r.contains("ZFILESYSTEMBOOKMARK")
+            ? try ids("SELECT ZASSET FROM ZINTERNALRESOURCE WHERE ZFILESYSTEMBOOKMARK IS NOT NULL")
+            : []
+        let inAlbum: Set<Int64> = try albumJoin.map { j in
             g.contains("ZKIND") && g.contains("ZTITLE")
-                ? """
-                  EXISTS (SELECT 1 FROM \(q(j.table)) j JOIN ZGENERICALBUM g ON g.Z_PK = j.\(q(j.album))
-                          WHERE j.\(q(j.asset)) = a.Z_PK AND g.ZKIND = 2 AND COALESCE(g.ZTRASHEDSTATE, 0) = 0
-                            AND COALESCE(g.ZTITLE, '') NOT IN (?, ?))
-                  """
-                : "0"
-        } ?? "0"
-        let hasKeywords = (keywordJoin.map { j in
-            xx.isEmpty ? "0" : "EXISTS (SELECT 1 FROM \(q(j.table)) k WHERE k.\(q(j.attributes)) = x.Z_PK)"
-        }) ?? "0"
+                ? try ids("""
+                  SELECT j.\(q(j.asset)) FROM \(q(j.table)) j JOIN ZGENERICALBUM g ON g.Z_PK = j.\(q(j.album))
+                  WHERE g.ZKIND = 2 AND COALESCE(g.ZTRASHEDSTATE, 0) = 0 AND COALESCE(g.ZTITLE, '') NOT IN (?, ?)
+                  """, [rejectAlbumTitle, legacyRejectAlbumTitle])
+                : []
+        } ?? []
+        let withKeywords: Set<Int64> = try (xx.isEmpty ? nil : keywordJoin).map { j in
+            try ids("SELECT \(q(j.attributes)) FROM \(q(j.table))")
+        } ?? []
         let location = a.contains("ZLATITUDE") ? "(a.ZLATITUDE IS NOT NULL AND a.ZLATITUDE != -180)" : "0"
         let camera = e.isEmpty ? "0" : "(\(has("e", e, "ZCAMERAMAKE")) OR \(has("e", e, "ZCAMERAMODEL")))"
 
@@ -556,14 +562,15 @@ extension PhotosDatabase {
                    \(pick("a", a, "ZUNIFORMTYPEIDENTIFIER")),
                    \(pick("a", a, "ZFAVORITE")), \(pick("a", a, "ZRATING")), \(pick("a", a, "ZDEPTHTYPE")),
                    \(pick("a", a, "ZHDRTYPE")), \(pick("a", a, "ZKINDSUBTYPE")),
-                   \(location), \(has("x", xx, "ZTITLE")), \(has("d", d, "ZLONGDESCRIPTION")), \(hasKeywords),
-                   \(inAlbum), \(camera), \(referenced), \(present),
-                   \(pick("a", a, "ZDATECREATED")), \(pick("a", a, "ZADDEDDATE")), \(pick("a", a, "ZMODIFICATIONDATE"))
+                   \(location), \(has("x", xx, "ZTITLE")), \(has("d", d, "ZLONGDESCRIPTION")), 0,
+                   0, \(camera), 0, 0,
+                   \(pick("a", a, "ZDATECREATED")), \(pick("a", a, "ZADDEDDATE")), \(pick("a", a, "ZMODIFICATIONDATE")),
+                   a.Z_PK, \(xx.isEmpty ? "NULL" : "x.Z_PK")
             FROM \(q(assetTable)) a\(joins)
             \(a.contains("ZKIND") ? "WHERE a.ZKIND = 0" : "")
             """
         var out: [String: FileInfo] = [:]
-        try db.forEachRow(sql, inAlbum == "0" ? [] : [rejectAlbumTitle, legacyRejectAlbumTitle]) { stmt in
+        try db.forEachRow(sql) { stmt in
             guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
             func null(_ c: Int32) -> Bool { sqlite3_column_type(stmt, c) == SQLITE_NULL }
             func i(_ c: Int32) -> Int? { null(c) ? nil : Int(sqlite3_column_int64(stmt, c)) }
@@ -581,11 +588,12 @@ extension PhotosDatabase {
             info.hasLocation = b(11)
             info.hasTitle = b(12)
             info.hasCaption = b(13)
-            info.hasKeywords = b(14)
-            info.inAlbum = b(15)
+            let pk = sqlite3_column_int64(stmt, 22)
+            info.hasKeywords = !null(23) && withKeywords.contains(sqlite3_column_int64(stmt, 23))
+            info.inAlbum = inAlbum.contains(pk)
             info.hasCameraMetadata = b(16)
-            info.referenced = b(17)
-            info.missing = !b(18)
+            info.referenced = referenced.contains(pk)
+            info.missing = present.map { !$0.contains(pk) } ?? false
             info.captureDate = f(19)
             info.addedDate = f(20)
             info.modifiedDate = f(21)

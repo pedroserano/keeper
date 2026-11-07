@@ -1,0 +1,17 @@
+Face age model (Resources/FaceAge.mlpackage)
+
+Based on MiVOLO v2 by Maksim Kuprashevich and Irina Tolstykh et al.
+  Model:  https://huggingface.co/iitolstykh/mivolo_v2
+  Code:   https://github.com/WildChlamydia/MiVOLO
+  Papers: https://arxiv.org/abs/2307.04616 and https://arxiv.org/abs/2403.02302
+
+Licensed under Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0):
+https://creativecommons.org/licenses/by-nc/4.0/
+It may be used and shared for non-commercial purposes only, with this credit.
+
+Changes made for this app: converted to Core ML (FP16 ML program) with coremltools; takes a face
+crop only (the person/body input is fixed to an empty image); returns the age in years; the
+overlapping fold step in its attention layers is computed with equivalent pad-and-add steps so it
+can run in Core ML. The weights themselves are unchanged apart from FP16 precision.
+
+This notice and the model are not covered by the rest of the project's license.

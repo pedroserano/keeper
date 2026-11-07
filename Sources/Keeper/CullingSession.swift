@@ -14,6 +14,7 @@ import Photos
 import SwiftUI
 import KeeperCore
 import KeeperKit
+import DateGuesser
 
 let log = Logger(subsystem: "local.keeper", category: "session")
 
@@ -70,6 +71,25 @@ final class CullingSession: ObservableObject {
     let store: DecisionStore
     let libraryName: String
     let libraryURL: URL
+    /// The Dates row on screen, if any (the culling list stays where it was underneath).
+    @Published var dates: DatesItem?
+    /// Loaded in the background the first time a Dates row is opened.
+    @Published private(set) var datesModel: DatesModel?
+    private var datesLoading = false
+
+    func openDates(_ item: DatesItem) {
+        dates = item
+        guard datesModel == nil, !datesLoading else { return }
+        datesLoading = true
+        let name = DecisionStore.url(forLibrary: libraryURL).deletingPathExtension().lastPathComponent
+        let folder = DecisionStore.directory.appendingPathComponent("\(name) Dates", isDirectory: true)
+        let started = ContinuousClock.now
+        Task { [weak self, libraryURL] in
+            let model = await DatesModel.load(libraryURL: libraryURL, dataDirectory: folder)
+            log.notice("dates: loaded in \(started.duration(to: .now), privacy: .public)")
+            self?.datesModel = model
+        }
+    }
 
     @Published private(set) var source: Source = .allPhotos
     @Published private(set) var recommender: Recommender?
@@ -728,9 +748,12 @@ final class CullingSession: ObservableObject {
             let started = ContinuousClock.now
             let result = await Task.detached(priority: .utility) { () -> Result<Recommender, Error> in
                 do {
+                    // Three independent read-only queries, each on its own connection: run together.
+                    async let filesRead = Task.detached(priority: .utility) { (try? PhotosDatabase.readFileInfo(inLibrary: url)) ?? [:] }.value
+                    async let facesRead = Task.detached(priority: .utility) { (try? PhotosDatabase.readFaceInfo(inLibrary: url)) ?? [:] }.value
                     let scores = try PhotosDatabase.readAppleScores(inLibrary: url)
-                    let files = (try? PhotosDatabase.readFileInfo(inLibrary: url)) ?? [:]
-                    let faces = (try? PhotosDatabase.readFaceInfo(inLibrary: url)) ?? [:]
+                    let files = await filesRead
+                    let faces = await facesRead
                     return .success(Recommender(scores: scores, screenshots: library.uuids(in: .screenshots),
                                                 groups: groups, files: files, faces: faces,
                                                 aggressiveness: aggressiveness, keeperRules: keeping))

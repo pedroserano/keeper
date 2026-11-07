@@ -31,6 +31,13 @@ if [ "$PRODUCT" = "Keeper" ] && [ -d Resources/OrientationNet.mlpackage ]; then
   fi
 fi
 
+# The dates face-age model (CC BY-NC 4.0, see Resources/FaceAge-NOTICE.txt). Dates works without it.
+if [ "$PRODUCT" = "Keeper" ] && [ -d Resources/FaceAge.mlpackage ]; then
+  mkdir -p "$APP/Contents/Resources"
+  cp -R Resources/FaceAge.mlpackage "$APP/Contents/Resources/"
+  cp Resources/FaceAge-NOTICE.txt "$APP/Contents/Resources/"
+fi
+
 IDENTITY="${WINNOW_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')}"
 codesign --force --sign "${IDENTITY:--}" "$APP"
 echo "Built $APP (signed: ${IDENTITY:-ad-hoc})"

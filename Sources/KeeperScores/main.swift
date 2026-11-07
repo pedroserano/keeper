@@ -50,6 +50,20 @@ do {
         print("\(scores.count) photos, \(analysed) analysed, read in \(started.duration(to: .now))")
         if let (uuid, s) = scores.first(where: { $0.value.isAnalysed }) { print("e.g. \(uuid): \(s)") }
 
+    case "timings" where library != nil:
+        // How long each of Keeper's startup reads takes, one after another.
+        var t = ContinuousClock.now
+        let scores = try PhotosDatabase.readAppleScores(inLibrary: library!)
+        print("scores: \(scores.count) in \(t.duration(to: .now))")
+        t = .now
+        let files = try PhotosDatabase.readFileInfo(inLibrary: library!)
+        print("files: \(files.count) in \(t.duration(to: .now))")
+        let v = files.values
+        print("  album \(v.filter(\.inAlbum).count) referenced \(v.filter(\.referenced).count) missing \(v.filter(\.missing).count) keywords \(v.filter(\.hasKeywords).count) camera \(v.filter(\.hasCameraMetadata).count) title \(v.filter(\.hasTitle).count) location \(v.filter(\.hasLocation).count)")
+        t = .now
+        let faces = try PhotosDatabase.readFaceInfo(inLibrary: library!)
+        print("faces: \(faces.count) in \(t.duration(to: .now))")
+
     case "export" where library != nil:
         let db = try PhotosDatabase(library: library!)
         let export = try db.exportRows()
