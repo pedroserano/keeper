@@ -284,12 +284,29 @@ final class CullingSession: ObservableObject {
 
     fileprivate func updateOrientationProgress(done: Int, total: Int) {
         orientationScan = .scanning(done: done, total: total)
-        // New finds show in the count as the scan goes; the list catches up when you open it.
-        let hadNone = sideways.isEmpty
+        // New finds show in the count and, if you're looking at Sideways Photos, in the list too.
+        let before = listedSideways
         loadSideways()
-        if source == .sideways && hadNone && !sideways.isEmpty { reload() }
+        if source == .sideways && listedSideways != before { scheduleSidewaysReload() }
         scheduleCountsRefresh()
     }
+
+    /// The proposals Sideways Photos lists at the current minimum confidence.
+    private var listedSideways: Set<String> {
+        Set(sideways.filter { $0.value.confidence >= sidewaysMinConfidence }.keys)
+    }
+
+    /// Refreshes the list at most every few seconds while a scan adds to it, keeping your place.
+    private func scheduleSidewaysReload() {
+        guard sidewaysReloadTask == nil else { return }
+        sidewaysReloadTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self else { return }
+            self.sidewaysReloadTask = nil
+            if !Task.isCancelled, self.source == .sideways { self.reload(quietly: true) }
+        }
+    }
+    private var sidewaysReloadTask: Task<Void, Never>?
 
     private func loadSideways() {
         let records = (try? store.orientationProposals()) ?? []
@@ -313,33 +330,49 @@ final class CullingSession: ObservableObject {
         return r
     }
 
+    /// The blue label's menu: the photo needs a different turn from the one proposed. Not a change to
+    /// the photo, so there's nothing to undo; Rotate then uses the new turn.
+    func changeSidewaysTurn(_ asset: PHAsset, to rotation: Rotation) {
+        let id = asset.localIdentifier
+        guard var r = sideways[id], rotation != .none else { return }
+        do { try store.setOrientationRotation(rotation, for: id) } catch {
+            show("Couldn't save the new turn: \(error.localizedDescription)")
+            return
+        }
+        objectWillChange.send()
+        r.rotation = rotation
+        r.evidence = OrientationRecord.chosenByYou
+        sideways[id] = r
+    }
+
     /// The selected photos, or the one at the cursor when none is selected.
     private var sidewaysTargets: [PHAsset] {
         if !selectedPhotos.isEmpty { return library.assets(withIDs: Array(selectedPhotos)) }
         return target.map { [$0] } ?? []
     }
 
-    /// Rotate Selected (or A): each photo gets its own proposed turn, in one step (⌘Z undoes).
-    func rotateSideways() {
-        let proposals = sidewaysTargets.compactMap { a in proposedRotation(a).map { (a.localIdentifier, $0.rotation) } }
+    /// Rotate (or A, or a photo's own Rotate button): each photo gets its own proposed turn,
+    /// in one step (⌘Z undoes).
+    func rotateSideways(_ assets: [PHAsset]? = nil) {
+        let proposals = (assets ?? sidewaysTargets).compactMap { a in proposedRotation(a).map { (a.localIdentifier, $0.rotation) } }
         guard !proposals.isEmpty else { return }
         let n = proposals.count
         commit(Change(label: n == 1 ? "Rotate" : "Rotate \(n.formatted())", before: [], after: [],
                       rotations: Dictionary(proposals.map { ($0.0, $0.1.degrees) }, uniquingKeysWith: { a, _ in a }),
                       sidewaysHidden: Dictionary(proposals.map { ($0.0, true) }, uniquingKeysWith: { a, _ in a })))
-        deselectAllPhotos()
-        reload()
+        if assets == nil { deselectAllPhotos() } else { selectedPhotos.subtract(proposals.map(\.0)) }
+        reload(quietly: true)
     }
 
     /// Not Sideways (N): these photos are fine as they are; they stop showing until they change.
-    func dismissSideways() {
-        let ids = sidewaysTargets.filter { proposedRotation($0) != nil }.map(\.localIdentifier)
+    func dismissSideways(_ assets: [PHAsset]? = nil) {
+        let ids = (assets ?? sidewaysTargets).filter { proposedRotation($0) != nil }.map(\.localIdentifier)
         guard !ids.isEmpty else { return }
         commit(Change(label: "Not Sideways", before: [], after: [],
                       sidewaysHidden: Dictionary(ids.map { ($0, true) }, uniquingKeysWith: { a, _ in a })))
-        deselectAllPhotos()
+        if assets == nil { deselectAllPhotos() } else { selectedPhotos.subtract(ids) }
         show("\(ids.count == 1 ? "Left it" : "Left \(ids.count.formatted()) photos") as \(ids.count == 1 ? "it is" : "they are"). ⌘Z undoes.")
-        reload()
+        reload(quietly: true)
     }
 
     /// Hides or shows proposals for a change, or for its undo.
@@ -357,7 +390,7 @@ final class CullingSession: ObservableObject {
         for asset in library.assets(withIDs: ids) { dates[asset.localIdentifier] = OrientationScanner.modDate(asset) }
         try? store.setOrientationHidden([:], modDates: dates)
         loadSideways()
-        if source == .sideways { reload() }
+        if source == .sideways { reload(quietly: true) }
         scheduleCountsRefresh()
     }
 
@@ -951,17 +984,25 @@ final class CullingSession: ObservableObject {
 
     /// Fetches the source (lazy, fast) and applies the filter. Decisions don't call this, so the
     /// list stays put while you work; switching source or filter does.
-    private func reload(restoreFrom id: String? = nil) {
+    /// `quietly`: an update to the list you're looking at (Sideways Photos while its scan finds more,
+    /// or after rotating some): the current photos stay on screen and in their places until the new
+    /// list is ready, with new ones added at the end, instead of a progress view and a re-sort.
+    private func reload(restoreFrom id: String? = nil, quietly: Bool = false) {
         let keepID = id ?? current?.localIdentifier
         let started = ContinuousClock.now
         let result = source == .sideways
             ? library.assets(fetching: Array(sideways.keys))
             : library.fetch(source, newestFirst: newestFirst, range: dateRange)
         log.notice("open: fetched \(result.count) photos for \(self.source.title) in \(started.duration(to: .now))")
-        apply(result, keepingID: keepID)
+        var keepOrder: [String: Int] = [:]
+        if quietly, source == .sideways {
+            for i in list.indices { keepOrder[list.asset(at: i).localIdentifier] = i }
+        }
+        apply(result, keepingID: keepID, quietly: quietly, keepOrder: keepOrder)
     }
 
-    private func apply(_ result: PHFetchResult<PHAsset>, keepingID: String?) {
+    private func apply(_ result: PHFetchResult<PHAsset>, keepingID: String?, quietly: Bool = false,
+                       keepOrder: [String: Int] = [:]) {
         filterTask?.cancel()
         let keepAsset = keepingID.flatMap { library.assets(withIDs: [$0]).first }
 
@@ -975,7 +1016,7 @@ final class CullingSession: ObservableObject {
         }
 
         // Suggestion sources wait for Apple's scores; loadSuggestions() reloads when they arrive.
-        loading = true
+        loading = !quietly || list.isEmpty
         if source.isSuggestion && recommender == nil {
             if case .unavailable = suggestionsStatus { loading = false }
             list = .empty
@@ -1020,7 +1061,9 @@ final class CullingSession: ObservableObject {
                         // Surest first; out of date once the photo has changed since it was checked.
                         guard let r = sideways[asset.localIdentifier], r.confidence >= minConfidence,
                               abs(r.modDate - OrientationScanner.modDate(asset)) < 1 else { return }
-                        out.append((i, -r.confidence))
+                        // Photos already listed keep their places; new finds follow, surest first.
+                        if let place = keepOrder[asset.localIdentifier] { out.append((i, Double(place) - 1_000_000)) }
+                        else { out.append((i, -r.confidence)) }
                         return
                     }
                     guard source.isSuggestion else { out.append((i, 0)); return }
@@ -1340,7 +1383,7 @@ final class CullingSession: ObservableObject {
     /// Duplicates and Similar Shots list only unmerged groups, so an undone merge brings its group back.
     private func afterUndoOrRedo(_ change: Change) {
         if source.isGroups || (source == .sideways && !change.sidewaysHidden.isEmpty) {
-            reload()
+            reload(quietly: source == .sideways)
             refreshCounts()
         } else {
             revealFirst(of: change)

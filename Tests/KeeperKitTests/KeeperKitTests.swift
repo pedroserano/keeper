@@ -977,9 +977,62 @@ import KeeperCore
         #expect(try store.orientationProposals().map(\.assetID) == ["a", "b"])
     }
 
+    @Test func anOlderEngineChecksAgainButKeepsDismissals() throws {
+        let store = try DecisionStore()
+        let old = OrientationRecord.currentEngine - 1
+        try store.saveOrientation([
+            OrientationRecord(assetID: "old", modDate: 1, status: .upright, engine: old),
+            OrientationRecord(assetID: "dismissed", modDate: 2, status: .needsRotation, rotation: .clockwise90,
+                              confidence: 0.8, hidden: true, engine: old),
+            OrientationRecord(assetID: "new", modDate: 3, status: .upright),
+        ])
+        #expect(try store.orientationScanned() == ["dismissed": 2, "new": 3])
+    }
+
+    @Test func aTurnYouPickIsKept() throws {
+        let store = try DecisionStore()
+        try store.saveOrientation([OrientationRecord(assetID: "a", modDate: 1, status: .needsRotation,
+                                                     rotation: .clockwise90, confidence: 0.7, evidence: "network 90°:0.70")])
+        try store.setOrientationRotation(.clockwise270, for: "a")
+        let r = try #require(try store.orientationProposals().first)
+        #expect(r.rotation == .clockwise270)
+        #expect(r.isChosenByYou)
+        #expect(r.confidence == 0.7)
+        #expect(try store.orientationScanned() == ["a": 1]) // not checked again
+    }
+
     @Test func undoShowsDismissedPhotosAgain() {
         let change = Change(label: "Rotate", before: [], after: [], rotations: ["p": 270], sidewaysHidden: ["p": true])
         #expect(change.reversed.sidewaysHidden == ["p": false])
         #expect(change.reversed.rotations == ["p": -270])
+    }
+}
+
+@Suite struct NeighbourCueTests {
+    let scene: [Float] = [1, 0, 0, 0]
+    /// The photo needs a quarter turn clockwise: only that turn looks like its upright neighbour.
+    var prints: [Rotation: [Float]] {
+        [.none: [0, 1, 0, 0], .clockwise90: [0.98, 0.05, 0, 0], .rotate180: [0, 0, 1, 0], .clockwise270: [0, 0, 0, 1]]
+    }
+
+    @Test func theTurnThatMatchesANeighbourGetsTheVote() throws {
+        let e = try #require(NeighbourCue.evidence(prints: prints, neighbours: [scene]))
+        #expect(e.score(for: .clockwise90) == 1)
+        #expect(e.score(for: .none) == 0)
+    }
+
+    @Test func noCloseNeighbourSaysNothing() {
+        #expect(NeighbourCue.evidence(prints: prints, neighbours: []) == nil)
+        #expect(NeighbourCue.evidence(prints: prints, neighbours: [[0, 0.7, 0.7, 0.1]]) == nil)
+        var partial = prints
+        partial[.rotate180] = nil
+        #expect(NeighbourCue.evidence(prints: partial, neighbours: [scene]) == nil)
+    }
+
+    @Test func aNarrowLeadIsAWeakVote() throws {
+        var close = prints
+        close[.none] = [0.97, 0.12, 0, 0]
+        let e = NeighbourCue.evidence(prints: close, neighbours: [scene])
+        #expect((e?.score(for: .clockwise90) ?? 0) < 0.5)
     }
 }

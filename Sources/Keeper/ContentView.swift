@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var session: CullingSession
     @State private var showingDelete = false
+    @AppStorage("gridWholePhotos") private var wholePhotos = false
     @State private var showingShortcuts = false
     @State private var keyMonitor: Any?
 
@@ -21,11 +22,13 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         if let gap = session.accessGap { AccessBanner(gap: gap, session: session) }
                         if session.source == .dateRange { DateRangeBar(session: session) }
-                        // Only while photos are selected (⌘A, ⌘-click, Shift-click or G).
-                        if session.selectsPhotos, !session.list.isEmpty,
+                        // Sideways Photos always says what to do; elsewhere, only while photos are
+                        // selected (⌘A, ⌘-click, Shift-click or G).
+                        if session.source == .sideways, !session.list.isEmpty {
+                            SidewaysBar(session: session)
+                        } else if session.selectsPhotos, !session.list.isEmpty,
                            !session.selectedPhotos.isEmpty || session.selectingAll,
-                           session.source == .rejected || session.source == .sideways
-                               || session.suggestionsStatus == .ready {
+                           session.source == .rejected || session.suggestionsStatus == .ready {
                             AcceptRatingsBar(session: session)
                         }
                     }
@@ -144,6 +147,14 @@ struct ContentView: View {
             }
             .fixedSize()
             .help("Which photos to show")
+        }
+        ToolbarItem {
+            Picker("Photo Shape", selection: $wholePhotos) {
+                Label("Squares", systemImage: "square.grid.3x3.square").tag(false)
+                Label("Whole Photos", systemImage: "aspectratio").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .help("Grid shows photos as squares, or whole at their own shape")
         }
         ToolbarItem {
             Button { showingDelete = true } label: {
@@ -406,8 +417,10 @@ struct PhotoBadges: View {
     let isFavorite: Bool
     var isRaw = false
     var large = false
-    /// Sideways Photos: the proposed turn and how sure it is.
+    /// Sideways Photos: the proposed turn and how sure it is, and what picking another one from its menu does.
     var turn: OrientationRecord? = nil
+    var changeTurn: ((Rotation) -> Void)? = nil
+    var leave: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -435,7 +448,7 @@ struct PhotoBadges: View {
                 RatingLabel(rating: decision.rating, suggested: suggestion?.stars ?? 0, compact: !large)
                 Spacer(minLength: 0)
                 if let turn {
-                    TurnLabel(turn: turn, large: large)
+                    TurnLabel(turn: turn, large: large, changeTurn: changeTurn, leave: leave)
                 } else if decision.flag == .none, let suggestion, let reason = suggestion.reasons.first {
                     // Orange: suggested reject. Grey: same issue, but Photos thinks the photo matters
                     // to you, so it's kept out of Suggested Rejects.
@@ -458,22 +471,60 @@ struct PhotoBadges: View {
     }
 }
 
-/// "↻ 90° · 87%": the turn Sideways Photos proposes.
+/// "↻ 90° · 87%": the turn Sideways Photos proposes. Click it to pick another turn when Keeper
+/// got the direction wrong, or to say the photo isn't sideways.
 struct TurnLabel: View {
     let turn: OrientationRecord
     var large = false
+    var changeTurn: ((Rotation) -> Void)? = nil
+    var leave: (() -> Void)? = nil
+
+    private var text: String {
+        turn.isChosenByYou ? "\(turn.rotation.shortLabel) · yours"
+                           : "\(turn.rotation.shortLabel) · \(Int((turn.confidence * 100).rounded()))%"
+    }
+
+    private var capsule: some View {
+        HStack(spacing: 3) {
+            Text(text)
+            if changeTurn != nil { Image(systemName: "chevron.down").font(.system(size: large ? 10 : 7, weight: .bold)) }
+        }
+        .font(large ? .callout.monospacedDigit() : .caption2.monospacedDigit())
+        .lineLimit(1)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Color.blue.opacity(0.85), in: Capsule())
+        .foregroundStyle(.white)
+    }
 
     var body: some View {
-        Label("\(turn.rotation.shortLabel) · \(Int((turn.confidence * 100).rounded()))%", systemImage: "rotate.right")
-            .labelStyle(.titleOnly)
-            .font(large ? .callout.monospacedDigit() : .caption2.monospacedDigit())
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Color.blue.opacity(0.85), in: Capsule())
-            .foregroundStyle(.white)
-            .help("Proposed: \(turn.rotation.label). Confidence \(Int((turn.confidence * 100).rounded()))%, "
-                  + "from \(turn.evidence.isEmpty ? "no strong cue" : turn.evidence). A rotates it, N leaves it.")
+        if let changeTurn {
+            Menu {
+                ForEach([Rotation.clockwise90, .rotate180, .clockwise270], id: \.self) { r in
+                    Button { changeTurn(r) } label: {
+                        if r == turn.rotation { Label(r.label, systemImage: "checkmark") } else { Text(r.label) }
+                    }
+                }
+                if let leave {
+                    Divider()
+                    Button("Not Sideways", action: leave)
+                }
+            } label: { capsule }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(help + " Click to pick another turn.")
+        } else {
+            capsule.help(help)
+        }
+    }
+
+    private var help: String {
+        turn.isChosenByYou
+            ? "You picked: \(turn.rotation.label). A rotates it, N leaves it."
+            : "Proposed: \(turn.rotation.label). Confidence \(Int((turn.confidence * 100).rounded()))%, "
+              + "from \(turn.evidence.isEmpty ? "no strong cue" : turn.evidence). A rotates it, N leaves it."
     }
 }
 
@@ -683,6 +734,42 @@ struct DateRangeBar: View {
 /// Above every photo list but the group ones, while photos are picked (⌘A, the circle, ⌘-click,
 /// Shift-click, G; Esc unpicks them all): give the picked ones with no rating yet their suggested stars, or in
 /// Rejected take the reject off them.
+/// Sideways Photos: what to do, always in view. The buttons act on the selected photos, or on the
+/// photo at the cursor when none is selected.
+struct SidewaysBar: View {
+    @ObservedObject var session: CullingSession
+
+    var body: some View {
+        let selected = session.selectedPhotos.count
+        let n = selected > 0 ? selected : (session.current == nil ? 0 : 1)
+        HStack(spacing: 12) {
+            Image(systemName: "rotate.right").foregroundStyle(.blue)
+            Text(selected > 0
+                 ? "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect"
+                 : "Rotate turns a photo the way its blue label shows (click the label if it's the wrong way); "
+                   + "Not Sideways leaves it as it is. Hover a photo for its own buttons, or select several.")
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer()
+            Button { session.dismissSideways() } label: {
+                Label(selected > 1 ? "Not Sideways (\(selected.formatted()))" : "Not Sideways", systemImage: "xmark")
+            }
+            .disabled(n == 0)
+            .help("Leave \(selected > 0 ? "the selected photos" : "this photo") as it is; it stops showing here (N, ⌘Z undoes)")
+            Button { session.rotateSideways() } label: {
+                Label(selected > 1 ? "Rotate \(selected.formatted())" : "Rotate", systemImage: "rotate.right")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(n == 0)
+            .help("Turn \(selected > 0 ? "each selected photo" : "this photo") the way shown on it, as an edit in Photos (A, ⌘Z undoes)")
+        }
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}
+
 struct AcceptRatingsBar: View {
     @ObservedObject var session: CullingSession
     @State private var counting = false
@@ -696,15 +783,7 @@ struct AcceptRatingsBar: View {
                 .foregroundStyle(.secondary)
             Spacer()
             if counting || session.selectingAll { ProgressView().controlSize(.small) }
-            if session.source == .sideways {
-                Button("Not Sideways") { session.dismissSideways() }
-                    .disabled(selected == 0)
-                    .help("Leave the selected photos as they are; they stop showing here (N, ⌘Z undoes)")
-                Button("Rotate Selected") { session.rotateSideways() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selected == 0)
-                    .help("Turn each selected photo the way shown on it, as an edit in Photos (A for one photo, ⌘Z undoes)")
-            } else if session.source == .rejected {
+            if session.source == .rejected {
                 Button("Unreject Selected") { session.unrejectSelected() }
                     .buttonStyle(.borderedProminent)
                     .disabled(selected == 0)

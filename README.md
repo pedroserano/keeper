@@ -128,27 +128,40 @@ stars don't change.
 ### Sideways photos
 
 **Sideways Photos**, in the sidebar, lists photos that look sideways or upside down, each with the turn
-Keeper proposes and how sure it is (↻ 90° · 87%), surest first. Select them and click **Rotate Selected**
-(or press A for one photo), and each turns the way shown on it; ⌘Z turns them all back. **Not Sideways**
-(N) leaves photos as they are, and they stop showing until they change.
+Keeper proposes and how sure it is (↻ 90° · 87%), surest first. Hover a photo for its own **Rotate** and
+**Not Sideways** buttons, or select several (⌘A, drag) and use the buttons in the bar along the top; A and N
+do the same for the photo at the cursor. Rotated photos turn the way shown on them, and ⌘Z turns them back.
+Not Sideways leaves photos as they are, and they stop showing until they change. While the scan runs, new
+finds join the end of the list without disturbing what you're looking at.
+
+**Squares / Whole Photos**, in the toolbar, switches every grid between square crops and each photo whole
+at its own shape.
 
 In the background, after the look-alikes scan, Keeper checks every photo once from a small local preview
 (nothing is downloaded), newest first. The first run on a big library takes hours. It shows its progress in
 the sidebar, pauses when the Mac runs hot, and picks up where it left off; after that only new and changed
-photos are checked. Screenshots, and photos Photos won't let an app edit, are skipped.
+photos are checked. Screenshots, and photos Photos won't let an app edit, are skipped. When the check
+itself gets better, as in this version, every photo is checked again once; photos you marked Not Sideways
+stay that way.
 
-Each photo is judged from four cues, which vote on the turn that makes it upright:
+Each photo is judged from these cues, which vote on the turn that makes it upright:
 
 - **Faces**: Vision finds faces at any angle and reports how far each is tilted. A face tilted about 90°
   means the photo needs a quarter turn. Faces are the strongest cue.
 - **People**: body pose, checked all four ways up. The way where the neck is above the hips gets the credit.
 - **Text**: checked all four ways up. The way with the most real dictionary words gets the credit, since
   Vision reads upside-down text as gibberish and can't read sideways text at all.
-- **Scenes**: an image-recognition network (MobileNetV3) fine-tuned to tell which way a photo is turned,
+- **Scenes**: an image-recognition network (EfficientNetV2-S) trained to tell which way a photo is turned,
   for landscapes, buildings and objects. Most photos in a library are upright, so it's weighed by realistic
-  odds (90% upright, 4.5% each way sideways, 1% upside down). On photos it never saw in training, it found
-  about half of the sideways ones with no upright photos wrongly flagged at 50% confidence; on its own it
-  almost never proposes upside down, which faces, people and text still do.
+  odds (75% upright, 11% each way sideways, 2.5% upside down).
+- **Neighbouring shots**: a photo taken within a minute of another compares itself, turned each way, with
+  Vision's fingerprint of that photo. One shot in a series that came out sideways looks like the others
+  only once it's turned back. A neighbour counts only when it's confidently upright itself.
+
+Measured on 400 photos of a real library, each shown all four ways, at 50% confidence: Keeper finds 88% of
+sideways photos and a third of upside-down ones, up from 61% and 22% with the previous network, and flags
+no photo that wasn't really turned. On photos taken in a series, neighbouring shots raise upside-down finds
+to 59%. `swift run -c release orientation-eval` repeats the measurement on a folder of your own photos.
 
 The percentage is how clearly the cues agree, not the chance a proposal is right. **Minimum confidence**,
 under Orientation in the sidebar (50% to start), shows fewer, surer proposals when raised, or more
@@ -158,8 +171,9 @@ Rotating is an edit in Photos, as with R: the original isn't touched, **Image �
 Photos brings it back, and the photo keeps its date, place, albums, keywords and people. Live Photos stay
 live.
 
-The detection and the network come from ApplePhotosRotator, an app by the same author that does only
-this.
+The detection comes from ApplePhotosRotator, an app by the same author that does only this. The network
+is Duarte Barbosa's [deep-image-orientation-detection](https://github.com/duartebarbosadev/deep-image-orientation-detection)
+(MIT, `Resources/OrientationNet-LICENSE.txt`), converted to Core ML by `scripts/convert-orientation-net.py`.
 
 **Date Range** in the sidebar shows only the photos taken between two days (or a quick pick like Last
 Year), for culling one trip or month at a time.

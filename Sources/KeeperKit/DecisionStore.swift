@@ -80,6 +80,10 @@ public final class DecisionStore: Sendable {
             }
             try db.create(index: "orientation_status", on: "orientation", columns: ["status"])
         }
+        m.registerMigration("v5-orientation-engine") { db in
+            // Which version of the orientation check made each row, so a better one checks again.
+            try db.alter(table: "orientation") { t in t.add(column: "engine", .integer).notNull().defaults(to: 1) }
+        }
         return m
     }
 
@@ -135,11 +139,13 @@ public final class DecisionStore: Sendable {
 
     // MARK: Orientation (Sideways Photos)
 
-    /// Photos already checked, with the modification date they had then.
+    /// Photos already checked by the current engine (or dismissed, which a newer engine doesn't undo),
+    /// with the modification date they had then.
     public func orientationScanned() throws -> [String: Double] {
         try dbQueue.read { db in
             var out: [String: Double] = [:]
-            let rows = try Row.fetchCursor(db, sql: "SELECT assetID, modDate FROM orientation")
+            let rows = try Row.fetchCursor(db, sql: "SELECT assetID, modDate FROM orientation WHERE engine >= ? OR hidden = 1",
+                                           arguments: [OrientationRecord.currentEngine])
             while let row = try rows.next() { out[row["assetID"]] = row["modDate"] }
             return out
         }
@@ -180,6 +186,14 @@ public final class DecisionStore: Sendable {
             for (id, date) in modDates {
                 try db.execute(sql: "UPDATE orientation SET modDate = ? WHERE assetID = ?", arguments: [date, id])
             }
+        }
+    }
+
+    /// You picked a different turn for a proposal: it's kept, marked as yours.
+    public func setOrientationRotation(_ rotation: Rotation, for id: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE orientation SET rotation = ?, evidence = ? WHERE assetID = ?",
+                           arguments: [rotation.rawValue, OrientationRecord.chosenByYou, id])
         }
     }
 
@@ -227,9 +241,20 @@ public struct OrientationRecord: Codable, Equatable, Sendable, FetchableRecord, 
     /// Which cues decided, e.g. "faces 90°:0.97 · network 90°:0.71".
     public var evidence: String
     public var hidden: Bool
+    /// The version of the check that made it; see `currentEngine`.
+    public var engine: Int
+
+    /// The evidence of a proposal whose turn you picked yourself.
+    public static let chosenByYou = "chosen by you"
+    public var isChosenByYou: Bool { evidence == Self.chosenByYou }
+
+    /// 1: faces, body pose, text and the MobileNetV3 network. 2: see Orientation.swift.
+    public static let currentEngine = 2
 
     public init(assetID: String, modDate: Double, status: ScanStatus, rotation: Rotation = .none,
-                confidence: Double = 0, evidence: String = "", hidden: Bool = false) {
+                confidence: Double = 0, evidence: String = "", hidden: Bool = false,
+                engine: Int = OrientationRecord.currentEngine) {
+        self.engine = engine
         self.assetID = assetID
         self.modDate = modDate
         self.status = status

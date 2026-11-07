@@ -1,11 +1,17 @@
 // orientation-eval: how well each set of orientation cues does on real photos.
 //
-//   swift run -c release orientation-eval --model PATH/OrientationNet.mlmodelc --count 300 FOLDER
+//   swift run -c release orientation-eval --model PATH/OrientationNet.mlmodelc [--model2 PATH/Other.mlmodelc]
+//       [--neighbours] --count 300 FOLDER
 //
 // Takes a random sample of the JPEG and HEIC photos under FOLDER, assumes each is upright (most
 // photos are), and shows it to the cues turned all four ways. Every cue is run once per image; then
-// each combination of cues is scored from that evidence, as Keeper would decide. Prints totals only:
-// no file names or paths.
+// each combination of cues is scored from that evidence, as Keeper would decide.
+//
+// --model2     a second network, scored on its own and in place of the first ("v2").
+// --neighbours samples photos taken within a minute of another photo instead, turns only the
+//              sampled one, and scores the neighbouring-shot cue with the other kept upright.
+//
+// Prints totals only: no file names or paths.
 
 import CoreGraphics
 import Foundation
@@ -19,12 +25,24 @@ func option(_ name: String) -> String? {
     defer { args.removeSubrange(i...(i + 1)) }
     return args[i + 1]
 }
+func flag(_ name: String) -> Bool {
+    guard let i = args.firstIndex(of: name) else { return false }
+    args.remove(at: i)
+    return true
+}
 let modelPath = option("--model")
+let model2Path = option("--model2")
 let count = Int(option("--count") ?? "") ?? 200
 let seed = UInt64(option("--seed") ?? "") ?? 1
+let neighboursMode = flag("--neighbours")
 guard let folder = args.first else {
-    print("usage: orientation-eval [--model OrientationNet.mlmodelc] [--count N] [--seed S] FOLDER")
+    print("usage: orientation-eval [--model M.mlmodelc] [--model2 M2.mlmodelc] [--neighbours] [--count N] [--seed S] FOLDER")
     exit(2)
+}
+
+var standardError = FileHandle.standardError
+extension FileHandle: @retroactive TextOutputStream {
+    public func write(_ string: String) { write(string.data(using: .utf8)!) }
 }
 
 // A seeded shuffle, so runs can be compared.
@@ -47,7 +65,7 @@ if let e = FileManager.default.enumerator(at: URL(fileURLWithPath: folder), incl
 }
 var rng = SplitMix(state: seed)
 files.shuffle(using: &rng)
-print("\(files.count) photos found; sampling \(min(count, files.count))")
+print("\(files.count) photos found")
 
 /// The photo as it's shown (EXIF orientation applied), long edge 768, like Keeper's previews.
 func load(_ url: URL) -> CGImage? {
@@ -73,105 +91,164 @@ func turned(_ image: CGImage, _ rotation: Rotation) -> CGImage? {
     return ctx.makeImage()
 }
 
-var network: OrientationNetwork?
-if let modelPath {
-    do { network = try OrientationNetwork.load(from: URL(fileURLWithPath: modelPath)) } catch {
-        print("couldn't load the network: \(error)")
+func loadNetwork(_ path: String?) -> OrientationNetwork? {
+    guard let path else { return nil }
+    do { return try OrientationNetwork.load(from: URL(fileURLWithPath: path)) } catch {
+        print("couldn't load a network: \(error)")
+        return nil
     }
 }
-let analyzer = OrientationAnalyzer(network: network, cues: Set(Cue.allCases))
+let network = loadNetwork(modelPath), network2 = loadNetwork(model2Path)
 
-// For each image and each turn it was shown at: the correction it needs and every cue's evidence.
-struct Sample { let needs: Rotation; let evidence: [DetectorEvidence] }
-var samples: [Sample] = []
-var done = 0
+/// Runs `body` over `items` eight at a time, keeping results in order.
+func concurrentMap<T: Sendable, R: Sendable>(_ items: [T], label: String, _ body: @Sendable @escaping (T) -> R?) -> [R?] {
+    let lock = NSLock()
+    nonisolated(unsafe) var results = [R?](repeating: nil, count: items.count)
+    nonisolated(unsafe) var done = 0
+    let started = Date()
+    DispatchQueue.concurrentPerform(iterations: items.count) { i in
+        let r = autoreleasepool { body(items[i]) }
+        lock.lock()
+        results[i] = r
+        done += 1
+        if done % 250 == 0 { print("  \(label): \(done) of \(items.count), \(Int(Date().timeIntervalSince(started)))s", to: &standardError) }
+        lock.unlock()
+    }
+    return results
+}
+
+// MARK: Sample
+
+// Neighbour mode: photos taken within a minute of another one (by EXIF capture time).
+struct Pair: Sendable { let target: URL; let neighbour: URL }
+var targets: [URL] = []
+var pairs: [Pair] = []
+if neighboursMode {
+    func captureDate(_ url: URL) -> Date? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
+              let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String else { return nil }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        return f.date(from: text)
+    }
+    let pool = Array(files.prefix(60_000))
+    let dates = concurrentMap(pool, label: "reading capture times") { captureDate($0) }
+    var dated = zip(pool, dates).compactMap { u, d in d.map { (u, $0) } }
+    dated.sort { $0.1 < $1.1 }
+    var candidates: [Pair] = []
+    for i in dated.indices.dropLast() where dated[i + 1].1.timeIntervalSince(dated[i].1) <= NeighbourCue.window {
+        candidates.append(Pair(target: dated[i + 1].0, neighbour: dated[i].0))
+    }
+    candidates.shuffle(using: &rng)
+    pairs = Array(candidates.prefix(count))
+    targets = pairs.map(\.target)
+    print("\(dated.count) dated photos read, \(candidates.count) with a neighbour within \(Int(NeighbourCue.window))s; sampling \(pairs.count)")
+} else {
+    targets = Array(files.prefix(count))
+    print("sampling \(targets.count)")
+}
+
+// MARK: Evidence
+
+var nets: [String: (OrientationNetwork, OrientationPrior)] = [:]
+if let network { nets["network"] = (network, .equal) }   // raw: odds are applied when scoring
+if let network2 { nets["v2"] = (network2, .equal) }
+let analyzer = OrientationAnalyzer(networks: nets, cues: Set(Cue.allCases), collectsPrints: true)
+
+struct Sample { var needs: Rotation; let shown: Rotation; let photo: Int; let evidence: [DetectorEvidence] }
+struct Job: Sendable { let target: URL; let neighbour: URL? }
+let jobs = neighboursMode ? pairs.map { Job(target: $0.target, neighbour: $0.neighbour) } : targets.map { Job(target: $0, neighbour: nil) }
+nonisolated(unsafe) let sharedAnalyzer = analyzer
 let started = Date()
-for url in files.prefix(count) {
-    guard let upright = load(url) else { continue }
+let perPhoto = concurrentMap(Array(jobs.enumerated()).map { ($0.offset, $0.element) }, label: "checking") { (index, job) -> [Sample]? in
+    guard let upright = load(job.target) else { return nil }
+    var neighbourPrint: [Float]?
+    if let n = job.neighbour {
+        guard let image = load(n), let p = try? OrientationAnalyzer.turnedPrints(of: image, turns: [.none])[.none] else { return nil }
+        neighbourPrint = p
+    }
+    var out: [Sample] = []
     for shown in Rotation.allCases {
         // Shown turned by `shown`, it needs the inverse turn to be upright again.
-        guard let image = turned(upright, shown), let evidence = try? analyzer.allEvidence(image) else { continue }
-        samples.append(Sample(needs: shown.inverse, evidence: evidence))
-    }
-    done += 1
-    if done % 25 == 0 {
-        print("  \(done) photos, \(Int(Date().timeIntervalSince(started)))s", to: &standardError)
-    }
-}
-
-var standardError = FileHandle.standardError
-extension FileHandle: @retroactive TextOutputStream {
-    public func write(_ string: String) { write(string.data(using: .utf8)!) }
-}
-
-func score(_ cues: Set<String>, label: String) {
-    let decider = OrientationDecider(minimumStrength: 0.3, minimumConfidence: 0.2)
-    print("\n\(label)")
-    print("  min conf | upright flagged | sideways found | upside down found | wrong turn")
-    for threshold in [0.3, 0.5, 0.6] {
-        var upright = 0, flagged = 0, sideways = 0, foundSide = 0, upside = 0, foundUpside = 0, wrong = 0, turnedTotal = 0
-        for s in samples {
-            let d = decider.decide(s.evidence.filter { cues.contains($0.detector) })
-            let proposes = d.status == .needsRotation && d.confidence >= threshold
-            if s.needs == .none {
-                upright += 1
-                if proposes { flagged += 1 }
-                continue
+        guard let image = turned(upright, shown), let (evidence, prints) = try? sharedAnalyzer.allEvidence(image) else { continue }
+        var e = evidence
+        if let neighbourPrint {
+            // Several tunings side by side, named neighbours/<limit>/<margin>.
+            for limit: Float in [0.15, 0.25, 0.35] {
+                for margin: Float in [0.04, 0.08, 0.15] {
+                    if var n = NeighbourCue.evidence(prints: prints, neighbours: [neighbourPrint],
+                                                     parameters: .init(limit: limit, fullMargin: margin, weight: 1)) {
+                        n.detector = "neighbours/\(limit)/\(margin)"
+                        e.append(n)
+                    }
+                }
             }
-            turnedTotal += 1
-            if s.needs == .rotate180 { upside += 1 } else { sideways += 1 }
-            guard proposes else { continue }
-            if d.rotation == s.needs {
-                if s.needs == .rotate180 { foundUpside += 1 } else { foundSide += 1 }
-            } else {
-                wrong += 1
+            // How close each turn came, for tuning.
+            var d = DetectorEvidence(detector: "distance", weight: 0, uprightScores: [:])
+            for r in Rotation.allCases {
+                d.uprightScores[r] = Double(FeatureVector(prints[r]!).distance(to: FeatureVector(neighbourPrint)))
             }
+            e.append(d)
         }
-        func pct(_ a: Int, _ b: Int) -> String { b == 0 ? "-" : String(format: "%5.1f%%", Double(a) / Double(b) * 100) }
-        print("  \(String(format: "%7.0f%%", threshold * 100)) | \(pct(flagged, upright).padding(toLength: 15, withPad: " ", startingAt: 0)) | "
-              + "\(pct(foundSide, sideways).padding(toLength: 14, withPad: " ", startingAt: 0)) | "
-              + "\(pct(foundUpside, upside).padding(toLength: 17, withPad: " ", startingAt: 0)) | \(pct(wrong, turnedTotal))")
+        out.append(Sample(needs: shown.inverse, shown: shown, photo: index, evidence: e))
     }
+    return out
 }
-
+var samples = perPhoto.compactMap { $0 }.flatMap { $0 }
+let done = perPhoto.compactMap { $0 }.count
 print("\n\(done) photos, \(samples.count) turned images, in \(Int(Date().timeIntervalSince(started)))s")
-let standard: Set<String> = ["faces", "body", "network", "text"]
-score(standard, label: "Standard cues (faces, body, network, text)")
-score(standard.union(["animals"]), label: "+ animals")
-score(standard.union(["people"]), label: "+ people (upper body)")
-score(standard.union(["horizon"]), label: "+ horizon")
-score(standard.union(["animals", "people", "horizon"]), label: "+ all three")
 
-// Which cues push upright photos into a proposal: for each flagged upright image at 50%, the cues
-// that scored the proposed turn highest.
-do {
-    let decider = OrientationDecider(minimumStrength: 0.3, minimumConfidence: 0.2)
-    var blame: [String: Int] = [:], turns: [Rotation: Int] = [:], flagged = 0
-    for s in samples where s.needs == .none {
-        let d = decider.decide(s.evidence.filter { standard.contains($0.detector) })
-        guard d.status == .needsRotation, d.confidence >= 0.5 else { continue }
-        flagged += 1
-        turns[d.rotation, default: 0] += 1
-        for e in s.evidence where standard.contains(e.detector) && e.weight * e.score(for: d.rotation) > 0.2 {
-            blame[e.detector, default: 0] += 1
-        }
+// Photos that were never upright: where both networks, with no lean towards upright, agree at all
+// four turns that the photo itself needs the same turn c, it's taken to really need c, and every
+// turned copy's answer moves with it. Scored separately below, so the rates aren't blamed for
+// finding photos that really are sideways.
+var relabelled = 0
+if network != nil, network2 != nil {
+    func argmax(_ e: DetectorEvidence?) -> Rotation? {
+        guard let e, !e.uprightScores.isEmpty else { return nil }
+        return Rotation.allCases.max { e.score(for: $0) < e.score(for: $1) }
     }
-    print("\nUpright photos flagged at 50%: \(flagged); proposed turns \(turns.map { "\($0.key.shortLabel) \($0.value)" }.sorted())")
-    print("cues backing those turns: \(blame.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value)" })")
+    let byPhoto = Dictionary(grouping: samples.indices, by: { samples[$0].photo })
+    for (_, indices) in byPhoto where indices.count == 4 {
+        var truths: Set<Rotation> = []
+        for i in indices {
+            let s = samples[i]
+            for name in ["network", "v2"] {
+                // What this answer says the photo itself needs: the answer, before the turn it was shown at.
+                guard let a = argmax(s.evidence.first { $0.detector == name }) else { truths.insert(.none); continue }
+                truths.insert(a.followed(by: s.shown))
+            }
+        }
+        guard truths.count == 1, let c = truths.first, c != .none else { continue }
+        relabelled += 1
+        for i in indices { samples[i].needs = c.followed(by: samples[i].shown.inverse) }
+    }
+    print("Photos both networks agree were never upright (re-labelled with that turn): \(relabelled) of \(done)")
 }
 
-// Fitting the combination: weights per cue and an extra lean towards "as it is", tried on one half
-// of the photos and checked on the other, so the numbers aren't flattering themselves.
-func rates(_ subset: ArraySlice<Sample>, weights: [String: Double], lean: Double, threshold: Double) -> (flag: Double, side: Double, upside: Double, wrong: Double) {
+// MARK: Scoring
+
+let defaultPriors: [String: OrientationPrior] = [
+    "network": OrientationPrior(upright: 0.90, sideways: 0.045, upsideDown: 0.01),
+    "v2": OrientationPrior(upright: 0.75, sideways: 0.1125, upsideDown: 0.025),
+]
+
+struct Rates { var flag = 0.0, side = 0.0, upside = 0.0, wrong = 0.0 }
+
+func rates(_ cues: Set<String>, priors: [String: OrientationPrior] = defaultPriors, threshold: Double) -> Rates {
     let decider = OrientationDecider(minimumStrength: 0.3, minimumConfidence: 0.2)
     var up = 0, fl = 0, sd = 0, fs = 0, ud = 0, fu = 0, wr = 0, tt = 0
-    for s in subset {
-        var ev = s.evidence.compactMap { e -> DetectorEvidence? in
-            guard let w = weights[e.detector], w > 0 else { return nil }
-            return DetectorEvidence(detector: e.detector, weight: w, uprightScores: e.uprightScores)
+    for s in samples {
+        let evidence = s.evidence.filter { cues.contains($0.detector) }.map { e -> DetectorEvidence in
+            guard let prior = priors[e.detector] else { return e }
+            var e = e
+            e.uprightScores = prior.apply(to: e.uprightScores)
+            return e
         }
-        if lean > 0 { ev.append(DetectorEvidence(detector: "lean", weight: lean, uprightScores: [.none: 1])) }
-        let d = decider.decide(ev)
+        let d = decider.decide(evidence)
         let proposes = d.status == .needsRotation && d.confidence >= threshold
         if s.needs == .none { up += 1; if proposes { fl += 1 }; continue }
         tt += 1
@@ -180,28 +257,87 @@ func rates(_ subset: ArraySlice<Sample>, weights: [String: Double], lean: Double
         if d.rotation == s.needs { if s.needs == .rotate180 { fu += 1 } else { fs += 1 } } else { wr += 1 }
     }
     func r(_ a: Int, _ b: Int) -> Double { b == 0 ? 0 : Double(a) / Double(b) }
-    return (r(fl, up), r(fs, sd), r(fu, ud), r(wr, tt))
+    return Rates(flag: r(fl, up), side: r(fs, sd), upside: r(fu, ud), wrong: r(wr, tt))
 }
 
-let half = samples.count / 8 * 4 // whole photos (4 turns each) in each half
-let fit = samples[..<half], check = samples[half...]
-var best: (weights: [String: Double], lean: Double, found: Double)? = nil
-let grid: [Double] = [0, 0.5, 1, 1.5]
-for wf in [0.5, 1.0, 1.5] { for wb in grid { for wn in [0.5, 1.0, 1.5] { for wt in grid { for wa in [0, 0.5] { for wp in [0, 0.5] { for wh in [0, 0.5] { for lean in [0, 0.25, 0.5, 0.75] {
-    let w = ["faces": wf, "body": wb, "network": wn, "text": wt, "animals": wa, "people": wp, "horizon": wh]
-    let r = rates(fit, weights: w, lean: lean, threshold: 0.5)
-    // The aim: no more than 1 in 100 upright photos flagged, as many sideways ones found as possible.
-    guard r.flag <= 0.01 else { continue }
-    let found = r.side * 2 + r.upside - r.wrong * 2
-    if best == nil || found > best!.found { best = (w, lean, found) }
-}}}}}}}}
-if let best {
-    print("\nBest fit on half the photos (≤1% upright flagged at 50%): weights \(best.weights.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }), lean \(best.lean)")
+func p(_ x: Double) -> String { String(format: "%5.1f%%", x * 100) }
+
+func table(_ label: String, _ cues: Set<String>, priors: [String: OrientationPrior] = defaultPriors) {
+    print("\n\(label)")
+    print("  min conf | upright flagged | sideways found | upside down found | wrong turn")
     for t in [0.3, 0.5, 0.6] {
-        let a = rates(check, weights: best.weights, lean: best.lean, threshold: t)
-        let b = rates(check, weights: ["faces": 1, "body": 0.8, "network": 1, "text": 0.9], lean: 0, threshold: t)
-        func p(_ x: Double) -> String { String(format: "%5.1f%%", x * 100) }
-        print("  held-out \(Int(t * 100))%: fitted flags \(p(a.flag)) finds \(p(a.side)) sideways \(p(a.upside)) upside down, wrong \(p(a.wrong))"
-              + " | standard flags \(p(b.flag)) finds \(p(b.side)) / \(p(b.upside)), wrong \(p(b.wrong))")
+        let r = rates(cues, priors: priors, threshold: t)
+        print("  \(String(format: "%7.0f%%", t * 100)) | \(p(r.flag).padding(toLength: 15, withPad: " ", startingAt: 0)) | "
+              + "\(p(r.side).padding(toLength: 14, withPad: " ", startingAt: 0)) | "
+              + "\(p(r.upside).padding(toLength: 17, withPad: " ", startingAt: 0)) | \(p(r.wrong))")
     }
+}
+
+let vision: Set<String> = ["faces", "body", "text"]
+let standard = vision.union(["network"])
+if network != nil { table("Standard cues (faces, body, network, text)", standard) }
+if network2 != nil {
+    table("v2 network alone", ["v2"])
+    if network != nil { table("current network alone", ["network"]) }
+    table("faces, body, v2, text", vision.union(["v2"]))
+    if network != nil { table("faces, body, both networks, text", standard.union(["v2"])) }
+}
+// Odds for each network-like cue: a stronger lean towards upright flags fewer upright photos but finds fewer.
+if network != nil && network2 != nil {
+    for u in [0.75, 0.8, 0.85, 0.88] {
+        var priors = defaultPriors
+        priors["v2"] = OrientationPrior(upright: u, sideways: (1 - u) * 0.45, upsideDown: (1 - u) * 0.1)
+        table("faces, body, v2 (upright \(u)), text", vision.union(["v2"]), priors: priors)
+    }
+}
+print("\nOdds (upright share; the rest split 9:9:2 sideways/sideways/upside down), at 50%:")
+for cue in ["network", "v2"] where samples.contains(where: { s in s.evidence.contains { $0.detector == cue } }) {
+    for base in [standard.subtracting(["network"]), Set<String>()] {
+        for u in [0.5, 0.75, 0.8, 0.85, 0.88, 0.9, 0.95] {
+            var priors = defaultPriors
+            priors[cue] = OrientationPrior(upright: u, sideways: (1 - u) * 0.45, upsideDown: (1 - u) * 0.1)
+            let r = rates(base.union([cue]), priors: priors, threshold: 0.5)
+            print("  \(cue)\(base.isEmpty ? " alone" : " + faces/body/text") upright \(u): flags \(p(r.flag)) finds \(p(r.side)) sideways \(p(r.upside)) upside down, wrong \(p(r.wrong))")
+        }
+    }
+}
+
+if neighboursMode {
+    // How close the right turn comes to the neighbour, against the closest wrong turn.
+    var right: [Double] = [], wrongTurn: [Double] = []
+    for s in samples {
+        guard let d = s.evidence.first(where: { $0.detector == "distance" }) else { continue }
+        right.append(d.uprightScores[s.needs] ?? 0)
+        wrongTurn.append(Rotation.allCases.filter { $0 != s.needs }.map { d.uprightScores[$0] ?? 2 }.min()!)
+    }
+    func q(_ xs: [Double], _ f: Double) -> String { xs.isEmpty ? "-" : String(format: "%.3f", xs.sorted()[Int(Double(xs.count - 1) * f)]) }
+    print("\nDistance to the neighbour, right turn: median \(q(right, 0.5)), 90th pct \(q(right, 0.9)); closest wrong turn: 10th pct \(q(wrongTurn, 0.1)), median \(q(wrongTurn, 0.5))")
+    print("Right turn closer than every wrong one: \(p(Double(zip(right, wrongTurn).filter { $0 < $1 }.count) / Double(max(right.count, 1))))")
+    let base = network2 != nil ? vision.union(["v2"]) : standard
+    let baseLabel = network2 != nil ? "faces, body, v2, text" : "standard"
+    table("\(baseLabel) (neighbour sample)", base)
+    for limit: Float in [0.15, 0.25, 0.35] {
+        for margin: Float in [0.04, 0.08, 0.15] {
+            let name = "neighbours/\(limit)/\(margin)"
+            let r = rates(base.union([name]), threshold: 0.5)
+            let alone = rates([name], threshold: 0.5)
+            print("  + neighbours limit \(limit) margin \(margin) at 50%: flags \(p(r.flag)) finds \(p(r.side)) / \(p(r.upside)), wrong \(p(r.wrong))"
+                  + " | alone: flags \(p(alone.flag)) finds \(p(alone.side)) / \(p(alone.upside))")
+        }
+    }
+}
+
+// Time per photo for each network, on a few photos.
+do {
+    let few = targets.prefix(12).compactMap(load)
+    func time(_ label: String, _ a: OrientationAnalyzer) {
+        let t = Date()
+        for image in few { _ = try? a.allEvidence(image) }
+        print("  \(label): \(String(format: "%.0f", Date().timeIntervalSince(t) / Double(max(few.count, 1)) * 1000)) ms per photo")
+    }
+    print("\nTime (one photo at a time, all four passes):")
+    if let network { time("current network", OrientationAnalyzer(networks: ["network": (network, .equal)], cues: [.network], collectsPrints: false)) }
+    if let network2 { time("v2 network", OrientationAnalyzer(networks: ["v2": (network2, .equal)], cues: [.network], collectsPrints: false)) }
+    time("feature prints", OrientationAnalyzer(networks: [:], cues: [], collectsPrints: true))
+    time("faces, body, text", OrientationAnalyzer(networks: [:], cues: [.faces, .body, .text], collectsPrints: false))
 }

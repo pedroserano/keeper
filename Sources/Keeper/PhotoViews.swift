@@ -54,6 +54,7 @@ struct AssetImage: View {
 
 struct GridView: View {
     @EnvironmentObject private var session: CullingSession
+    @AppStorage("gridWholePhotos") private var wholePhotos = false
     private let cell: CGFloat = 168
     private let spacing: CGFloat = 8
     /// Click-and-drag selection: the rectangle being dragged, and what was selected before it began.
@@ -186,7 +187,11 @@ extension GridView {
                         selecting: !session.selectedPhotos.isEmpty,
                         toggleChecked: { session.togglePhoto(at: i) },
                         isRaw: session.fileInfo(asset)?.isRaw == true,
-                        turn: session.source == .sideways ? session.proposedRotation(asset) : nil)
+                        turn: session.source == .sideways ? session.proposedRotation(asset) : nil,
+                        wholePhoto: wholePhotos,
+                        rotate: session.source == .sideways ? { session.rotateSideways([asset]) } : nil,
+                        leave: session.source == .sideways ? { session.dismissSideways([asset]) } : nil,
+                        changeTurn: session.source == .sideways ? { session.changeSidewaysTurn(asset, to: $0) } : nil)
             .id(i)
             .photoContextMenu(asset, session: session)
             .onTapGesture(count: 2) {
@@ -336,6 +341,12 @@ struct GridCell: View {
     var toggleChecked: (() -> Void)? = nil
     var isRaw = false
     var turn: OrientationRecord? = nil
+    /// The whole photo at its own shape, instead of filling a square.
+    var wholePhoto = false
+    /// Sideways Photos: this photo's own Rotate and Not Sideways buttons.
+    var rotate: (() -> Void)? = nil
+    var leave: (() -> Void)? = nil
+    var changeTurn: ((Rotation) -> Void)? = nil
     @State private var hovering = false
 
     var body: some View {
@@ -380,12 +391,14 @@ struct GridCell: View {
     }
 
     private var thumbnail: some View {
-        AssetImage(asset: asset, pointSize: CGSize(width: size, height: size), fill: true)
+        AssetImage(asset: asset, pointSize: CGSize(width: size, height: size), fill: !wholePhoto)
+            .clipShape(RoundedRectangle(cornerRadius: wholePhoto ? 3 : 0))
             .frame(width: size, height: size)
-            .background(.quaternary)
+            .background(wholePhoto ? AnyShapeStyle(.clear) : AnyShapeStyle(.quaternary))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .opacity(decision.flag == .reject ? 0.35 : 1)
-            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite, isRaw: isRaw, turn: turn) }
+            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite, isRaw: isRaw, turn: turn,
+                                   changeTurn: changeTurn, leave: leave) }
             .overlay {
                 if checked == true { RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) }
             }
@@ -405,12 +418,44 @@ struct GridCell: View {
                     .help(checked ? "Deselect (⌘-click or G)" : "Select (⌘-click or G)")
                 }
             }
+            .overlay {
+                // Sideways Photos: Rotate and Not Sideways right on the photo, on hover or at the cursor.
+                if let turn, let rotate, let leave, hovering || selected {
+                    HStack(spacing: 10) {
+                        SidewaysButton(systemImage: turn.rotation == .clockwise270 ? "rotate.left" : "rotate.right",
+                                       tint: .blue, action: rotate)
+                            .help("\(turn.rotation.label) (A, ⌘Z undoes)")
+                        SidewaysButton(systemImage: "xmark", tint: Color(white: 0.3), action: leave)
+                            .help("Not sideways: leave it as it is (N, ⌘Z undoes)")
+                    }
+                }
+            }
             .onHover { hovering = $0 }
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 3)
             }
             .contentShape(Rectangle())
+    }
+}
+
+/// A round button over a photo in Sideways Photos.
+struct SidewaysButton: View {
+    let systemImage: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(tint.opacity(0.92), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.85), lineWidth: 1.5))
+                .shadow(color: .black.opacity(0.45), radius: 3)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -673,7 +718,9 @@ struct CompareView: View {
         .overlay { PhotoBadges(decision: session.decision(asset), suggestion: session.suggestion(asset),
                                  isFavorite: session.isFavorite(asset),
                                  isRaw: session.fileInfo(asset)?.isRaw == true, large: true,
-                                 turn: session.source == .sideways ? session.proposedRotation(asset) : nil) }
+                                 turn: session.source == .sideways ? session.proposedRotation(asset) : nil,
+                                 changeTurn: session.source == .sideways ? { session.changeSidewaysTurn(asset, to: $0) } : nil,
+                                 leave: session.source == .sideways ? { session.dismissSideways([asset]) } : nil) }
         .overlay {
             RoundedRectangle(cornerRadius: 4).strokeBorder(focused ? Color.accentColor : .white.opacity(0.15),
                                                            lineWidth: focused ? 3 : 1)

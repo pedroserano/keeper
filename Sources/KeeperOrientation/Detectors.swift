@@ -204,23 +204,24 @@ enum Lexicon {
     }
 }
 
-/// The fine-tuned orientation network: an image-recognition network trained specifically to tell which way a photo
-/// is turned. It covers every kind of photo — landscapes, buildings, objects, people — and is the main cue for photos
-/// without faces. It runs on all four orientations and averages the four estimates.
+/// The orientation network: an EfficientNetV2-S trained specifically to tell which way a photo is turned. It covers
+/// every kind of photo — landscapes, buildings, objects, people — and is the main cue for photos without faces. It
+/// runs on all four orientations and averages the four estimates.
 public struct OrientationNetDetector: SingleRequestDetector {
-    let name = "network"
+    var name = "network"
     let weight = 1.0
     let runsOnce = false
     let network: OrientationNetwork
+    var prior = OrientationNetDetector.prior
 
     /// The network was trained with all four turns equally likely; real libraries are mostly upright and rarely
-    /// upside down. Measured on held-out photos (Models/OrientationNet-report-coreml.txt), these odds cut wrongly
-    /// flagged upright photos from 3% to under 0.1% at 50% confidence, while still finding about half of sideways
-    /// photos. In exchange the network alone almost never proposes upside-down turns; faces, people and text
-    /// still do.
-    static let prior = OrientationPrior(upright: 0.90, sideways: 0.045, upsideDown: 0.01)
+    /// upside down, so its answers are re-weighted by these odds. The network is very sure of itself, so the odds
+    /// are a cliff rather than a slope: measured with orientation-eval on 400 photos of a real library, a 75%
+    /// lean towards upright finds 88% of sideways photos at 50% confidence with faces, people and text, flagging
+    /// no photo that wasn't really turned; at 85% and above it finds almost none on its own.
+    static let prior = OrientationPrior(upright: 0.75, sideways: 0.1125, upsideDown: 0.025)
 
-    func finalScores(_ scores: [Rotation: Double]) -> [Rotation: Double] { Self.prior.apply(to: scores) }
+    func finalScores(_ scores: [Rotation: Double]) -> [Rotation: Double] { prior.apply(to: scores) }
 
     /// The network bundled with the app (compiled at build time, or compiled once on first use and
     /// cached), or `nil` if this build doesn't include one.

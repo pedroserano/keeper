@@ -5,11 +5,12 @@ import Foundation
 import KeeperKit
 import Vision
 
-/// The fine-tuned orientation network (trained in ApplePhotosRotator: Tools/TrainOrientationNet): a 224×224 image in, probabilities for how
-/// many quarter turns clockwise the image needs, labelled "0", "90", "180" and "270".
+/// The orientation network: EfficientNetV2-S from Duarte Barbosa's deep-image-orientation-detection (MIT,
+/// Resources/OrientationNet-LICENSE.txt), converted by scripts/convert-orientation-net.py. A 416×416 image in,
+/// probabilities for how many quarter turns clockwise the image needs, labelled "0", "90", "180" and "270".
 ///
-/// Vision applies the analysis pass's orientation first and then squashes the frame to 224×224, which is exactly how
-/// the training images were prepared.
+/// Vision applies the analysis pass's orientation first and then squashes the frame to 416×416; the model crops
+/// the centre 384, which is exactly how the training images were prepared.
 public final class OrientationNetwork: @unchecked Sendable {
     let model: VNCoreMLModel
 
