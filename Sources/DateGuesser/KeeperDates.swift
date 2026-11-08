@@ -147,10 +147,14 @@ public struct DatesScreen: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigation) { ScanButton() }
-            ToolbarItem(placement: .primaryAction) {
-                ShortcutsToolbarButton { showShortcuts = true }
+            // Each screen adds the keyboard button last in its own toolbar, so it's the farthest right.
+            if !state.isAuthorized {
+                ToolbarItem(placement: .primaryAction) {
+                    ShortcutsToolbarButton { showShortcuts = true }
+                }
             }
         }
+        .environment(\.showShortcuts, { showShortcuts = true })
         .navigationTitle(item.title)
         .overlay(alignment: .top) { BannerView() }
         .photoZoomHost()

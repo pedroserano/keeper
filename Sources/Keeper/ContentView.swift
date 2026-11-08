@@ -9,7 +9,6 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var session: CullingSession
     @State private var showingDelete = false
-    @AppStorage("gridWholePhotos") private var wholePhotos = false
     @State private var showingShortcuts = false
     @State private var keyMonitor: Any?
 
@@ -145,41 +144,15 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .help("Grid, single photo or compare (⌘1, ⌘2, ⌘3)")
         }
-        ToolbarItem {
-            // A toolbar menu button (icon and the current choice) rather than a labelled menu picker,
-            // which sits off-centre in the toolbar. The icon fills in while a filter is on.
-            Menu {
-                Picker("Show", selection: $session.filter) {
-                    ForEach(CullingSession.Filter.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            } label: {
-                Label(session.filter.rawValue,
-                      systemImage: session.filter == .all ? "line.3.horizontal.decrease.circle"
-                                                          : "line.3.horizontal.decrease.circle.fill")
-                    .labelStyle(.titleAndIcon)
-            }
-            .fixedSize()
-            .help("Which photos to show")
-        }
-        ToolbarItem {
-            Picker("Photo Shape", selection: $wholePhotos) {
-                Label("Squares", systemImage: "square.grid.3x3.square").tag(false)
-                Label("Whole Photos", systemImage: "aspectratio").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .help("Grid shows photos as squares, or whole at their own shape")
-        }
-        ToolbarItem {
+        // The same toolbar as every other photo screen; Delete Rejected is this screen's own action.
+        KeeperToolbar(shortcuts: { showingShortcuts = true }) {
+            ShowMenu(selection: $session.filter)
+        } action: {
             Button { showingDelete = true } label: {
                 Label("Delete Rejected (\(session.rejectCount))", systemImage: "trash")
             }
             .disabled(session.rejectCount == 0)
             .help("Review and delete the photos you rejected")
-        }
-        ToolbarItem {
-            ShortcutsToolbarButton { showingShortcuts = true }
         }
     }
 

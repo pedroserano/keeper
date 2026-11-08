@@ -4,28 +4,46 @@ import DateGuessCore
 /// The toolbar's Scan button. Once the app has dated photos, its menu can include them again.
 struct ScanButton: View {
     @Environment(AppState.self) private var state
+    /// A scan waiting for "Scan Again?" to be confirmed: true includes photos dated here.
+    @State private var confirming: Bool?
 
     var body: some View {
         let title = state.scan.lastScan == nil ? "Scan Library" : "Scan Again"
         Group {
             if state.appliedIDs.isEmpty {
                 Button {
-                    state.startScan()
+                    scan(includeApplied: false)
                 } label: {
                     Label(title, systemImage: "magnifyingglass")
                 }
             } else {
                 Menu {
-                    Button("Scan Again, Including Photos I Dated Here") { state.startScan(includeApplied: true) }
+                    Button("Scan Again, Including Photos I Dated Here") { scan(includeApplied: true) }
                 } label: {
                     Label(title, systemImage: "magnifyingglass")
                 } primaryAction: {
-                    state.startScan()
+                    scan(includeApplied: false)
                 }
             }
         }
         .disabled(state.isScanning)
         .help("Look through your library for photos without a real date. Photos you already dated here are skipped.")
+        .alert(confirming == true ? "Scan again, including photos you dated here?" : "Scan the library again?",
+               isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+            Button("Scan Again") {
+                let include = confirming == true
+                confirming = nil
+                state.startScan(includeApplied: include)
+            }
+            Button("Cancel", role: .cancel) { confirming = nil }
+        } message: {
+            Text("It looks through every photo again and runs in the background. Your guesses, choices and history are kept.")
+        }
+    }
+
+    /// The first scan starts straight away; later ones ask first.
+    private func scan(includeApplied: Bool) {
+        if state.scan.lastScan == nil { state.startScan(includeApplied: includeApplied) } else { confirming = includeApplied }
     }
 }
 

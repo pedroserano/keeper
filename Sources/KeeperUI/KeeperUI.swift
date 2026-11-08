@@ -359,3 +359,81 @@ private struct KeyCap: View {
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.tertiary, lineWidth: 0.5))
     }
 }
+
+// MARK: The toolbar every photo screen shares
+
+/// The toolbar of every photo screen, in one order on the right: Show, photo shape, the screen's own
+/// action (Sort, New Group, Delete Rejected…), then the keyboard button, always farthest right.
+/// Screens only choose what goes in each slot, so they can't drift apart.
+public struct KeeperToolbar<Show: View, Action: View>: ToolbarContent {
+    var show: Show
+    var showsPhotoShape: Bool
+    var photoShapeEnabled: Bool
+    var action: Action
+    var shortcuts: () -> Void
+
+    public init(photoShape: Bool = true, photoShapeEnabled: Bool = true,
+                shortcuts: @escaping () -> Void,
+                @ViewBuilder show: () -> Show, @ViewBuilder action: () -> Action) {
+        self.show = show()
+        self.showsPhotoShape = photoShape
+        self.photoShapeEnabled = photoShapeEnabled
+        self.action = action()
+        self.shortcuts = shortcuts
+    }
+
+    public var body: some ToolbarContent {
+        ToolbarItem { show }
+        ToolbarItem {
+            if showsPhotoShape { PhotoShapePicker().disabled(!photoShapeEnabled) }
+        }
+        ToolbarItem { action }
+        ToolbarItem { ShortcutsToolbarButton(action: shortcuts) }
+    }
+}
+
+/// The Show drop-down: the current choice, with the icon filled in when it isn't the first one.
+public struct ShowMenu<Choice: Hashable & CaseIterable & RawRepresentable>: View
+    where Choice.RawValue == String, Choice.AllCases: RandomAccessCollection {
+    @Binding var selection: Choice
+    var help: String
+
+    public init(selection: Binding<Choice>, help: String = "Which photos to show") {
+        _selection = selection
+        self.help = help
+    }
+
+    public var body: some View {
+        let first = Choice.allCases.first == selection
+        Menu {
+            Picker("Show", selection: $selection) {
+                ForEach(Array(Choice.allCases), id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Label(selection.rawValue, systemImage: first ? "line.3.horizontal.decrease.circle"
+                                                         : "line.3.horizontal.decrease.circle.fill")
+                .labelStyle(.titleAndIcon)
+        }
+        .fixedSize()
+        .help(help)
+    }
+}
+
+/// Squares or whole photos. One setting for every grid, so they all show photos the same way.
+public struct PhotoShapePicker: View {
+    public static let storageKey = "gridWholePhotos"
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
+
+    public init() {}
+
+    public var body: some View {
+        Picker("Photo Shape", selection: $wholePhotos) {
+            Label("Squares", systemImage: "square.grid.3x3.square").tag(false)
+            Label("Whole Photos", systemImage: "aspectratio").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .help("Grid shows photos as squares, or whole at their own shape")
+    }
+}

@@ -1,5 +1,6 @@
 import SwiftUI
 import DateGuessCore
+import KeeperUI
 
 /// Events and groups in one place: likely events among undated photos (even when they were scanned
 /// years apart), suggested groups, and the events and groups you've saved.
@@ -10,6 +11,7 @@ struct EventsView: View {
     @State private var showingNewGroup = false
     @State private var suggestions: [GroupSuggestion] = []
     @State var page: Page = .suggested
+    @Environment(\.showShortcuts) private var showShortcuts
 
     enum Page: String, CaseIterable, Identifiable {
         case suggested = "Suggested"
@@ -25,14 +27,9 @@ struct EventsView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("Show", selection: $page) {
-                    ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-            }
-            ToolbarItem(placement: .primaryAction) {
+            KeeperToolbar(shortcuts: showShortcuts) {
+                ShowMenu(selection: $page, help: "Suggested events, or the events you confirmed")
+            } action: {
                 Button {
                     showingNewGroup = true
                 } label: {
@@ -169,6 +166,7 @@ struct EventDraft: Identifiable {
 
 /// A short row of thumbnails, with "+N" for the rest.
 struct Thumbnails: View {
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
     var ids: [String]
     var side: CGFloat
     var limit: Int
@@ -176,7 +174,7 @@ struct Thumbnails: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(ids.prefix(limit), id: \.self) { id in
-                AssetThumbnail(assetID: id, side: side)
+                AssetThumbnail(assetID: id, side: side, wholePhoto: wholePhotos)
                     .zoomable(id, in: ids)
             }
             if ids.count > limit {
@@ -187,6 +185,7 @@ struct Thumbnails: View {
 }
 
 struct EventCard: View {
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
     /// Passed in, not read from the environment (see PersonNameCell).
     var state: AppState
     var ids: [String]
@@ -219,7 +218,7 @@ struct EventCard: View {
                 HStack(spacing: 6) {
                     ForEach(ids.prefix(12), id: \.self) { id in
                         let out = excluded.contains(id)
-                        AssetThumbnail(assetID: id, side: 80, showMarks: true)
+                        AssetThumbnail(assetID: id, side: 80, showMarks: true, wholePhoto: wholePhotos)
                             .opacity(out ? 0.35 : 1)
                             .zoomable(id, in: ids)
                             .help("Click or press Space to see it bigger")
@@ -649,13 +648,14 @@ struct PhotoPickerSheet: View {
 }
 
 struct GroupPhotoCell: View {
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
     var assetID: String
     var photo: UndatedPhoto?
     var isSelected: Bool
     var applied = false
 
     var body: some View {
-        AssetThumbnail(assetID: assetID, side: 120, height: 100, showMarks: true)
+        AssetThumbnail(assetID: assetID, side: 120, height: 100, showMarks: true, wholePhoto: wholePhotos)
             .overlay(alignment: .bottomTrailing) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
@@ -751,6 +751,7 @@ struct GroupEditor: View {
 
 /// Confirm which photos belong to an event, add ones it may have missed, and date it once.
 struct EventEditor: View {
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
     @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
     var seed: [String]
@@ -838,7 +839,7 @@ struct EventEditor: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 8)], spacing: 8) {
             ForEach(ids, id: \.self) { id in
                 let on = included.contains(id)
-                AssetThumbnail(assetID: id, side: 104, showMarks: true)
+                AssetThumbnail(assetID: id, side: 104, showMarks: true, wholePhoto: wholePhotos)
                     .opacity(on ? 1 : 0.6)
                     .zoomable(id, in: ids)
                     .help((state.effectiveEstimate(id)?.displayString).map { "\($0) · click or press Space to see it bigger" }

@@ -6,6 +6,7 @@ struct ReviewView: View {
     @Environment(AppState.self) private var state
     var goToPeople: () -> Void = {}
 
+    @Environment(\.showShortcuts) private var showShortcuts
     var _filter = State<Filter>(initialValue: .toReview)
     private var filter: Filter { get { _filter.wrappedValue } nonmutating set { _filter.wrappedValue = newValue } }
     var _sort = State<Sort>(initialValue: .library)
@@ -172,16 +173,10 @@ struct ReviewView: View {
 
     @ToolbarContentBuilder
     private func toolbarItems(_ ids: [String], _ selectedCount: Int) -> some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("Show", selection: _filter.projectedValue) {
-                ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-        }
-        ToolbarItemGroup(placement: .primaryAction) {
+        KeeperToolbar(shortcuts: showShortcuts) {
+            ShowMenu(selection: _filter.projectedValue)
+        } action: {
             sortMenu
-            checkMenu(ids)
         }
     }
 
@@ -191,6 +186,7 @@ struct ReviewView: View {
                         ? "\(selectedCount.formatted()) selected to date · Esc to deselect"
                         : "Select the photos whose guess is right (A accepts the current one, G or ⌘-click selects), then Apply.",
                         systemImage: "calendar") {
+            checkMenu(ids)
             SetDateButton(state: state, ids: ids.filter { state.decision($0).selected })
             Button(selectedCount == 0 ? "Apply" : "Apply \(selectedCount.formatted())") { confirmApply = true }
                 .buttonStyle(.borderedProminent)
@@ -247,8 +243,9 @@ struct ReviewView: View {
             Divider()
             Button("Deselect All Shown  ⇧⌘A") { state.select(ids, false) }
         } label: {
-            Label("Select", systemImage: "checkmark.circle")
+            Text("Select")
         }
+        .fixedSize()
         .help("Select or deselect many photos at once (⌘A selects all shown)")
     }
 }
@@ -270,13 +267,14 @@ struct ReviewCard: View {
     var onRotate: () -> Void = {}
     var _showWhy = State<Bool>(initialValue: false)
     private var showWhy: Bool { get { _showWhy.wrappedValue } nonmutating set { _showWhy.wrappedValue = newValue } }
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
 
     var body: some View {
         if let computed = state.estimates[assetID], let estimate = state.effectiveEstimate(assetID), let photo = state.photo(assetID) {
             let decision = state.decision(assetID)
             let overridden = decision.isOverridden
             VStack(alignment: .leading, spacing: 6) {
-                AssetThumbnail(assetID: assetID, side: .infinity, height: 170, showMarks: true)
+                AssetThumbnail(assetID: assetID, side: .infinity, height: 170, showMarks: true, wholePhoto: wholePhotos)
                     .onTapGesture { onSelect() }
                     .selectedTint(decision.selected)
                     .currentPhotoBorder(isCurrent)

@@ -234,10 +234,7 @@ final class CullingSession: ObservableObject {
         if let json = try? store.setting("calibrationSample"), let data = json.data(using: .utf8) {
             calibrationSample = (try? JSONDecoder().decode([String].self, from: data)) ?? []
         }
-        if let json = try? store.setting("source"), let data = json.data(using: .utf8),
-           let saved = try? JSONDecoder().decode(Source.self, from: data) {
-            source = saved
-        }
+        // Always opens on All Photos, the first row, rather than wherever you were last time.
         if let saved = try? store.setting("dateRange") {
             let parts = saved.split(separator: ",").compactMap { Double($0) }
             if parts.count == 2 {

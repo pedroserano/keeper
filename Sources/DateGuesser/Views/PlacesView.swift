@@ -8,7 +8,6 @@ struct PlacesView: View {
     @Environment(AppState.self) private var state
     private var places: PlacesState { state.places }
 
-    @State private var mode: Mode = .photos
     @State private var filter: Filter = .likely
     @State private var sort: Sort = .library
     /// The current photo (arrow keys, Return, G, A, N). Selected photos are the ones to place.
@@ -16,12 +15,8 @@ struct PlacesView: View {
     @State private var detailID: String?
     @State private var confirmApply = false
     @State private var rotateRequest: [String]?
-
-    enum Mode: String, CaseIterable, Identifiable {
-        case photos = "Photos"
-        case outings = "Outings"
-        var id: String { rawValue }
-    }
+    @State private var confirmRescan = false
+    @Environment(\.showShortcuts) private var showShortcuts
 
     enum Filter: String, CaseIterable, Identifiable {
         case likely = "Likely"
@@ -29,6 +24,8 @@ struct PlacesView: View {
         case unguessed = "No Guess"
         case checked = "Selected"
         case hidden = "Hidden"
+        /// Not a filter: photos from one camera taken close together, placed with one search.
+        case outings = "Outings"
         var id: String { rawValue }
     }
 
@@ -48,6 +45,7 @@ struct PlacesView: View {
             case .unguessed: return !d.ignored && places.guesses[id] == nil && d.override == nil
             case .checked: return !d.ignored && d.selected
             case .hidden: return d.ignored
+            case .outings: return false
             }
         }
         switch sort {
@@ -63,17 +61,24 @@ struct PlacesView: View {
     var body: some View {
         // Worked out once per redraw: both walk every photo missing a place.
         let checked = places.checkedForApply.count
-        let ids = mode == .photos ? visibleIDs : []
+        let outings = filter == .outings
+        let ids = outings ? [] : visibleIDs
         Group {
-            if mode == .outings {
+            if outings {
                 OutingsList()
             } else {
                 photoGrid(ids, checked: checked)
             }
         }
-        .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : mode == .outings
+        .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : outings
                             ? "\(places.outings.count.formatted()) outings" : "\(ids.count.formatted()) photos")
         .toolbar { toolbarItems(ids, checked) }
+        .alert("Look for photos without a location again?", isPresented: $confirmRescan) {
+            Button("Look Again") { places.startScan() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It checks every photo again and runs in the background. Your choices and history are kept.")
+        }
         .alert("Set the location of \(checked.formatted()) photos?", isPresented: $confirmApply) {
             Button("Set Locations") { places.applyChecked() }
             Button("Cancel", role: .cancel) {}
@@ -98,6 +103,9 @@ struct PlacesView: View {
                                 ? "\(checked.formatted()) selected to place · Esc to deselect"
                                 : "Select the photos whose place is right (A accepts the current one, G or ⌘-click selects), then Apply.",
                                 systemImage: "mappin.and.ellipse") {
+                    // Here rather than in the toolbar: with the six filters, a toolbar Select menu
+                    // pushed the filters into the » overflow menu.
+                    checkMenu(ids)
                     SetPlaceButton(places: places, ids: ids.filter { places.decision($0).selected })
                     Button(checked == 0 ? "Apply" : "Apply \(checked.formatted())") { confirmApply = true }
                         .buttonStyle(.borderedProminent)
@@ -142,7 +150,8 @@ struct PlacesView: View {
             decline: { places.setIgnored($0, !places.decision($0).ignored) },
             rotate: { rotate($0) },
             open: { detailID = $0 },
-            message: { state.banner = $0 })
+            message: { state.banner = $0 },
+            allSelected: { places.allSelected })
     }
 
     private func rotate(_ ids: [String]) {
@@ -178,37 +187,24 @@ struct PlacesView: View {
 
     @ToolbarContentBuilder
     private func toolbarItems(_ ids: [String], _ checked: Int) -> some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 12) {
-                Picker("View", selection: $mode) {
-                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-                .help("Photos one by one, or outings: photos from one camera taken close together, placed with one search")
-                if mode == .photos {
-                    Picker("Show", selection: $filter) {
-                        ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .fixedSize()
-                }
-            }
-        }
-        ToolbarItemGroup(placement: .primaryAction) {
+        // Show is one drop-down: six filters as buttons don't fit, and the toolbar then hides
+        // things in a » menu.
+        KeeperToolbar(photoShapeEnabled: filter != .outings, shortcuts: showShortcuts) {
+            ShowMenu(selection: $filter,
+                     help: "Which photos to show. Outings: photos from one camera taken close together, placed with one search.")
+        } action: {
             Menu {
                 Picker("Sort By", selection: $sort) {
                     ForEach(Sort.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.inline)
                 Divider()
-                Button("Look for Photos Without a Location Again") { places.startScan() }
+                Button("Look for Photos Without a Location Again…") { confirmRescan = true }
                     .disabled(places.isScanning)
             } label: {
                 Label("Sort", systemImage: "arrow.up.arrow.down")
             }
             .help("Sort, or look through your library again")
-            if mode == .photos { checkMenu(ids) }
         }
     }
 
@@ -221,8 +217,9 @@ struct PlacesView: View {
             Divider()
             Button("Deselect All Shown  ⇧⌘A") { places.select(ids, false) }
         } label: {
-            Label("Select", systemImage: "checkmark.circle")
+            Text("Select")
         }
+        .fixedSize()
         .help("Select or deselect many photos at once (⌘A selects all shown)")
     }
 }
@@ -270,13 +267,14 @@ struct PlaceCard: View {
     var onRotate: () -> Void = {}
     @State private var showWhy = false
     @State private var showSearch = false
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
 
     var body: some View {
         let places = state.places
         let decision = places.decision(assetID)
         let guess = places.guesses[assetID]
         VStack(alignment: .leading, spacing: 6) {
-            AssetThumbnail(assetID: assetID, side: .infinity, height: 170, showMarks: true)
+            AssetThumbnail(assetID: assetID, side: .infinity, height: 170, showMarks: true, wholePhoto: wholePhotos)
                 .onTapGesture { onSelect() }
                 .selectedTint(decision.selected)
                 .currentPhotoBorder(isCurrent)

@@ -96,6 +96,8 @@ struct AssetThumbnail: View {
     var cornerRadius: CGFloat = PhotoStyle.cornerRadius
     /// ♥ for a Favorite, the star rating and RAW, in the same corners as Keeper's lists.
     var showMarks = false
+    /// The whole photo at its own shape, instead of cropped to fill.
+    var wholePhoto = false
     var _loader = State<ThumbnailLoader>(initialValue: ThumbnailLoader())
     private var loader: ThumbnailLoader { get { _loader.wrappedValue } nonmutating set { _loader.wrappedValue = newValue } }
 
@@ -113,7 +115,7 @@ struct AssetThumbnail: View {
                 if let image = loader.image {
                     Image(nsImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: wholePhoto ? .fit : .fill)
                         .allowsHitTesting(false)
                 } else {
                     Image(systemName: "photo")
@@ -371,5 +373,20 @@ struct ThumbnailStrip<Content: View>: View {
         ScrollView(.horizontal, showsIndicators: false) { content }
             .scrollBounceBehavior(.basedOnSize, axes: .vertical)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: Toolbar pieces shared by the Dates screens
+
+/// Opens the keyboard shortcuts. Each screen puts the button last in its own toolbar, so it's
+/// always the farthest right (the Dates screen around them can't place it after their items).
+struct ShowShortcutsKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var showShortcuts: () -> Void {
+        get { self[ShowShortcutsKey.self] }
+        set { self[ShowShortcutsKey.self] = newValue }
     }
 }

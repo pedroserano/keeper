@@ -95,6 +95,7 @@ private struct PhotoZoomOverlay: View {
 }
 
 private struct ZoomedPhoto: View {
+    @Environment(AppState.self) private var state
     var request: PhotoZoom.Request
     @State private var loader = ThumbnailLoader()
 
@@ -123,7 +124,7 @@ private struct ZoomedPhoto: View {
                     Button { zoom.step(1) } label: { Image(systemName: "chevron.right") }
                         .disabled(request.index == request.ids.count - 1)
                 }
-                Text("Esc or Space to go back").foregroundStyle(.white.opacity(0.6))
+                Text("R to rotate · Esc or Space to go back").foregroundStyle(.white.opacity(0.6))
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.white)
@@ -134,9 +135,12 @@ private struct ZoomedPhoto: View {
         }
         .onAppear { loader.load(request.id, side: 2400) }
         .onChange(of: request.id) { loader.load(request.id, side: 2400) }
+        .onChange(of: ImageRevisions.shared.revision(request.id)) { loader.load(request.id, side: 2400, force: true) }
         .onDisappear { loader.cancel() }
         // Pushed last, so these win over the screen underneath while it's open.
         .onSpaceKey { zoom.close(); return true }
+        // R turns the photo shown, as it does in Keeper's photo view, and never reaches the sidebar.
+        .onRotateKey { state.rotate([request.id]); return true }
         .modifier(KeyCommandModifier(key: "\u{1b}", perform: { zoom.close(); return true }))
         .modifier(KeyCommandModifier(key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), perform: { zoom.step(-1); return true }))
         .modifier(KeyCommandModifier(key: String(UnicodeScalar(NSRightArrowFunctionKey)!), perform: { zoom.step(1); return true }))

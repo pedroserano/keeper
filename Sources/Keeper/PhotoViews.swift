@@ -55,7 +55,7 @@ struct AssetImage: View {
 
 struct GridView: View {
     @EnvironmentObject private var session: CullingSession
-    @AppStorage("gridWholePhotos") private var wholePhotos = false
+    @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
     private let cell: CGFloat = 168
     private let spacing: CGFloat = 8
     /// Click-and-drag selection: the rectangle being dragged, and what was selected before it began.

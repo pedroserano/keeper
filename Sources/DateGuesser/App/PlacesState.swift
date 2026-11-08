@@ -271,6 +271,9 @@ final class PlacesState {
 
     // MARK: Decisions
 
+    /// Every selected photo still without a location, whatever the filter shows (Esc clears them all).
+    var allSelected: [String] { order.filter { decisions[$0]?.selected == true } }
+
     func setSelected(_ id: String, _ selected: Bool) {
         decisionHistory.record([id], from: decisions)
         decisions[id, default: PlaceDecision()].selected = selected

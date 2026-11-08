@@ -1,11 +1,13 @@
 import AppKit
 import SwiftUI
+import KeeperUI
 import UniformTypeIdentifiers
 import DateGuessCore
 
 /// One list of everyone, edited in place. The people who appear in the most undated photos come
 /// first, so filling in the top few birth years helps the most.
 struct PeopleView: View {
+    @Environment(\.showShortcuts) private var showShortcuts
     @Environment(AppState.self) private var state
     var _search = State<String>(initialValue: "")
     private var search: String { get { _search.wrappedValue } nonmutating set { _search.wrappedValue = newValue } }
@@ -83,6 +85,7 @@ struct PeopleView: View {
                 }
                 .help(state.taggedPeople.isEmpty ? "Import the people you’ve named in Photos" : "Bring in new names and tags from Photos")
                 .disabled(state.isImportingPeople)
+                ShortcutsToolbarButton(action: showShortcuts)
             }
         }
     }

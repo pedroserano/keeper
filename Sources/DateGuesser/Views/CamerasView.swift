@@ -1,8 +1,10 @@
 import SwiftUI
+import KeeperUI
 import DateGuessCore
 
 /// The cameras that took undated photos, and the years the user remembers using each one.
 struct CamerasView: View {
+    @Environment(\.showShortcuts) private var showShortcuts
     @Environment(AppState.self) private var state
 
     var body: some View {
@@ -31,6 +33,9 @@ struct CamerasView: View {
                 .width(min: 180, ideal: 200)
             }
             .navigationSubtitle("Enter the years you used a camera, and its photos are dated within them")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { ShortcutsToolbarButton(action: showShortcuts) }
+            }
         }
     }
 }

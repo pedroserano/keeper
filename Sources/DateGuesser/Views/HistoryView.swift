@@ -1,7 +1,9 @@
 import SwiftUI
+import KeeperUI
 import DateGuessCore
 
 struct HistoryView: View {
+    @Environment(\.showShortcuts) private var showShortcuts
     @Environment(AppState.self) private var state
     var _batchToUndo = State<ApplyBatch?>(initialValue: nil)
     private var batchToUndo: ApplyBatch? { get { _batchToUndo.wrappedValue } nonmutating set { _batchToUndo.wrappedValue = newValue } }
@@ -114,6 +116,7 @@ struct HistoryView: View {
                 .disabled(state.isCheckingShifts || state.journal.isEmpty)
                 .help("Look for photos this app dated whose date was changed in Photos since")
             }
+            ToolbarItem(placement: .primaryAction) { ShortcutsToolbarButton(action: showShortcuts) }
         }
 
         .alert("Undo this change?", isPresented: Binding(get: { batchToUndo != nil }, set: { if !$0 { batchToUndo = nil } })) {

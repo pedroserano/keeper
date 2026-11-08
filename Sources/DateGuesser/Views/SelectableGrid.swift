@@ -80,6 +80,9 @@ struct GridActions {
     /// Return: the photo's details.
     var open: (String) -> Void
     var message: (String) -> Void
+    /// Esc: every selected photo, shown or not (a screen whose count covers photos the filter
+    /// hides). Nil deselects only the photos shown.
+    var allSelected: (() -> [String])? = nil
 }
 
 /// A grid of photo cards that works the way Keeper's lists do: ← → ↑ ↓ move, Return opens, Space
@@ -143,7 +146,7 @@ struct SelectableGrid<Card: View>: View {
         })
         .modifier(KeyCommandModifier(key: "\u{1b}") {
             guard free else { return false }
-            let chosen = ids.filter(actions.isSelected)
+            let chosen = actions.allSelected?() ?? ids.filter(actions.isSelected)
             guard !chosen.isEmpty else { return false }
             actions.select(chosen, false)
             actions.message("Deselected \(chosen.count.formatted()) \(chosen.count == 1 ? "photo" : "photos"). ⌘Z selects them again.")
