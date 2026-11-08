@@ -24,9 +24,9 @@ struct KeeperApp: App {
                     .keyboardShortcut("o")
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("Undo") { model.cullingSession?.undo() }
+                Button("Undo") { model.undo() }
                     .keyboardShortcut("z")
-                Button("Redo") { model.cullingSession?.redo() }
+                Button("Redo") { model.redo() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandGroup(before: .toolbar) {

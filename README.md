@@ -49,6 +49,12 @@ library straight away; the chooser comes back only if that library is gone (on a
 say), and File › Choose Library (⌘O) switches. Press **?** for every shortcut. Right-click any photo
 for **Show in Photos**, which opens Photos with that photo selected.
 
+Every screen, the photo lists and the Dates screens alike, shares one set of keys and one look: the arrow
+keys move, Return opens, Space shows the photo bigger, Esc backs out, G, ⌘-click and Shift-click select
+(⌘A all, ⇧⌘A none), A accepts Keeper's suggestion and N turns it down, R rotates and ⌘Z undoes. Photos show
+♥ for a Favorite, their star rating and RAW in the same corners everywhere, messages close themselves after
+10 seconds, and the bar along the top holds the action for what's selected.
+
 | Key | Does | In Photos |
 | --- | --- | --- |
 | X or ⌫ | Reject | Adds it to the "Keeper – Rejected" album |
@@ -64,7 +70,7 @@ for **Show in Photos**, which opens Photos with that photo selected.
 | R | Rotate 90° clockwise | An edit in Photos: the original is kept, and Revert to Original restores it. ⌘Z rotates back |
 | G | In Duplicates or Similar Shots: tick or untick the group, or all the groups selected with Shift ↑ ↓ or Shift-click. In other lists: select or deselect the photo | |
 | C, K | Compare burst frames or nearby shots; keep the focused one and reject the rest | |
-| ⌘A, Esc | Select every photo in the list; deselect them | |
+| ⌘A, ⇧⌘A, Esc | Select every photo in the list; deselect them (Esc too) | |
 | ⌘Z, ⇧⌘Z | Undo, redo | Reversed |
 
 **Look-alikes.** In the background, Keeper fingerprints photos taken within 30 seconds of another
@@ -208,8 +214,8 @@ same way:
 
 - **Undated Photos**: Scan Library finds photos with no date, an impossible date or a camera's factory
   date, and scans whose files carry no capture date. Each one gets a guess ("Summer 1976"), a confidence
-  and a checkbox. **Why?** lists every clue behind the guess. **Apply** sets the date for the checked
-  photos only, through PhotoKit, the same as *Adjust Date and Time* in Photos. The original file isn't
+  and a selection circle. **Why?** lists every clue behind the guess. A selects the current photo's guess
+  and moves on, N hides it. **Apply** sets the date for the selected photos only, through PhotoKit, the same as *Adjust Date and Time* in Photos. The original file isn't
   rewritten.
 - **Events**, **People** and **Cameras**: what you know. Group photos from one event or era, add birth
   years (or read birthdays from Contacts), and the years you used each camera.
@@ -218,7 +224,8 @@ same way:
 
 Clues include filenames and album names, file formats and camera models, colour and print borders, scenes
 (Christmas, snow, the beach), how old the people in a photo look, look-alike photos, and dated photos of the
-same scene. Date Settings in the toolbar holds the options. Its data lives next to Keeper's own, one folder
+same scene. The **Dates** and **Date Scanning** tabs in Keeper › Settings hold the options. ⌘Z undoes
+selecting, hiding and changed guesses before you apply. Its data lives next to Keeper's own, one folder
 per library. The first time you open Dates, Keeper copies anything you'd already done in Photo Date
 Guesser (scans, people, groups, decisions and undo history), and leaves that app's files as they are.
 

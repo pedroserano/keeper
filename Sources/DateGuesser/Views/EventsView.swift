@@ -72,7 +72,7 @@ struct EventsView: View {
             } header: {
                 Text("Confirmed Events")
             } footer: {
-                Text("Change an event’s year or month here and every photo in it gets the new date, checked for Apply. Photos you already applied keep their date.")
+                Text("Change an event’s year or month here and every photo in it gets the new date, selected for Apply. Photos you already applied keep their date.")
             }
             if !others.isEmpty {
                 Section("Groups") {
@@ -122,7 +122,7 @@ struct EventsView: View {
                 } header: {
                     Text("Suggested Events")
                 } footer: {
-                    Text("Click a photo (or press Space over it) to see it bigger. Click × to leave out one that doesn’t belong. Same Event gives them one shared date and checks them for Apply.")
+                    Text("Click a photo (or press Space over it) to see it bigger. Click × to leave out one that doesn’t belong. Same Event gives them one shared date and selects them for Apply.")
                 }
             }
             if !suggestions.isEmpty {
@@ -176,7 +176,7 @@ struct Thumbnails: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(ids.prefix(limit), id: \.self) { id in
-                AssetThumbnail(assetID: id, side: side, cornerRadius: 5)
+                AssetThumbnail(assetID: id, side: side)
                     .zoomable(id, in: ids)
             }
             if ids.count > limit {
@@ -213,13 +213,13 @@ struct EventCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(kept.count < 2)
-                .help("They’ll share one date, worked out from all their clues together, and be checked for Apply")
+                .help("They’ll share one date, worked out from all their clues together, and be selected for Apply")
             }
             ThumbnailStrip {
                 HStack(spacing: 6) {
                     ForEach(ids.prefix(12), id: \.self) { id in
                         let out = excluded.contains(id)
-                        AssetThumbnail(assetID: id, side: 80, cornerRadius: 6)
+                        AssetThumbnail(assetID: id, side: 80, showMarks: true)
                             .opacity(out ? 0.35 : 1)
                             .zoomable(id, in: ids)
                             .help("Click or press Space to see it bigger")
@@ -655,7 +655,7 @@ struct GroupPhotoCell: View {
     var applied = false
 
     var body: some View {
-        AssetThumbnail(assetID: assetID, side: 120, height: 100, cornerRadius: 8)
+        AssetThumbnail(assetID: assetID, side: 120, height: 100, showMarks: true)
             .overlay(alignment: .bottomTrailing) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
@@ -806,15 +806,15 @@ struct EventEditor: View {
                     state.saveEvent(ids, name: name.isEmpty ? "Event (\(ids.count) photos)" : name,
                                     year: year, month: month, season: season)
                     state.banner = year == nil
-                        ? "Saved \(ids.count) photos as one event with one shared date, and checked them in Review & Apply."
-                        : "Dated \(ids.count) photos together and checked them in Review & Apply, ready to apply."
+                        ? "Saved \(ids.count) photos as one event with one shared date, and selected them in Review."
+                        : "Dated \(ids.count) photos together and selected them in Review, ready to apply."
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(included.count < 2)
             }
-            Text(year == nil ? "Without a year, the photos still get one shared guess from all their clues combined." : "Every photo in the event gets this date and is checked in Review & Apply. Nothing changes in Photos until you click Apply there.")
+            Text(year == nil ? "Without a year, the photos still get one shared guess from all their clues combined." : "Every photo in the event gets this date and is selected in Review. Nothing changes in Photos until you click Apply there.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -838,7 +838,7 @@ struct EventEditor: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 8)], spacing: 8) {
             ForEach(ids, id: \.self) { id in
                 let on = included.contains(id)
-                AssetThumbnail(assetID: id, side: 104, cornerRadius: 8)
+                AssetThumbnail(assetID: id, side: 104, showMarks: true)
                     .opacity(on ? 1 : 0.6)
                     .zoomable(id, in: ids)
                     .help((state.effectiveEstimate(id)?.displayString).map { "\($0) · click or press Space to see it bigger" }

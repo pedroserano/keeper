@@ -16,12 +16,14 @@ let package = Package(
                 path: "Sources/KeeperKit"),
         // Which way up a photo is (Vision cues and the orientation network), for Sideways Photos.
         .target(name: "KeeperOrientation", dependencies: ["KeeperKit"], path: "Sources/KeeperOrientation"),
+        // The screen pieces every Keeper screen shares (bars, message bubble, photo marks, shortcut guide).
+        .target(name: "KeeperUI", path: "Sources/KeeperUI"),
         // Dates (from Photo Date Guesser): estimating when undated photos were taken. Pure logic…
         .target(name: "DateGuessCore", path: "Sources/DateGuessCore"),
         // …and its screens, state and PhotoKit/Vision work, shown in Keeper's Dates section.
-        .target(name: "DateGuesser", dependencies: ["DateGuessCore"], path: "Sources/DateGuesser"),
+        .target(name: "DateGuesser", dependencies: ["DateGuessCore", "KeeperUI"], path: "Sources/DateGuesser"),
         // The app.
-        .executableTarget(name: "Keeper", dependencies: ["KeeperCore", "KeeperKit", "KeeperOrientation", "DateGuesser"],
+        .executableTarget(name: "Keeper", dependencies: ["KeeperCore", "KeeperKit", "KeeperOrientation", "DateGuesser", "KeeperUI"],
                           path: "Sources/Keeper"),
         // Measures the orientation cues on a folder of upright photos, each turned all four ways.
         .executableTarget(name: "orientation-eval", dependencies: ["KeeperKit", "KeeperOrientation"],

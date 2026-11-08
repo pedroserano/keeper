@@ -216,7 +216,7 @@ final class KeyCommands {
 
     private func handle(_ event: NSEvent) -> Bool {
         guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-              !event.isARepeat,
+              !event.isARepeat || (123...126).contains(event.keyCode),   // arrow keys repeat
               let window = NSApp.keyWindow,
               !(window.firstResponder is NSText) else { return false }
         // "r" whether or not Shift is down; "?" as typed with Shift-/.

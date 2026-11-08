@@ -1,4 +1,5 @@
 import SwiftUI
+import KeeperUI
 import DateGuessCore
 
 struct ReviewView: View {
@@ -15,24 +16,18 @@ struct ReviewView: View {
     private var search: String { get { _search.wrappedValue } nonmutating set { _search.wrappedValue = newValue } }
     var _detailID = State<String?>(initialValue: nil)
     private var detailID: String? { get { _detailID.wrappedValue } nonmutating set { _detailID.wrappedValue = newValue } }
-    var _lastClicked = State<String?>(initialValue: nil)
-    private var lastClicked: String? { get { _lastClicked.wrappedValue } nonmutating set { _lastClicked.wrappedValue = newValue } }
     var _confirmApply = State<Bool>(initialValue: false)
     private var confirmApply: Bool { get { _confirmApply.wrappedValue } nonmutating set { _confirmApply.wrappedValue = newValue } }
-    /// Highlighted photos (click, ⌘-click, Shift-click), for rotating. Separate from the checkmarks,
-    /// which pick the photos to date.
-    var _selection = State<Set<String>>(initialValue: [])
-    private var selection: Set<String> { get { _selection.wrappedValue } nonmutating set { _selection.wrappedValue = newValue } }
-    var _selectionAnchor = State<String?>(initialValue: nil)
-    private var selectionAnchor: String? { get { _selectionAnchor.wrappedValue } nonmutating set { _selectionAnchor.wrappedValue = newValue } }
+    /// The current photo (arrow keys, Return, G, A, N). Selected photos are the ones to date.
+    @State private var cursor = GridCursor()
     var _rotateRequest = State<[String]?>(initialValue: nil)
     private var rotateRequest: [String]? { get { _rotateRequest.wrappedValue } nonmutating set { _rotateRequest.wrappedValue = newValue } }
-    /// More than this many checked photos asks first before R rotates them all.
+    /// More than this many selected photos asks first before R rotates them all.
     static let rotateWithoutAsking = 10
 
     enum Filter: String, CaseIterable, Identifiable {
         case toReview = "All"
-        case selected = "Checked"
+        case selected = "Selected"
         case low = "Unsure"
         case ignored = "Hidden"
         var id: String { rawValue }
@@ -90,63 +85,45 @@ struct ReviewView: View {
     var body: some View {
         let ids = visibleIDs
         let selectedCount = state.selectedForApply.count
-        ScrollView {
-            if state.people.isEmpty && !state.estimates.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "person.2").foregroundStyle(.secondary)
-                    Text("Birth years make guesses much better.").foregroundStyle(.secondary)
-                    Button("Add People") { goToPeople() }
-                        .buttonStyle(.link)
-                    Spacer()
-                }
-                .font(.callout)
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-            }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 260), spacing: 16, alignment: .top)], spacing: 20) {
-                ForEach(ids, id: \.self) { id in
-                    ReviewCard(assetID: id, isSelected: selection.contains(id), onOpen: { detailID = id },
-                               onSelect: { select(id, in: ids, modifiers: NSEvent.modifierFlags) },
-                               onToggle: { toggle(id, in: ids, extendRange: NSEvent.modifierFlags.contains(.shift)) },
-                               onRotate: { rotate(selection.contains(id) ? ids.filter(selection.contains) : [id]) })
-                }
-            }
-            .padding(20)
+        let actions = gridActions
+        SelectableGrid(ids: ids, cursor: $cursor, actions: actions) { id, isCurrent in
+            ReviewCard(assetID: id, isCurrent: isCurrent, onOpen: { detailID = id },
+                       onSelect: { cursor.click(id, in: ids, modifiers: NSEvent.modifierFlags, actions) },
+                       onToggle: { cursor.toggle(id, in: ids, extend: NSEvent.modifierFlags.contains(.shift), actions) },
+                       onRotate: { rotate(state.decision(id).selected ? ids.filter { state.decision($0).selected } : [id]) })
         }
         .overlay { emptyState(ids) }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                if state.people.isEmpty && !state.estimates.isEmpty {
+                    KeeperActionBar("Birth years make guesses much better.", systemImage: "person.2") {
+                        Button("Add People") { goToPeople() }
+                    }
+                    Divider()
+                }
+                if !ids.isEmpty { actionBar(ids, selectedCount) }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            KeeperStatusBar(position: KeeperStatusBar.position(cursor.id.flatMap(ids.firstIndex(of:)), of: ids.count))
+        }
         // Menu items' shortcuts only work while the menu is open, so these keep ⌘A and ⇧⌘A working.
         .background {
             Group {
-                Button("Check All Shown") { state.select(ids, true) }
+                Button("Select All Shown") { state.select(ids, true) }
                     .keyboardShortcut("a", modifiers: .command)
-                Button("Uncheck All Shown") { state.select(ids, false) }
+                Button("Deselect All Shown") { state.select(ids, false) }
                     .keyboardShortcut("a", modifiers: [.command, .shift])
-                Button("Deselect") { selection = [] }
-                    .keyboardShortcut(.escape, modifiers: [])
             }
             .opacity(0)
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
         }
         .searchable(text: _search.projectedValue, placement: .toolbar, prompt: "Filenames or albums")
-        .navigationSubtitle(selectedCount > 0 ? "\(selectedCount.formatted()) checked" : "\(ids.count.formatted()) photos")
+        .navigationSubtitle(selectedCount > 0 ? "\(selectedCount.formatted()) selected" : "\(ids.count.formatted()) photos")
         .toolbar { toolbarItems(ids, selectedCount) }
         .sheet(item: Binding(get: { detailID.map(IdentifiedString.init) }, set: { detailID = $0?.id })) { item in
             PhotoDetailSheet(assetID: item.id)
-        }
-        // R turns the highlighted photos shown here.
-        .onRotateKey {
-            let chosen = ids.filter(selection.contains)
-            guard !chosen.isEmpty else { return false }
-            rotate(chosen)
-            return true
-        }
-        // Space checks the highlighted photos for dating (or unchecks them if they're all checked).
-        .onSpaceKey {
-            let chosen = ids.filter { selection.contains($0) && !state.decision($0).ignored }
-            guard !chosen.isEmpty else { return false }
-            state.select(chosen, !chosen.allSatisfy { state.decision($0).selected })
-            return true
         }
         .alert("Rotate \((rotateRequest?.count ?? 0).formatted()) selected photos?",
                isPresented: Binding(get: { rotateRequest != nil }, set: { if !$0 { rotateRequest = nil } })) {
@@ -159,7 +136,7 @@ struct ReviewView: View {
             Button("Apply Dates") { state.applySelected() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Only photos without a real date that you checked are changed. Any whose date was changed in Photos since the last scan are skipped. Photos updates each date the same way Image ▸ Adjust Date and Time does: the photos aren’t replaced, and their places, people, albums and edits stay the same. You can undo this from History.")
+            Text("Only photos without a real date that you selected are changed. Any whose date was changed in Photos since the last scan are skipped. Photos updates each date the same way Image ▸ Adjust Date and Time does: the photos aren’t replaced, and their places, people, albums and edits stay the same. You can undo this from History.")
         }
     }
 
@@ -202,47 +179,38 @@ struct ReviewView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             sortMenu
             checkMenu(ids)
-            SetDateButton(state: state, ids: ids.filter { state.decision($0).selected })
-            Button {
-                confirmApply = true
-            } label: {
-                Text(selectedCount == 0 ? "Apply" : "Apply \(selectedCount.formatted())")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(selectedCount == 0 || state.isApplying)
-            .help("Set the checked photos’ dates in Photos")
         }
     }
 
-    /// Click highlights one photo; ⌘-click adds or removes one; Shift-click highlights a range.
-    private func select(_ id: String, in ids: [String], modifiers: NSEvent.ModifierFlags) {
-        if modifiers.contains(.shift), let anchor = selectionAnchor,
-           let a = ids.firstIndex(of: anchor), let b = ids.firstIndex(of: id) {
-            selection.formUnion(ids[min(a, b)...max(a, b)])
-            return
+    /// Under the toolbar: what's selected, Set Date and Apply.
+    private func actionBar(_ ids: [String], _ selectedCount: Int) -> some View {
+        KeeperActionBar(selectedCount > 0
+                        ? "\(selectedCount.formatted()) selected to date · Esc to deselect"
+                        : "Select the photos whose guess is right (A accepts the current one, G or ⌘-click selects), then Apply.",
+                        systemImage: "calendar") {
+            SetDateButton(state: state, ids: ids.filter { state.decision($0).selected })
+            Button(selectedCount == 0 ? "Apply" : "Apply \(selectedCount.formatted())") { confirmApply = true }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedCount == 0 || state.isApplying)
+                .help("Set the selected photos’ dates in Photos")
         }
-        if modifiers.contains(.command) {
-            if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
-        } else {
-            selection = [id]
-        }
-        selectionAnchor = id
+    }
+
+    private var gridActions: GridActions {
+        let state = state
+        return GridActions(
+            isSelected: { state.decision($0).selected },
+            canSelect: { !state.decision($0).ignored },
+            select: { state.select($0, $1) },
+            accept: { state.select([$0], true) },
+            decline: { state.setIgnored($0, !state.decision($0).ignored) },
+            rotate: { rotate($0) },
+            open: { detailID = $0 },
+            message: { state.banner = $0 })
     }
 
     private func rotate(_ ids: [String]) {
         if ids.count > Self.rotateWithoutAsking { rotateRequest = ids } else { state.rotate(ids) }
-    }
-
-    /// Clicking a checkmark checks or unchecks one photo; Shift-click sets every photo from the last one clicked to this
-    /// one the same way (like selecting a range of files in Finder).
-    private func toggle(_ id: String, in ids: [String], extendRange: Bool) {
-        let newValue = !state.decision(id).selected
-        if extendRange, let anchor = lastClicked, let a = ids.firstIndex(of: anchor), let b = ids.firstIndex(of: id) {
-            state.select(Array(ids[min(a, b)...max(a, b)]), newValue)
-        } else {
-            state.setSelected(id, newValue)
-        }
-        lastClicked = id
     }
 
     private var sortMenu: some View {
@@ -263,25 +231,22 @@ struct ReviewView: View {
         .help("Sort, or show one event or group")
     }
 
-    /// Bulk checking: ⌘A checks everything shown, ⇧⌘A unchecks it.
+    /// Selecting many at once: ⌘A selects everything shown, ⇧⌘A deselects it.
     private func checkMenu(_ ids: [String]) -> some View {
         let confident = ids.filter { state.effectiveEstimate($0)?.confidenceLevel == .high }
         return Menu {
-            Button("Check All Shown  ⌘A") { state.select(ids, true) }
-            Button("Check Confident (\(confident.count.formatted()))") { state.select(confident, true) }
+            Button("Select All Shown  ⌘A") { state.select(ids, true) }
+            Button("Select Confident (\(confident.count.formatted()))") { state.select(confident, true) }
                 .disabled(confident.isEmpty)
-            Button("Check Medium or High Confidence") {
+            Button("Select Medium or High Confidence") {
                 state.select(ids.filter { state.effectiveEstimate($0)?.confidenceLevel != .low }, true)
             }
-            let highlighted = ids.filter(selection.contains)
-            Button("Check Selected (\(highlighted.count.formatted()))  Space") { state.select(highlighted, true) }
-                .disabled(highlighted.isEmpty)
             Divider()
-            Button("Uncheck All Shown  ⇧⌘A") { state.select(ids, false) }
+            Button("Deselect All Shown  ⇧⌘A") { state.select(ids, false) }
         } label: {
-            Label("Check", systemImage: "checkmark.circle")
+            Label("Select", systemImage: "checkmark.circle")
         }
-        .help("Check or uncheck many photos at once (⌘A checks all shown)")
+        .help("Select or deselect many photos at once (⌘A selects all shown)")
     }
 }
 
@@ -292,12 +257,12 @@ struct IdentifiedString: Identifiable {
 struct ReviewCard: View {
     @Environment(AppState.self) private var state
     var assetID: String
-    /// Highlighted for rotating (not the same as checked for dating).
-    var isSelected = false
+    /// The current photo (arrow keys, Return, A, N).
+    var isCurrent = false
     var onOpen: () -> Void
     /// Clicking the picture highlights it.
     var onSelect: () -> Void = {}
-    /// Clicking the checkmark checks or unchecks it.
+    /// Clicking the circle selects or deselects it.
     var onToggle: () -> Void = {}
     var onRotate: () -> Void = {}
     var _showWhy = State<Bool>(initialValue: false)
@@ -308,29 +273,19 @@ struct ReviewCard: View {
             let decision = state.decision(assetID)
             let overridden = decision.isOverridden
             VStack(alignment: .leading, spacing: 6) {
-                AssetThumbnail(assetID: assetID, side: .infinity, height: 170)
+                AssetThumbnail(assetID: assetID, side: .infinity, height: 170, showMarks: true)
                     .onTapGesture { onSelect() }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(isSelected ? Theme.accent : .clear, lineWidth: 3)
-                            .allowsHitTesting(false)
+                    .selectedTint(decision.selected)
+                    .currentPhotoBorder(isCurrent)
+                    .overlay(alignment: .topLeading) {
+                        SelectionCircle(selected: decision.selected,
+                                        help: decision.selected ? "Selected: this date will be applied. Click to deselect."
+                                            : "Select to apply this date (G or A). Shift-click selects a range.",
+                                        action: onToggle)
+                            .disabled(decision.ignored)
+                            .opacity(decision.ignored ? 0.3 : 1)
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        Button(action: onToggle) {
-                            Image(systemName: decision.selected ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundStyle(decision.selected ? Theme.accent : .white, decision.selected ? .white : .black.opacity(0.25))
-                                .shadow(color: .black.opacity(0.4), radius: 2)
-                                .padding(5)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(decision.ignored)
-                        .opacity(decision.ignored ? 0.3 : 1)
-                        .help(decision.selected ? "Checked: this date will be applied. Click to uncheck."
-                              : "Check to apply this date. Shift-click checks a range; Space checks the selected photos.")
-                    }
-                    .overlay(alignment: .topTrailing) {
                         Button(action: onOpen) {
                             Image(systemName: "info.circle.fill")
                                 .font(.title3)
@@ -339,17 +294,6 @@ struct ReviewCard: View {
                         .buttonStyle(.plain)
                         .padding(6)
                         .help("Details and who’s in it")
-                    }
-                    .overlay(alignment: .bottomLeading) {
-                        if let g = computed.groupName {
-                            Label(g, systemImage: "square.stack")
-                                .font(.caption2)
-                                .lineLimit(1)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(.regularMaterial, in: Capsule())
-                                .padding(7)
-                                .allowsHitTesting(false)
-                        }
                     }
                     .help("\(photo.filename) · now \(photo.libraryDate?.shortDay ?? "no date")")
 
@@ -364,10 +308,15 @@ struct ReviewCard: View {
                     Spacer(minLength: 4)
                     ConfidenceBadge(estimate: computed.estimate)
                 }
-                Text(subtitle(computed))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if let g = computed.groupName {
+                        Label(g, systemImage: "square.stack").help("In the group “\(g)”")
+                    }
+                    Text(subtitle(computed))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
                 HStack(spacing: 4) {
                     YearComboBox(year: estimate.year, range: state.lowestYear...YearBounds.currentYear()) {
@@ -424,17 +373,17 @@ struct ReviewCard: View {
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .opacity(decision.ignored ? 0.5 : 1)
             .contextMenu {
-                Button(decision.selected ? "Uncheck" : "Check") { state.setSelected(assetID, !decision.selected) }
+                Button(decision.selected ? "Deselect" : "Select") { state.setSelected(assetID, !decision.selected) }
                     .disabled(decision.ignored)
                 Button("Details & Who’s in It…") { onOpen() }
                 Button("Show in Photos") { Task { await state.showInPhotos(assetID) } }
-                Button(isSelected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise") { onRotate() }
+                Button(decision.selected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise  R") { onRotate() }
                     .disabled(state.isRotating)
                 Divider()
                 if decision.ignored {
-                    Button("Review This Photo Again") { state.setIgnored(assetID, false) }
+                    Button("Review This Photo Again  N") { state.setIgnored(assetID, false) }
                 } else {
-                    Button("Keep Current Date (Don’t Show Again)") { state.setIgnored(assetID, true) }
+                    Button("Keep Current Date (Don’t Show Again)  N") { state.setIgnored(assetID, true) }
                 }
             }
         }
@@ -621,7 +570,7 @@ struct SameEventStrip: View {
                     HStack(spacing: 6) {
                         ForEach(matches, id: \.self) { id in
                             VStack(spacing: 2) {
-                                AssetThumbnail(assetID: id, side: 72, cornerRadius: 6)
+                                AssetThumbnail(assetID: id, side: 72)
                                 Text(state.effectiveEstimate(id)?.displayString ?? "")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
@@ -665,8 +614,8 @@ struct SetDateButton: View {
         }
         .keyboardShortcut("d", modifiers: .command)
         .disabled(ids.isEmpty)
-        .help(ids.isEmpty ? "Check photos first, then give them all one date (⌘D)"
-              : "Give the \(ids.count.formatted()) checked photos one date (⌘D)")
+        .help(ids.isEmpty ? "Select photos first, then give them all one date (⌘D)"
+              : "Give the \(ids.count.formatted()) selected photos one date (⌘D)")
         .popover(isPresented: $showing, arrowEdge: .bottom) {
             Form {
                 LabeledContent("Year") {

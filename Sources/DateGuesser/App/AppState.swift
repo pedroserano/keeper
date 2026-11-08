@@ -69,6 +69,8 @@ final class AppState {
     var isImportingPeople = false
     var analyses: [String: PhotoAnalysis]
     var decisions: [String: ReviewDecision] { didSet { scheduleDecisionSave() } }
+    /// ⌘Z for the decisions above.
+    @ObservationIgnored var decisionHistory = DecisionHistory<ReviewDecision>()
     var journal: [ApplyBatch] {
         didSet { appliedIDs = Self.applied(in: journal); store.save(journal, to: "journal"); scheduleRecompute() }
     }
@@ -661,12 +663,14 @@ final class AppState {
     func decision(_ id: String) -> ReviewDecision { decisions[id] ?? ReviewDecision() }
 
     func setSelected(_ id: String, _ selected: Bool) {
+        decisionHistory.record([id], from: decisions)
         var d = decision(id)
         d.selected = selected
         decisions[id] = d
     }
 
     func setOverride(_ id: String, year: Int?, season: Season?) {
+        decisionHistory.record([id], from: decisions)
         var d = decision(id)
         // Picking a season replaces an exact month; "use the original guess" clears everything.
         if season != d.overrideSeason || (year == nil && season == nil) { d.overrideMonth = nil }
@@ -678,6 +682,7 @@ final class AppState {
 
     /// Sets an exact month for one photo (keeping its year), and checks it.
     func setMonth(_ id: String, _ month: Int) {
+        decisionHistory.record([id], from: decisions)
         var d = decision(id)
         d.overrideMonth = month
         d.overrideSeason = nil
@@ -686,6 +691,7 @@ final class AppState {
     }
 
     func setIgnored(_ id: String, _ ignored: Bool) {
+        decisionHistory.record([id], from: decisions)
         var d = decision(id)
         d.ignored = ignored
         if ignored { d.selected = false }
@@ -695,6 +701,7 @@ final class AppState {
     /// The same date for many photos at once. A nil season keeps each photo's own guessed season;
     /// a month sets that exact month. The photos stay checked, ready to apply.
     func setDate(_ ids: [String], year: Int, season: Season?, month: Int?) {
+        decisionHistory.record(ids, from: decisions)
         var copy = decisions
         for id in ids {
             var d = copy[id] ?? ReviewDecision()
@@ -709,6 +716,7 @@ final class AppState {
     }
 
     func select(_ ids: [String], _ selected: Bool) {
+        decisionHistory.record(ids, from: decisions)
         var copy = decisions
         for id in ids {
             var d = copy[id] ?? ReviewDecision()

@@ -11,6 +11,8 @@ final class PlacesState {
 
     var scan: PlacesScan
     var decisions: [String: PlaceDecision] { didSet { scheduleDecisionSave() } }
+    /// ⌘Z for the decisions above.
+    @ObservationIgnored var decisionHistory = DecisionHistory<PlaceDecision>()
     var journal: [PlaceBatch] { didSet { store.save(journal, to: "placesJournal") } }
     /// Guesses for photos still without a location.
     var guesses: [String: PlaceGuessResult] = [:] {
@@ -260,28 +262,33 @@ final class PlacesState {
     // MARK: Decisions
 
     func setSelected(_ id: String, _ selected: Bool) {
+        decisionHistory.record([id], from: decisions)
         decisions[id, default: PlaceDecision()].selected = selected
     }
 
     func select(_ ids: [String], _ selected: Bool) {
+        decisionHistory.record(ids, from: decisions)
         var copy = decisions
         for id in ids where copy[id]?.ignored != true { copy[id, default: PlaceDecision()].selected = selected }
         decisions = copy
     }
 
     func setIgnored(_ id: String, _ ignored: Bool) {
+        decisionHistory.record([id], from: decisions)
         decisions[id, default: PlaceDecision()].ignored = ignored
         if ignored { decisions[id]?.selected = false }
     }
 
     /// The user's place for one photo (nil goes back to the guess). Checks it, ready to apply.
     func setOverride(_ id: String, _ choice: PlaceChoice?) {
+        decisionHistory.record([id], from: decisions)
         decisions[id, default: PlaceDecision()].override = choice
         if choice != nil { decisions[id]?.selected = true }
     }
 
     /// One place for many photos at once.
     func setPlace(_ ids: [String], _ choice: PlaceChoice) {
+        decisionHistory.record(ids, from: decisions)
         var copy = decisions
         for id in ids where copy[id]?.ignored != true {
             copy[id, default: PlaceDecision()].override = choice

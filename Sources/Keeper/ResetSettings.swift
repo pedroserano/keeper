@@ -2,18 +2,56 @@
 // ratings, favorites, albums and edits stay, as do photos in the Rejected album.
 
 import SwiftUI
+import DateGuesser
 import KeeperKit
 
 struct SettingsView: View {
+    @EnvironmentObject private var model: AppModel
+
     var body: some View {
         TabView {
             KeeperSettingsView()
                 .tabItem { Label("Keeper Rules", systemImage: "checkmark.seal") }
+            DatesSettingsTab(session: model.session, scanning: false)
+                .tabItem { Label("Dates", systemImage: "calendar") }
+            DatesSettingsTab(session: model.session, scanning: true)
+                .tabItem { Label("Date Scanning", systemImage: "magnifyingglass") }
             ResetSettingsView()
                 .tabItem { Label("Reset", systemImage: "arrow.counterclockwise") }
         }
         .frame(width: 600)
         .background(SettingsWindowMarker())
+    }
+}
+
+/// Settings for the Dates screens, loading their data first if no Dates row has been opened yet.
+struct DatesSettingsTab: View {
+    var session: CullingSession?
+    var scanning: Bool
+
+    var body: some View {
+        if let session {
+            Loaded(session: session, scanning: scanning)
+        } else {
+            ContentUnavailableView("No Library Open", systemImage: "calendar",
+                                   description: Text("Open a library to change how Dates finds and estimates dates."))
+                .frame(height: 300)
+        }
+    }
+
+    private struct Loaded: View {
+        @ObservedObject var session: CullingSession
+        var scanning: Bool
+
+        var body: some View {
+            if let dates = session.datesModel {
+                DatesSettings(model: dates, scanning: scanning)
+            } else {
+                ProgressView("Loading Dates…")
+                    .frame(maxWidth: .infinity, minHeight: 300)
+                    .onAppear { session.loadDates() }
+            }
+        }
     }
 }
 

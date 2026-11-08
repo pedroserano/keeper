@@ -79,6 +79,12 @@ final class CullingSession: ObservableObject {
 
     func openDates(_ item: DatesItem) {
         dates = item
+        loadDates()
+    }
+
+    /// Starts loading the Dates screens' data, if it isn't already (opening a Dates row, or the
+    /// Dates tab in Settings).
+    func loadDates() {
         guard datesModel == nil, !datesLoading else { return }
         datesLoading = true
         let name = DecisionStore.url(forLibrary: libraryURL).deletingPathExtension().lastPathComponent
@@ -86,6 +92,7 @@ final class CullingSession: ObservableObject {
         let started = ContinuousClock.now
         Task { [weak self, libraryURL] in
             let model = await DatesModel.load(libraryURL: libraryURL, dataDirectory: folder)
+            DatesModel.isRaw = { [weak self] id in self?.fileInfo(forID: id)?.isRaw == true }
             log.notice("dates: loaded in \(started.duration(to: .now), privacy: .public)")
             self?.datesModel = model
         }
@@ -198,7 +205,6 @@ final class CullingSession: ObservableObject {
     private var pendingRatings: [String: Int] = [:]
     private var pendingFavorites: [String: Bool] = [:]
     private var photosWritesInFlight: [String: Int] = [:]
-    private var messageTask: Task<Void, Never>?
 
     init(library: PhotoLibrary, store: DecisionStore, libraryURL: URL) {
         keeperRules = KeeperSettings.shared.rules
@@ -478,6 +484,8 @@ final class CullingSession: ObservableObject {
     }
 
     func fileInfo(_ asset: PHAsset) -> FileInfo? { files[uuidOf(asset)] }
+    /// The same, by Photos' local identifier ("UUID/L0/001").
+    func fileInfo(forID id: String) -> FileInfo? { files[String(id.prefix { $0 != "/" })] }
 
     /// Whether this is the photo kept in its group: your pick, or else Keeper's suggestion.
     func isKeeper(_ asset: PHAsset) -> Bool {
@@ -1635,15 +1643,9 @@ final class CullingSession: ObservableObject {
 
     // MARK: Messages
 
-    /// `sticky` keeps it up until the next message (progress that updates itself).
     func show(_ text: String, sticky: Bool = false) {
         message = text
-        messageTask?.cancel()
-        guard !sticky else { return }
-        messageTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            if !Task.isCancelled { self?.message = nil }
-        }
+        // The bubble (KeeperToast) closes itself after 10 seconds.
     }
 }
 

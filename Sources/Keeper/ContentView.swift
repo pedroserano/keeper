@@ -1,6 +1,7 @@
 import AppKit
 import Photos
 import SwiftUI
+import KeeperUI
 import KeeperKit
 import DateGuesser
 
@@ -30,7 +31,7 @@ struct ContentView: View {
                 .navigationSubtitle(session.libraryName)
             } else {
             detail
-                .overlay(alignment: .top) { toast }
+                .overlay(alignment: .top) { KeeperToast(message: $session.message) }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     VStack(spacing: 0) {
                         if let gap = session.accessGap { AccessBanner(gap: gap, session: session) }
@@ -55,7 +56,7 @@ struct ContentView: View {
         .environmentObject(session)
         .environmentObject(session.library)
         .sheet(isPresented: $showingDelete) { DeleteQueueSheet().environmentObject(session).environmentObject(session.library) }
-        .sheet(isPresented: $showingShortcuts) { ShortcutsSheet() }
+        .sheet(isPresented: $showingShortcuts) { ShortcutsSheet(screen: session.source.title) }
         .onAppear(perform: installKeyMonitor)
         .onDisappear {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -178,22 +179,10 @@ struct ContentView: View {
             .help("Review and delete the photos you rejected")
         }
         ToolbarItem {
-            Button { showingShortcuts = true } label: { Label("Keyboard Shortcuts", systemImage: "keyboard") }
-                .help("Keyboard shortcuts (?)")
+            ShortcutsToolbarButton { showingShortcuts = true }
         }
     }
 
-    @ViewBuilder private var toast: some View {
-        if let message = session.message {
-            Text(message)
-                .font(.callout)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: Capsule())
-                .padding(.top, 10)
-                .transition(.move(edge: .top).combined(with: .opacity))
-        }
-    }
 
     /// Returns true if the key was a culling key and has been used. Left alone: shortcuts with
     /// ⌘ ⌃ or ⌥ (they belong to the menus), typing in a text field, and anything while a sheet is open.
@@ -206,6 +195,12 @@ struct ContentView: View {
         if event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "a", session.selectsPhotos, !session.list.isEmpty {
             Task { await session.selectAllPhotos() }
+            return true
+        }
+        // ⇧⌘A: deselect them all.
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "a", session.selectsPhotos {
+            session.deselectAllPhotos()
             return true
         }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
@@ -440,19 +435,8 @@ struct StatusBar: View {
     @ObservedObject var session: CullingSession
 
     var body: some View {
-        HStack(spacing: 14) {
-            if !session.list.isEmpty {
-                Text("\(session.cursor + 1) of \(session.list.count)").monospacedDigit()
-            }
-            Spacer()
-            if session.zoomed { Text("100%").monospacedDigit() }
-            Text("? for shortcuts").foregroundStyle(.tertiary)
-        }
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
+        KeeperStatusBar(position: session.list.isEmpty ? nil : KeeperStatusBar.position(session.cursor, of: session.list.count),
+                        detail: session.zoomed ? "100%" : nil)
     }
 }
 
@@ -475,21 +459,8 @@ struct PhotoBadges: View {
             HStack(alignment: .top) {
                 FlagIcon(flag: decision.flag)
                 Spacer(minLength: 0)
-                if isRaw {
-                    Text("RAW")
-                        .font(.system(size: large ? 11 : 8, weight: .bold))
-                        .padding(.horizontal, large ? 5 : 3)
-                        .padding(.vertical, 1)
-                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 3))
-                        .foregroundStyle(.white)
-                        .help("RAW original")
-                }
-                if isFavorite {
-                    Image(systemName: "heart.fill")
-                        .foregroundStyle(.pink)
-                        .shadow(color: .black.opacity(0.6), radius: 1.5)
-                        .help("Favorite in Photos")
-                }
+                if isRaw { RawTag(large: large) }
+                if isFavorite { FavoriteHeart() }
             }
             Spacer(minLength: 0)
             HStack(alignment: .bottom, spacing: 4) {
@@ -597,11 +568,7 @@ struct RatingLabel: View {
     var body: some View {
         HStack(spacing: 4) {
             if rating > 0 {
-                Text(String(repeating: "★", count: rating))
-                    .foregroundStyle(.yellow)
-                    .padding(.horizontal, 4)
-                    .background(.black.opacity(0.45), in: Capsule())
-                    .help("Your rating")
+                StarsTag(stars: rating)
             } else {
                 if !compact {
                     Text("Not rated").foregroundStyle(.secondary)
@@ -790,15 +757,11 @@ struct SidewaysBar: View {
     var body: some View {
         let selected = session.selectedPhotos.count
         let n = selected > 0 ? selected : (session.current == nil ? 0 : 1)
-        HStack(spacing: 12) {
-            Image(systemName: "rotate.right").foregroundStyle(.blue)
-            Text(selected > 0
-                 ? "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect"
-                 : "Rotate turns a photo the way its blue label shows (click the label if it's the wrong way); "
-                   + "Not Sideways leaves it as it is. Hover a photo for its own buttons, or select several.")
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer()
+        KeeperActionBar(selected > 0
+                        ? "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect"
+                        : "Rotate turns a photo the way its blue label shows (click the label if it's the wrong way); "
+                          + "Not Sideways leaves it as it is. Hover a photo for its own buttons, or select several.",
+                        systemImage: "rotate.right") {
             Button { session.dismissSideways() } label: {
                 Label(selected > 1 ? "Not Sideways (\(selected.formatted()))" : "Not Sideways", systemImage: "xmark")
             }
@@ -811,10 +774,6 @@ struct SidewaysBar: View {
             .disabled(n == 0)
             .help("Turn \(selected > 0 ? "each selected photo" : "this photo") the way shown on it, as an edit in Photos (A, ⌘Z undoes)")
         }
-        .font(.callout)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
     }
 }
 
@@ -825,11 +784,8 @@ struct AcceptRatingsBar: View {
 
     var body: some View {
         let selected = session.selectedPhotos.count
-        HStack(spacing: 12) {
-            Text(session.selectingAll ? "Selecting all photos…"
-                 : "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect")
-                .foregroundStyle(.secondary)
-            Spacer()
+        KeeperActionBar(session.selectingAll ? "Selecting all photos…"
+                        : "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect") {
             if counting || session.selectingAll { ProgressView().controlSize(.small) }
             if session.source == .rejected {
                 Button("Unreject Selected") { session.unrejectSelected() }
@@ -850,10 +806,6 @@ struct AcceptRatingsBar: View {
                 .help("Rate the selected photos that have no stars yet with Photos' suggested rating")
             }
         }
-        .font(.callout)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
         .confirmationDialog(title, isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
             Button("Rate \(pending?.after.count.formatted() ?? "") Photos") {
                 if let change = pending { session.acceptSuggestedRatings(change) }

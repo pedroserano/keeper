@@ -1,5 +1,6 @@
 import Photos
 import SwiftUI
+import KeeperUI
 
 struct DeleteQueueSheet: View {
     @EnvironmentObject private var session: CullingSession
@@ -51,56 +52,36 @@ struct DeleteQueueSheet: View {
     }
 }
 
+/// The shortcut guide for Keeper's photo lists (the Dates screens have their own sections).
 struct ShortcutsSheet: View {
-    @Environment(\.dismiss) private var dismiss
+    var screen: String
 
-    private let groups: [(String, [(String, String)])] = [
-        ("Decide", [("F", "Favorite or unfavorite in Photos"),
-                    ("X or ⌫", "Reject (adds to the delete queue)"),
-                    ("U", "Clear reject"),
-                    ("1 – 5", "Star rating"),
-                    ("0", "Clear rating"),
-                    ("H", "Hide in Photos"),
-                    ("A", "Accept the suggested star rating. In Sideways Photos: rotate the way proposed"),
-                    ("N", "In Sideways Photos: not sideways, leave it as it is")]),
-        ("Move", [("← →", "Previous / next photo"),
-                  ("↑ ↓", "Row up / down in the grid; in Duplicates or Similar Shots, previous / next group"),
-                  ("Return", "Switch between grid and single photo"),
-                  ("Esc", "Back out of zoom, then back to the grid")]),
-        ("Look closer", [("Space", "In the grid: show the photo filling the window, Space again to go back. In a photo: 100% zoom on and off"),
-                         ("Z", "100% zoom on the main face"),
-                         ("C", "Compare with its look-alikes, burst frames or nearby shots"),
-                         ("G", "In Duplicates or Similar Shots: tick or untick the group, or every group selected with ⇧↑ ⇧↓ or Shift-click. In other lists: select or deselect the photo (⌘-click and Shift-click too)"),
-                         ("R", "Rotate 90° clockwise, as an edit in Photos (the original is kept; ⌘Z rotates back)"),
-                         ("K", "In compare: keep this one, reject the others. In Duplicates or Similar Shots: keep this one when merging"),
-                         ("I", "Show Apple Photos' scores for this photo")]),
-        ("Select", [("⌘A", "Select every photo in the list (not in Duplicates or Similar Shots)"),
-                    ("Esc", "In the grid: deselect them all")]),
-        ("Undo", [("⌘Z", "Undo"), ("⇧⌘Z", "Redo")]),
+    static let sections: [ShortcutSection] = [
+        ShortcutSection("Deciding", [
+            Shortcut(["F"], "Favorite or unfavorite in Photos"),
+            Shortcut(["X"], "Reject (adds it to the delete queue); ⌫ does too"),
+            Shortcut(["U"], "Clear the reject"),
+            Shortcut(["1", "–", "5"], "Star rating; 0 clears it"),
+            Shortcut(["H"], "Hide in Photos"),
+            Shortcut(["A"], "Accept the suggested stars. In Sideways Photos: rotate the way proposed"),
+            Shortcut(["N"], "In Sideways Photos: not sideways, leave it as it is"),
+        ]),
+        ShortcutSection("Looking closer", [
+            Shortcut(["Return"], "Switch between the grid and one photo"),
+            Shortcut(["Space"], "In a photo: 100% zoom on and off"),
+            Shortcut(["Z"], "100% zoom on the main face"),
+            Shortcut(["C"], "Compare with its look-alikes, burst frames or nearby shots"),
+            Shortcut(["I"], "Show Apple Photos' scores for this photo"),
+            Shortcut(["⌘", "1"], "Grid; ⌘2 one photo, ⌘3 compare"),
+        ]),
+        ShortcutSection("Duplicates and Similar Shots", [
+            Shortcut(["↑", "↓"], "Previous or next group; with ⇧, select groups"),
+            Shortcut(["G"], "Tick or untick the group (or the selected groups)"),
+            Shortcut(["K"], "Keep this one when merging. In compare: keep this one, reject the others"),
+        ]),
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Keyboard Shortcuts").font(.title3.bold())
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                ForEach(groups, id: \.0) { group in
-                    GridRow {
-                        Text(group.0).font(.headline).gridCellColumns(2).padding(.top, 6)
-                    }
-                    ForEach(group.1, id: \.0) { key, action in
-                        GridRow {
-                            Text(key).font(.body.monospaced()).gridColumnAlignment(.trailing)
-                            Text(action)
-                        }
-                    }
-                }
-            }
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 460)
+        KeeperShortcutGuide(screen: screen, sections: Self.sections)
     }
 }

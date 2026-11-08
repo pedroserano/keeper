@@ -3,6 +3,7 @@
 
 import AppKit
 import SwiftUI
+import KeeperUI
 
 /// A row of Keeper's Dates section.
 public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
@@ -19,6 +20,8 @@ public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Se
 @MainActor
 public final class DatesModel {
     let state: AppState
+    /// Whether a photo's original is a RAW file (Keeper knows from the library's own records).
+    public static var isRaw: (String) -> Bool = { _ in false }
     private var observers: [NSObjectProtocol] = []
 
     /// Copies and decodes the saved data in the background, then makes the state on the main thread.
@@ -50,6 +53,20 @@ public final class DatesModel {
 
     /// Saves now, for example before switching to another library.
     public func save() { state.saveEverything() }
+
+    /// ⌘Z on a Dates screen: takes back the last selection, hide or changed guess there (applied
+    /// dates and places are undone from History).
+    public func undo(on item: DatesItem) {
+        let done = item == .places ? state.places.decisionHistory.undo(&state.places.decisions)
+                                   : state.decisionHistory.undo(&state.decisions)
+        state.banner = done ? "Undone. ⇧⌘Z redoes it." : "Nothing to undo here. Applied changes are undone from History."
+    }
+
+    public func redo(on item: DatesItem) {
+        let done = item == .places ? state.places.decisionHistory.redo(&state.places.decisions)
+                                   : state.decisionHistory.redo(&state.decisions)
+        if done { state.banner = "Redone." }
+    }
 
     /// The sidebar count for a row (read inside a view body, so the row updates as it changes).
     public func badge(for item: DatesItem) -> Int {
@@ -106,7 +123,6 @@ public struct DatesScreen: View {
     let item: DatesItem
     let select: (DatesItem) -> Void
     @State private var showShortcuts = false
-    @State private var showSettings = false
 
     public init(model: DatesModel, item: DatesItem, select: @escaping (DatesItem) -> Void) {
         self.model = model
@@ -132,29 +148,13 @@ public struct DatesScreen: View {
         .toolbar {
             ToolbarItem(placement: .navigation) { ScanButton() }
             ToolbarItem(placement: .primaryAction) {
-                Button { showSettings = true } label: { Label("Date Settings", systemImage: "gearshape") }
-                    .help("Settings for finding and estimating dates")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { showShortcuts = true } label: { Label("Keyboard Shortcuts", systemImage: "keyboard") }
+                ShortcutsToolbarButton { showShortcuts = true }
             }
         }
         .navigationTitle(item.title)
-        .overlay(alignment: .bottom) { BannerView() }
+        .overlay(alignment: .top) { BannerView() }
         .photoZoomHost()
-        .sheet(isPresented: $showShortcuts) { ShortcutsView().environment(state) }
-        .sheet(isPresented: $showSettings) {
-            VStack(spacing: 0) {
-                SettingsView()
-                Divider()
-                HStack {
-                    Spacer()
-                    Button("Done") { showSettings = false }.keyboardShortcut(.defaultAction)
-                }
-                .padding(12)
-            }
-            .environment(state)
-        }
+        .sheet(isPresented: $showShortcuts) { ShortcutsView(screen: item.title).environment(state) }
         .onHelpKey {
             guard NSApp.keyWindow?.sheetParent == nil, NSApp.keyWindow?.attachedSheet == nil else { return false }
             showShortcuts = true
@@ -172,6 +172,24 @@ public struct DatesScreen: View {
         case .people: PeopleView()
         case .cameras: CamerasView()
         }
+    }
+}
+
+/// The Dates tab of Keeper's Settings window.
+public struct DatesSettings: View {
+    let model: DatesModel
+    let scanning: Bool
+    public init(model: DatesModel, scanning: Bool = false) {
+        self.model = model
+        self.scanning = scanning
+    }
+
+    public var body: some View {
+        Group {
+            if scanning { ScanSettingsView() } else { GeneralSettingsView() }
+        }
+        .frame(height: 560)
+        .environment(model.state)
     }
 }
 

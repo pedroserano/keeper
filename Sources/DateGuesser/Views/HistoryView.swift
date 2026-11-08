@@ -29,7 +29,7 @@ struct HistoryView: View {
                         LazyHStack(spacing: 6) {
                             ForEach(shifts.prefix(30)) { s in
                                 VStack(spacing: 2) {
-                                    AssetThumbnail(assetID: s.assetID, side: 64, cornerRadius: 6)
+                                    AssetThumbnail(assetID: s.assetID, side: 64)
                                         .zoomable(s.assetID, in: shifts.map(\.assetID))
                                     Text(s.current.formatted(.dateTime.month(.abbreviated).year()))
                                         .font(.caption2)
@@ -142,7 +142,7 @@ struct HistoryView: View {
                 LazyHStack(spacing: 6) {
                     ForEach(batch.entries.prefix(30), id: \.assetID) { entry in
                         VStack(spacing: 2) {
-                            AssetThumbnail(assetID: entry.assetID, side: 64, cornerRadius: 6)
+                            AssetThumbnail(assetID: entry.assetID, side: 64)
                             PlaceLabel(point: entry.new, name: entry.name)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -180,7 +180,7 @@ struct HistoryView: View {
                                 LazyHStack(spacing: 6) {
                                     ForEach(batch.entries.prefix(30), id: \.assetID) { entry in
                                         VStack(spacing: 2) {
-                                            AssetThumbnail(assetID: entry.assetID, side: 64, cornerRadius: 6)
+                                            AssetThumbnail(assetID: entry.assetID, side: 64)
                                             Text(entry.newDate.formatted(.dateTime.month(.abbreviated).year()))
                                                 .font(.caption2)
                                                 .foregroundStyle(.secondary)

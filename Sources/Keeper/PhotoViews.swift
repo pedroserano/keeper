@@ -1,6 +1,7 @@
 import AppKit
 import Photos
 import SwiftUI
+import KeeperUI
 import Vision
 import KeeperCore
 import KeeperKit
@@ -399,27 +400,18 @@ struct GridCell: View {
             .clipShape(RoundedRectangle(cornerRadius: wholePhoto ? 3 : 0))
             .frame(width: size, height: size)
             .background(wholePhoto ? AnyShapeStyle(.clear) : AnyShapeStyle(.quaternary))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: PhotoStyle.cornerRadius))
             .opacity(decision.flag == .reject ? 0.35 : 1)
             .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite, isRaw: isRaw, turn: turn,
                                    changeTurn: changeTurn, leave: leave) }
-            .overlay {
-                if checked == true { RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) }
-            }
+            .selectedTint(checked == true)
             // The selection circle, top left as in Photos: filled when picked, empty while picking or
             // on hover. Clicking it picks or unpicks the photo.
             .overlay(alignment: .topLeading) {
                 if let checked, checked || selecting || hovering {
-                    Button { toggleChecked?() } label: {
-                        Image(systemName: checked ? "checkmark.circle.fill" : "circle")
-                            .font(.title3)
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, checked ? Color.accentColor : .black.opacity(0.25))
-                            .shadow(color: .black.opacity(0.5), radius: 1.5)
+                    SelectionCircle(selected: checked, help: checked ? "Deselect (G or ⌘-click)" : "Select (G or ⌘-click)") {
+                        toggleChecked?()
                     }
-                    .buttonStyle(.plain)
-                    .padding(5)
-                    .help(checked ? "Deselect (⌘-click or G)" : "Select (⌘-click or G)")
                 }
             }
             .overlay {
@@ -435,10 +427,7 @@ struct GridCell: View {
                 }
             }
             .onHover { hovering = $0 }
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 3)
-            }
+            .currentPhotoBorder(selected)
             .contentShape(Rectangle())
     }
 }

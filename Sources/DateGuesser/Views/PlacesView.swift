@@ -1,25 +1,7 @@
 import DateGuessCore
 import MapKit
 import SwiftUI
-
-/// Click highlights one photo; ⌘-click adds or removes one; Shift-click highlights a range.
-struct GridSelection {
-    var ids: Set<String> = []
-    var anchor: String?
-
-    mutating func click(_ id: String, in order: [String], modifiers: NSEvent.ModifierFlags) {
-        if modifiers.contains(.shift), let anchor, let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: id) {
-            ids.formUnion(order[min(a, b)...max(a, b)])
-            return
-        }
-        if modifiers.contains(.command) {
-            if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
-        } else {
-            ids = [id]
-        }
-        anchor = id
-    }
-}
+import KeeperUI
 
 /// Where photos without a location were probably taken.
 struct PlacesView: View {
@@ -29,8 +11,8 @@ struct PlacesView: View {
     @State private var mode: Mode = .photos
     @State private var filter: Filter = .likely
     @State private var sort: Sort = .library
-    @State private var selection = GridSelection()
-    @State private var lastChecked: String?
+    /// The current photo (arrow keys, Return, G, A, N). Selected photos are the ones to place.
+    @State private var cursor = GridCursor()
     @State private var detailID: String?
     @State private var confirmApply = false
     @State private var rotateRequest: [String]?
@@ -45,7 +27,7 @@ struct PlacesView: View {
         case likely = "Likely"
         case possible = "Possible"
         case unguessed = "No Guess"
-        case checked = "Checked"
+        case checked = "Selected"
         case hidden = "Hidden"
         var id: String { rawValue }
     }
@@ -87,7 +69,7 @@ struct PlacesView: View {
                 photoGrid
             }
         }
-        .navigationSubtitle(checked > 0 ? "\(checked.formatted()) checked" : mode == .outings
+        .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : mode == .outings
                             ? "\(places.outings.count.formatted()) outings" : "\(visibleIDs.count.formatted()) photos")
         .toolbar { toolbarItems(mode == .photos ? visibleIDs : [], checked) }
         .alert("Set the location of \(checked.formatted()) photos?", isPresented: $confirmApply) {
@@ -100,27 +82,39 @@ struct PlacesView: View {
 
     private var photoGrid: some View {
         let ids = visibleIDs
-        return ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 260), spacing: 16, alignment: .top)], spacing: 20) {
-                ForEach(ids, id: \.self) { id in
-                    PlaceCard(assetID: id, isSelected: selection.ids.contains(id),
-                              onOpen: { detailID = id },
-                              onSelect: { selection.click(id, in: ids, modifiers: NSEvent.modifierFlags) },
-                              onToggle: { toggle(id, in: ids, extendRange: NSEvent.modifierFlags.contains(.shift)) },
-                              onRotate: { rotate(selection.ids.contains(id) ? ids.filter(selection.ids.contains) : [id]) })
-                }
-            }
-            .padding(20)
+        let actions = gridActions
+        let checked = places.checkedForApply.count
+        return SelectableGrid(ids: ids, cursor: $cursor, actions: actions) { id, isCurrent in
+            PlaceCard(assetID: id, isCurrent: isCurrent,
+                      onOpen: { detailID = id },
+                      onSelect: { cursor.click(id, in: ids, modifiers: NSEvent.modifierFlags, actions) },
+                      onToggle: { cursor.toggle(id, in: ids, extend: NSEvent.modifierFlags.contains(.shift), actions) },
+                      onRotate: { rotate(places.decision(id).selected ? ids.filter { places.decision($0).selected } : [id]) })
         }
         .overlay { emptyState(ids) }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !ids.isEmpty {
+                KeeperActionBar(checked > 0
+                                ? "\(checked.formatted()) selected to place · Esc to deselect"
+                                : "Select the photos whose place is right (A accepts the current one, G or ⌘-click selects), then Apply.",
+                                systemImage: "mappin.and.ellipse") {
+                    SetPlaceButton(places: places, ids: ids.filter { places.decision($0).selected })
+                    Button(checked == 0 ? "Apply" : "Apply \(checked.formatted())") { confirmApply = true }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(checked == 0 || places.isApplying)
+                        .help("Set the selected photos’ locations in Photos")
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            KeeperStatusBar(position: KeeperStatusBar.position(cursor.id.flatMap(ids.firstIndex(of:)), of: ids.count))
+        }
         .background {
             Group {
-                Button("Check All Shown") { places.select(ids, true) }
+                Button("Select All Shown") { places.select(ids, true) }
                     .keyboardShortcut("a", modifiers: .command)
-                Button("Uncheck All Shown") { places.select(ids, false) }
+                Button("Deselect All Shown") { places.select(ids, false) }
                     .keyboardShortcut("a", modifiers: [.command, .shift])
-                Button("Deselect") { selection.ids = [] }
-                    .keyboardShortcut(.escape, modifiers: [])
             }
             .opacity(0)
             .frame(width: 0, height: 0)
@@ -128,18 +122,6 @@ struct PlacesView: View {
         }
         .sheet(item: Binding(get: { detailID.map(IdentifiedString.init) }, set: { detailID = $0?.id })) { item in
             PlaceDetailSheet(assetID: item.id)
-        }
-        .onRotateKey {
-            let chosen = ids.filter(selection.ids.contains)
-            guard !chosen.isEmpty else { return false }
-            rotate(chosen)
-            return true
-        }
-        .onSpaceKey {
-            let chosen = ids.filter { selection.ids.contains($0) && !places.decision($0).ignored }
-            guard !chosen.isEmpty else { return false }
-            places.select(chosen, !chosen.allSatisfy { places.decision($0).selected })
-            return true
         }
         .alert("Rotate \((rotateRequest?.count ?? 0).formatted()) selected photos?",
                isPresented: Binding(get: { rotateRequest != nil }, set: { if !$0 { rotateRequest = nil } })) {
@@ -150,14 +132,17 @@ struct PlacesView: View {
         }
     }
 
-    private func toggle(_ id: String, in ids: [String], extendRange: Bool) {
-        let newValue = !places.decision(id).selected
-        if extendRange, let anchor = lastChecked, let a = ids.firstIndex(of: anchor), let b = ids.firstIndex(of: id) {
-            places.select(Array(ids[min(a, b)...max(a, b)]), newValue)
-        } else {
-            places.setSelected(id, newValue)
-        }
-        lastChecked = id
+    private var gridActions: GridActions {
+        let places = places, state = state
+        return GridActions(
+            isSelected: { places.decision($0).selected },
+            canSelect: { !places.decision($0).ignored && places.effectivePoint($0) != nil },
+            select: { places.select($0.filter { places.effectivePoint($0) != nil }, $1) },
+            accept: { if places.effectivePoint($0) != nil { places.select([$0], true) } },
+            decline: { places.setIgnored($0, !places.decision($0).ignored) },
+            rotate: { rotate($0) },
+            open: { detailID = $0 },
+            message: { state.banner = $0 })
     }
 
     private func rotate(_ ids: [String]) {
@@ -223,34 +208,22 @@ struct PlacesView: View {
                 Label("Sort", systemImage: "arrow.up.arrow.down")
             }
             .help("Sort, or look through your library again")
-            checkMenu(ids)
-            SetPlaceButton(places: places, ids: ids.filter { places.decision($0).selected })
-            Button {
-                confirmApply = true
-            } label: {
-                Text(checked == 0 ? "Apply" : "Apply \(checked.formatted())")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(checked == 0 || places.isApplying)
-            .help("Set the checked photos’ locations in Photos")
+            if mode == .photos { checkMenu(ids) }
         }
     }
 
     private func checkMenu(_ ids: [String]) -> some View {
         let confident = ids.filter { places.guesses[$0]?.level == .high }
         return Menu {
-            Button("Check All Shown  ⌘A") { places.select(ids, true) }
-            Button("Check Confident (\(confident.count.formatted()))") { places.select(confident, true) }
+            Button("Select All Shown  ⌘A") { places.select(ids, true) }
+            Button("Select Confident (\(confident.count.formatted()))") { places.select(confident, true) }
                 .disabled(confident.isEmpty)
-            let highlighted = ids.filter(selection.ids.contains)
-            Button("Check Selected (\(highlighted.count.formatted()))  Space") { places.select(highlighted, true) }
-                .disabled(highlighted.isEmpty)
             Divider()
-            Button("Uncheck All Shown  ⇧⌘A") { places.select(ids, false) }
+            Button("Deselect All Shown  ⇧⌘A") { places.select(ids, false) }
         } label: {
-            Label("Check", systemImage: "checkmark.circle")
+            Label("Select", systemImage: "checkmark.circle")
         }
-        .help("Check or uncheck many photos at once (⌘A checks all shown)")
+        .help("Select or deselect many photos at once (⌘A selects all shown)")
     }
 }
 
@@ -289,7 +262,8 @@ private struct PlaceConfidence: View {
 struct PlaceCard: View {
     @Environment(AppState.self) private var state
     var assetID: String
-    var isSelected = false
+    /// The current photo (arrow keys, Return, A, N).
+    var isCurrent = false
     var onOpen: () -> Void
     var onSelect: () -> Void = {}
     var onToggle: () -> Void = {}
@@ -302,29 +276,19 @@ struct PlaceCard: View {
         let decision = places.decision(assetID)
         let guess = places.guesses[assetID]
         VStack(alignment: .leading, spacing: 6) {
-            AssetThumbnail(assetID: assetID, side: .infinity, height: 170)
+            AssetThumbnail(assetID: assetID, side: .infinity, height: 170, showMarks: true)
                 .onTapGesture { onSelect() }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(isSelected ? Theme.accent : .clear, lineWidth: 3)
-                        .allowsHitTesting(false)
+                .selectedTint(decision.selected)
+                .currentPhotoBorder(isCurrent)
+                .overlay(alignment: .topLeading) {
+                    SelectionCircle(selected: decision.selected,
+                                    help: decision.selected ? "Selected: this location will be set. Click to deselect."
+                                        : "Select to set this location (G or A). Shift-click selects a range.",
+                                    action: onToggle)
+                        .disabled(decision.ignored || places.effectivePoint(assetID) == nil)
+                        .opacity(decision.ignored ? 0.3 : 1)
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    Button(action: onToggle) {
-                        Image(systemName: decision.selected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(decision.selected ? Theme.accent : .white, decision.selected ? .white : .black.opacity(0.25))
-                            .shadow(color: .black.opacity(0.4), radius: 2)
-                            .padding(5)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(decision.ignored || places.effectivePoint(assetID) == nil)
-                    .opacity(decision.ignored ? 0.3 : 1)
-                    .help(decision.selected ? "Checked: this location will be set. Click to uncheck."
-                          : "Check to set this location. Shift-click checks a range; Space checks the selected photos.")
-                }
-                .overlay(alignment: .topTrailing) {
                     Button(action: onOpen) {
                         Image(systemName: "map.circle.fill")
                             .font(.title3)
@@ -391,17 +355,17 @@ struct PlaceCard: View {
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .opacity(decision.ignored ? 0.5 : 1)
         .contextMenu {
-            Button(decision.selected ? "Uncheck" : "Check") { places.setSelected(assetID, !decision.selected) }
+            Button(decision.selected ? "Deselect" : "Select") { places.setSelected(assetID, !decision.selected) }
                 .disabled(decision.ignored || places.effectivePoint(assetID) == nil)
             Button("Show on a Map…") { onOpen() }
             Button("Show in Photos") { Task { await state.showInPhotos(assetID) } }
-            Button(isSelected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise") { onRotate() }
+            Button(decision.selected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise  R") { onRotate() }
                 .disabled(state.isRotating)
             Divider()
             if decision.ignored {
-                Button("Show This Photo Again") { places.setIgnored(assetID, false) }
+                Button("Show This Photo Again  N") { places.setIgnored(assetID, false) }
             } else {
-                Button("Leave Without a Location (Don’t Show Again)") { places.setIgnored(assetID, true) }
+                Button("Leave Without a Location (Don’t Show Again)  N") { places.setIgnored(assetID, true) }
             }
         }
     }
@@ -508,8 +472,8 @@ struct SetPlaceButton: View {
         }
         .keyboardShortcut("l", modifiers: .command)
         .disabled(ids.isEmpty)
-        .help(ids.isEmpty ? "Check photos first, then give them all one place (⌘L)"
-              : "Give the \(ids.count.formatted()) checked photos one place (⌘L)")
+        .help(ids.isEmpty ? "Select photos first, then give them all one place (⌘L)"
+              : "Give the \(ids.count.formatted()) selected photos one place (⌘L)")
         .popover(isPresented: $showing, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(ids.count == 1 ? "Place for 1 photo" : "Place for \(ids.count.formatted()) photos").font(.headline)
@@ -672,13 +636,13 @@ private struct OutingRow: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if !checked.isEmpty {
-                    Text("\(checked.count.formatted()) checked").font(.caption).foregroundStyle(Theme.accent)
+                    Text("\(checked.count.formatted()) selected").font(.caption).foregroundStyle(Theme.accent)
                 }
             }
             ThumbnailStrip {
                 LazyHStack(spacing: 6) {
                     ForEach(open.prefix(40), id: \.self) { id in
-                        AssetThumbnail(assetID: id, side: 84, cornerRadius: 6)
+                        AssetThumbnail(assetID: id, side: 84, showMarks: true)
                             .onTapGesture { detailID = id }
                             .help("Show on a map")
                     }
@@ -726,7 +690,7 @@ private struct OutingRow: View {
                     }
                     .help("Give every photo in this outing the most confident guess")
                 }
-                Button(checked.count == open.count ? "Uncheck" : "Check") {
+                Button(checked.count == open.count ? "Deselect" : "Select") {
                     places.select(open.filter { places.effectivePoint($0) != nil }, checked.count != open.count)
                 }
                 .disabled(open.allSatisfy { places.effectivePoint($0) == nil })

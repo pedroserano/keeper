@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import KeeperUI
 import DateGuessCore
 
 enum SidebarItem: String, CaseIterable, Identifiable {
@@ -69,7 +70,7 @@ struct ContentView: View {
                 WelcomeView()
             }
         }
-        .overlay(alignment: .bottom) { BannerView() }
+        .overlay(alignment: .top) { BannerView() }
         .photoZoomHost()
         .sheet(isPresented: $showShortcuts) { ShortcutsView() }
         // / shows the shortcuts, unless another sheet or dialog is in front.
@@ -254,31 +255,13 @@ struct WelcomeView: View {
     }
 }
 
+/// The message bubble (Keeper's, shared by every screen): it closes itself after 10 seconds.
 struct BannerView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        if let text = state.banner {
-            HStack(spacing: 10) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.tint)
-                Text(text)
-                    .lineLimit(3)
-                Button {
-                    state.banner = nil
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.regularMaterial, in: Capsule())
-            .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
-            .padding(.bottom, 18)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
+        @Bindable var state = state
+        KeeperToast(message: $state.banner)
     }
 }
 

@@ -1,6 +1,7 @@
 import AppKit
 import Photos
 import SwiftUI
+import KeeperUI
 import DateGuessCore
 
 // Views keep their local state in plain `State<T>` properties (`var _x = State(...)` plus an
@@ -57,6 +58,9 @@ struct Card<Content: View>: View {
 @Observable
 final class ThumbnailLoader {
     var image: NSImage?
+    /// From Photos, for the ♥ and stars on the photo.
+    var isFavorite = false
+    var stars = 0
     @ObservationIgnored private var requestID: PHImageRequestID?
     @ObservationIgnored private var loadedID: String?
 
@@ -66,6 +70,8 @@ final class ThumbnailLoader {
         loadedID = assetID
         if !force { image = nil }   // a reload keeps the old image until the new one arrives
         guard let asset = PhotoLibraryService.shared.asset(for: assetID) else { return }
+        isFavorite = asset.isFavorite
+        stars = asset.rating.rawValue
         requestID = PhotoLibraryService.shared.requestThumbnail(for: asset, side: side) { [weak self] img in
             guard let img else { return }
             Task { @MainActor in
@@ -87,7 +93,9 @@ struct AssetThumbnail: View {
     /// Width in points; `.infinity` fills the available width.
     var side: CGFloat
     var height: CGFloat?
-    var cornerRadius: CGFloat = 10
+    var cornerRadius: CGFloat = PhotoStyle.cornerRadius
+    /// ♥ for a Favorite, the star rating and RAW, in the same corners as Keeper's lists.
+    var showMarks = false
     var _loader = State<ThumbnailLoader>(initialValue: ThumbnailLoader())
     private var loader: ThumbnailLoader { get { _loader.wrappedValue } nonmutating set { _loader.wrappedValue = newValue } }
 
@@ -113,6 +121,11 @@ struct AssetThumbnail: View {
                 }
             }
             .clipShape(shape)
+            .overlay {
+                if showMarks {
+                    PhotoMarks(isFavorite: loader.isFavorite, stars: loader.stars, isRaw: DatesModel.isRaw(assetID))
+                }
+            }
             .contentShape(shape)
             .onAppear { loader.load(assetID, side: requestSide) }
             .onDisappear { loader.cancel() }
@@ -180,7 +193,7 @@ struct EvidenceList: View {
         let notes = evidence.filter { !($0.hasYearInfo || $0.seasonWeight > 0) }
         VStack(alignment: .leading, spacing: 10) {
             if used.isEmpty && notes.isEmpty {
-                Text("No clues were found for this photo. The guess is a placeholder — set the year yourself or leave it unchecked.")
+                Text("No clues were found for this photo. The guess is a placeholder — set the year yourself or leave it unselected.")
                     .foregroundStyle(.secondary)
             }
             ForEach(used) { row($0, strong: true) }

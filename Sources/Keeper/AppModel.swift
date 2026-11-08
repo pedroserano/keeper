@@ -51,10 +51,19 @@ final class AppModel: ObservableObject {
         state = .choosing
     }
 
-    /// The session, unless a Dates screen is showing (its own Undo lives in Dates ▸ History).
+    /// The session, unless a Dates screen is showing.
     var cullingSession: CullingSession? {
         guard let session, session.dates == nil else { return nil }
         return session
+    }
+
+    /// ⌘Z and ⇧⌘Z: the culling list's own history, or the Dates screen's.
+    func undo() {
+        if let session, let item = session.dates { session.datesModel?.undo(on: item) } else { cullingSession?.undo() }
+    }
+
+    func redo() {
+        if let session, let item = session.dates { session.datesModel?.redo(on: item) } else { cullingSession?.redo() }
     }
 
     func open(_ url: URL, skipSystemCheck: Bool = false) async {
