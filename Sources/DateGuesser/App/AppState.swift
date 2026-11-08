@@ -12,6 +12,7 @@ final class AppState {
     private let library = PhotoLibraryService.shared
     /// The Places tab's guesses and choices.
     @ObservationIgnored let places = PlacesState()
+    @ObservationIgnored let albumTools = AlbumsState()
 
     // MARK: Persistent state
 
@@ -135,6 +136,8 @@ final class AppState {
         if !featurePrints.isEmpty && linksRuns == 0 { recomputeLinks() }
         places.app = self
         if places.scan.lastScan != nil { places.recompute() }
+        albumTools.app = self
+        if isAuthorized { albumTools.refresh() }
         // Picks up names added in Photos since last time, without asking for the library again.
         hasSavedLibrary = Self.keeperLibrary != nil
             || (store.load(Data.self, from: "photosLibrary").map { !$0.isEmpty } ?? false)
@@ -516,16 +519,19 @@ final class AppState {
         let formats = appliedFormats(confirmed.map(\.id), undated: undated)
         let faceReadings = self.faceReadings()
         let faceCorrection = self.faceAgeCorrection()
+        let located = places.scan.located
+        let notReferences = Set(undated.keys).union(appliedIDs)
         Timing.note("estimates #\(generation) prep on main", since: prepStarted)
         Task.detached(priority: .userInitiated) {
             let started = ContinuousClock.now
+            let placeClues = AppState.placeDateClues(located: located, undated: undated, notReferences: notReferences)
             let result = AppState.computeEstimates(undated: undated, analyses: analyses, groups: groups,
                                                    people: people, photoPeople: photoPeople, links: links,
                                                    referenceClues: referenceClues, lookalikeClues: lookalikeClues,
                                                    earliestYear: earliest, cameras: cameras, events: events,
                                                    confirmed: confirmed, formats: formats,
                                                    faceReadings: faceReadings, faceCorrection: faceCorrection,
-                                                   allowExactMonth: exact)
+                                                   placeClues: placeClues, allowExactMonth: exact)
             Timing.note("estimates #\(generation) for \(undated.count) photos", since: started)
             await MainActor.run {
                 guard generation == self.recomputeGeneration else {
@@ -582,6 +588,21 @@ final class AppState {
         var limits: [String: YearLimits] = [:]
     }
 
+    /// Undated photos that have a location, dated by the dated photos taken near them (a trip).
+    /// Photos dated here don't count as dated: they'd only echo a guess.
+    nonisolated static func placeDateClues(located: LocatedPhotos, undated: [String: UndatedPhoto],
+                                           notReferences: Set<String>) -> [String: DateEvidence] {
+        var targets: [String: GeoPoint] = [:]
+        var references: [PlaceDateClues.Reference] = []
+        references.reserveCapacity(located.count)
+        for i in 0..<located.count {
+            let id = located.ids[i]
+            if undated[id] != nil { targets[id] = located.point(i) }
+            else if !notReferences.contains(id) { references.append(.init(time: located.times[i], point: located.point(i))) }
+        }
+        return PlaceDateClues.evidence(for: targets, references: references)
+    }
+
     nonisolated static func computeEstimates(undated: [String: UndatedPhoto], analyses: [String: PhotoAnalysis],
                                              groups: [PhotoGroup], people: [PersonInfo],
                                              photoPeople: [String: [GroupPersonHint]] = [:],
@@ -595,6 +616,7 @@ final class AppState {
                                              formats: [String: FormatInfo] = [:],
                                              faceReadings: [String: [FaceAgeClues.Reading]] = [:],
                                              faceCorrection: FaceAgeClues.Correction = .standard,
+                                             placeClues: [String: DateEvidence] = [:],
                                              allowExactMonth: Bool) -> EstimateResults {
         // Who's in a photo: birth years, and how old they look (the face-age model when it has read
         // them, otherwise Photos' rough age groups).
@@ -634,6 +656,7 @@ final class AppState {
             if let photo = undated[id], let e = CameraClues.evidence(for: photo.format, periods: cameras) { out.append(e) }
             if let e = referenceClues[id] { out.append(e) }
             if let e = lookalikeClues[id] { out.append(e) }
+            if let e = placeClues[id] { out.append(e) }
             return out
         }
 

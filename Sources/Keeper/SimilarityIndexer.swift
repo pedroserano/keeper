@@ -10,6 +10,7 @@ import os
 import Photos
 import Vision
 import KeeperKit
+import KeeperCore
 
 enum SimilarityIndexer {
     struct Result: Sendable {

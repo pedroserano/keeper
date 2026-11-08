@@ -32,6 +32,14 @@ final class PlaceNames {
         return nil
     }
 
+    /// The town, once Apple Maps has answered: nil while waiting (and asks), "" when it has no
+    /// name for the spot.
+    func cityAnswer(for point: GeoPoint) -> String? {
+        if let name = names["city|" + Self.key(point)] { return name }
+        enqueue(point)
+        return nil
+    }
+
     /// The name if it's known; otherwise asks for it, and the view updates when it arrives.
     func name(for point: GeoPoint) -> String? {
         let key = Self.key(point)

@@ -189,7 +189,24 @@ final class CullingSession: ObservableObject {
     /// The Apple-scores panel in single view (I).
     @Published var showingScores = false
     @Published var filter: Filter = .all { didSet { if filter != oldValue { reload() } } }
-    @Published var newestFirst = false { didSet { if newestFirst != oldValue { reload() } } }
+    /// The order of photos in lists kept in date order (not suggestions or Sideways Photos).
+    @Published var sort: PhotoSort = PhotoSort(rawValue: UserDefaults.standard.string(forKey: PhotoSort.storageKey) ?? "") ?? .oldest {
+        didSet {
+            guard sort != oldValue else { return }
+            UserDefaults.standard.set(sort.rawValue, forKey: PhotoSort.storageKey)
+            reload()
+        }
+    }
+    /// Get Info (⌘I) is showing this photo.
+    @Published var infoAsset: PHAsset?
+
+    /// The View menu's Newest First.
+    var newestFirst: Bool {
+        get { sort == .newest }
+        set { sort = newValue ? .newest : .oldest }
+    }
+    /// The photos in view, for the window's subtitle: the dates of the grid's visible photos, as in Photos.
+    let titleDates = TitleDates()
     @Published var mode: Mode = .grid { didSet { modeChanged(from: oldValue) } }
     @Published private(set) var list = AssetList.empty
     /// For Duplicates and Similar Shots: where each group starts and ends in `list`, and which group it is.
@@ -1096,7 +1113,7 @@ final class CullingSession: ObservableObject {
         let started = ContinuousClock.now
         let result = source == .sideways
             ? library.assets(fetching: Array(sideways.keys))
-            : library.fetch(source, newestFirst: newestFirst, range: dateRange)
+            : library.fetch(source, newestFirst: sort == .newest, range: dateRange)
         log.notice("open: fetched \(result.count) photos for \(self.source.title) in \(started.duration(to: .now), privacy: .public)")
         var keepOrder: [String: Int] = [:]
         if quietly, source == .sideways {
@@ -1111,7 +1128,8 @@ final class CullingSession: ObservableObject {
         let keepAsset = keepingID.flatMap { library.assets(withIDs: [$0]).first }
 
         // The common case needs no scan: every photo in the source, straight from PhotoKit.
-        if filter == .all && source != .unreviewed && source != .rejected && source != .sideways && !source.isSuggestion {
+        let byAdded = sort == .recentlyAdded && source.sorts
+        if filter == .all && source != .unreviewed && source != .rejected && source != .sideways && !source.isSuggestion && !byAdded {
             loading = false
             sections = nil
             sectionGroups = []
@@ -1145,9 +1163,13 @@ final class CullingSession: ObservableObject {
                 listedGroups.append(group)
             }
         }
+        let libraryURL = libraryURL
         filterTask = Task { [weak self] in
             let started = ContinuousClock.now
             let (positions, ordered, sections, groupIndices) = await Task.detached(priority: .userInitiated) { () -> ([Int], Bool, [Range<Int>]?, [Int]) in
+                // Recently Added: when each photo was added, from Photos' database. A photo it doesn't
+                // know yet was only just added.
+                let added = byAdded ? ((try? PhotosDatabase.readAddedDates(inLibrary: libraryURL)) ?? [:]) : [:]
                 var out: [(position: Int, keep: Double)] = []
                 result.enumerateObjects { asset, i, _ in
                     let d = snapshot[asset.localIdentifier]
@@ -1170,7 +1192,15 @@ final class CullingSession: ObservableObject {
                         else { out.append((i, -r.confidence)) }
                         return
                     }
-                    guard source.isSuggestion else { out.append((i, 0)); return }
+                    guard source.isSuggestion else {
+                        if byAdded {
+                            let uuid = String(asset.localIdentifier.split(separator: "/").first ?? "")
+                            out.append((i, -(added[uuid] ?? .infinity)))
+                        } else {
+                            out.append((i, 0))
+                        }
+                        return
+                    }
                     let uuid = String(asset.localIdentifier.split(separator: "/").first ?? "")
                     if source == .calibrate {
                         if let order = sampleOrder[uuid] { out.append((i, Double(order))) }
@@ -1192,7 +1222,11 @@ final class CullingSession: ObservableObject {
                 case .suggestedRejects: out.sort { $0.keep < $1.keep }
                 case .bestShots: out.sort { $0.keep > $1.keep }
                 case .calibrate, .duplicates, .similarShots, .sideways: out.sort { $0.keep < $1.keep }
-                default: return (out.map(\.position), true, nil, [])
+                default:
+                    guard byAdded else { return (out.map(\.position), true, nil, []) }
+                    // Newest additions first; photos added together, newest taken first.
+                    out.sort { $0.keep != $1.keep ? $0.keep < $1.keep : $0.position > $1.position }
+                    return (out.map(\.position), false, nil, [])
                 }
                 // A group's photos share an order key's ten-thousands: split the list there.
                 var sections: [Range<Int>]?
@@ -1222,6 +1256,7 @@ final class CullingSession: ObservableObject {
 
     private func setList(_ newList: AssetList, keeping asset: PHAsset?) {
         list = newList
+        titleDates.refresh(newList)
         groupAnchor = nil
         if let asset, let i = newList.index(of: asset) {
             cursor = i
@@ -1698,4 +1733,57 @@ final class CullingSession: ObservableObject {
 final class WeakSession: @unchecked Sendable {
     weak var value: CullingSession?
     init(_ value: CullingSession) { self.value = value }
+}
+
+/// How a date-ordered list is sorted.
+enum PhotoSort: String, CaseIterable, Identifiable {
+    case oldest = "Oldest First"
+    case newest = "Newest First"
+    case recentlyAdded = "Recently Added"
+
+    static let storageKey = "photoSort"
+    var id: String { rawValue }
+}
+
+/// The dates of the photos in view, for the window's subtitle. Kept apart from the session, so
+/// scrolling changes only the subtitle and doesn't redraw the grid.
+@MainActor
+final class TitleDates: ObservableObject {
+    @Published private(set) var text: String?
+    /// The grid's visible indexes, nil in single photo and compare.
+    private var visible: [Int]?
+
+    private static let formatter: DateIntervalFormatter = {
+        let f = DateIntervalFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .none
+        return f
+    }()
+
+    /// "Jun 3 – Aug 12, 2019": the earliest and latest date among the photos at these indexes.
+    func show(_ indexes: [Int], in list: AssetList) {
+        visible = indexes
+        refresh(list)
+    }
+
+    /// The list changed under the same scroll position (another sort, a photo removed).
+    func refresh(_ list: AssetList) {
+        guard let visible else { return }
+        let dates = visible.filter { list.indices.contains($0) }.compactMap { list.asset(at: $0).creationDate }
+        guard let first = dates.min(), let last = dates.max() else { return clear() }
+        let new = Self.formatter.string(from: first, to: last)
+        if new != text { text = new }
+    }
+
+    /// One photo's date, in single photo and compare.
+    func show(_ date: Date?) {
+        visible = nil
+        let new = date.map { Self.formatter.string(from: $0, to: $0) }
+        if new != text { text = new }
+    }
+
+    func clear() {
+        visible = nil
+        if text != nil { text = nil }
+    }
 }

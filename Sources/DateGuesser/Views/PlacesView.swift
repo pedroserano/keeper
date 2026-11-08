@@ -210,10 +210,15 @@ struct PlacesView: View {
 
     private func checkMenu(_ ids: [String]) -> some View {
         let confident = ids.filter { places.guesses[$0]?.level == .high }
+        // Photos you gave a place (one by one or with their outing) that wait for Apply, shown or not.
+        let confirmed = places.order.filter { let d = places.decision($0); return !d.ignored && d.override != nil }
         return Menu {
             Button("Select All Shown  ⌘A") { places.select(ids, true) }
             Button("Select Confident (\(confident.count.formatted()))") { places.select(confident, true) }
                 .disabled(confident.isEmpty)
+            Button("Select Confirmed (\(confirmed.count.formatted()))") { places.select(confirmed, true) }
+                .disabled(confirmed.isEmpty)
+                .help("Every photo you gave a place that’s waiting for Apply, also in outings")
             Divider()
             Button("Deselect All Shown  ⇧⌘A") { places.select(ids, false) }
         } label: {
@@ -578,26 +583,39 @@ struct PlaceDetailSheet: View {
 /// Outings: photos from one camera taken close together, placed with one search.
 struct OutingsList: View {
     @Environment(AppState.self) private var state
-    @State private var showDone = false
+    @State private var page: Page = .toPlace
+
+    enum Page: String, CaseIterable, Identifiable {
+        case toPlace = "To Place"
+        case confirmed = "Confirmed"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         let places = state.places
-        let outings = places.outings.filter { members in
-            let open = members.filter { !places.decision($0).ignored }
-            return !open.isEmpty && (showDone || open.contains { places.decision($0).override == nil })
-        }
+        let outings: [[String]] = page == .toPlace
+            ? places.outings.filter { members in
+                members.contains { !places.decision($0).ignored && places.decision($0).override == nil }
+            }
+            : places.confirmedOutings
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("Photos from one camera taken within a couple of hours of each other. Give an outing one place, then Apply.")
+                    Text(page == .toPlace
+                         ? "Photos from one camera taken within a couple of hours of each other. Give an outing one place, then Apply."
+                         : "Outings you gave a place: waiting for Apply, or already set in Photos. Change the place or undo it.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Toggle("Show placed outings", isOn: $showDone)
-                        .toggleStyle(.checkbox)
+                    Picker("Outings", selection: $page) {
+                        ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
                 }
                 ForEach(outings, id: \.self) { members in
-                    OutingRow(members: members)
+                    if page == .toPlace { OutingRow(members: members) } else { ConfirmedOutingRow(members: members) }
                     Divider()
                 }
             }
@@ -605,12 +623,118 @@ struct OutingsList: View {
         }
         .overlay {
             if places.scan.lastScan != nil && outings.isEmpty {
-                ContentUnavailableView("No Outings to Place", systemImage: "figure.walk",
-                                       description: Text(places.outings.isEmpty
-                                                         ? "Outings need photos with a real date. Scans and other undated photos are placed one by one."
-                                                         : "Every outing has a place."))
+                if page == .toPlace {
+                    ContentUnavailableView("No Outings to Place", systemImage: "figure.walk",
+                                           description: Text(places.outings.isEmpty
+                                                             ? "Outings need photos with a real date. Scans and other undated photos are placed one by one."
+                                                             : "Every outing has a place. See them under Confirmed."))
+                } else {
+                    ContentUnavailableView("No Confirmed Outings", systemImage: "mappin.circle",
+                                           description: Text("Outings you give a place show here, so you can change or undo it."))
+                }
             }
         }
+    }
+}
+
+/// An outing you gave a place: the place, whether it's in Photos yet, and Change and Undo.
+private struct ConfirmedOutingRow: View {
+    @Environment(AppState.self) private var state
+    var members: [String]
+    @State private var showSearch = false
+    @State private var confirmUndo = false
+    @State private var pendingChange: PlaceChoice?
+
+    var body: some View {
+        let places = state.places
+        let placed = places.placed
+        let applied = members.filter { placed[$0] != nil }
+        let waiting = members.filter { placed[$0] == nil }
+        let points = Set(applied.compactMap { placed[$0].map { PlaceChoice(name: $0.name ?? "", point: $0.new) } })
+            .union(waiting.compactMap { places.decision($0).override })
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(span).font(.headline)
+                Text("\(members.count.formatted()) photos" + (places.cameras[members[0]].map { " · \($0)" } ?? ""))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(applied.isEmpty ? "Waiting for Apply" : waiting.isEmpty ? "Set in Photos"
+                     : "\(applied.count.formatted()) set in Photos, \(waiting.count.formatted()) waiting")
+                    .font(.caption)
+                    .foregroundStyle(applied.isEmpty ? Color.orange : Color.green)
+            }
+            ThumbnailStrip {
+                LazyHStack(spacing: 6) {
+                    ForEach(members.prefix(40), id: \.self) { id in
+                        AssetThumbnail(assetID: id, side: 84, showMarks: true)
+                            .onTapGesture { PhotoZoom.shared.open(id, in: members, scope: "main") }
+                            .help("Click to see it full size")
+                    }
+                    if members.count > 40 {
+                        Text("+\((members.count - 40).formatted())").foregroundStyle(.secondary).frame(width: 60)
+                    }
+                }
+            }
+            .frame(height: 84)
+            HStack(spacing: 8) {
+                Image(systemName: "mappin.circle.fill").foregroundStyle(Theme.accent)
+                if points.count == 1, let p = points.first {
+                    PlaceLabel(point: p.point, name: p.name.isEmpty ? nil : p.name).font(.callout.weight(.semibold))
+                } else {
+                    Text("\(points.count) different places").font(.callout)
+                }
+                Spacer()
+                Button {
+                    showSearch = true
+                } label: {
+                    Label("Change…", systemImage: "magnifyingglass")
+                }
+                .disabled(places.isApplying)
+                .popover(isPresented: $showSearch, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("New place for \(members.count.formatted()) photos").font(.headline)
+                        PlaceSearchField { choice in
+                            showSearch = false
+                            if !waiting.isEmpty { places.setPlace(waiting, choice) }
+                            if !applied.isEmpty { pendingChange = choice }
+                        }
+                    }
+                    .frame(width: 340)
+                    .padding(12)
+                }
+                Button("Undo…") { confirmUndo = true }
+                    .disabled(places.isApplying)
+                    .help("Take this place back")
+            }
+            .controlSize(.small)
+        }
+        .alert("Change the location of \(applied.count.formatted()) photos in Photos?",
+               isPresented: Binding(get: { pendingChange != nil }, set: { if !$0 { pendingChange = nil } })) {
+            Button("Change") { if let c = pendingChange { places.changeApplied(applied, to: c) }; pendingChange = nil }
+            Button("Cancel", role: .cancel) { pendingChange = nil }
+        } message: {
+            Text("They already have this outing’s place in Photos. The new one replaces it, the same way Image ▸ Location does.")
+        }
+        .alert("Take back this outing’s place?", isPresented: $confirmUndo) {
+            Button("Take Back") {
+                if !waiting.isEmpty { places.clearPlace(waiting) }
+                if !applied.isEmpty { places.undoApplied(applied) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(applied.isEmpty
+                 ? "The photos go back to their guesses, not selected."
+                 : "\(applied.count.formatted()) photos lose the location set here in Photos and go back to the list to place. Nothing else about them changes.")
+        }
+    }
+
+    private var span: String {
+        let dates = members.compactMap { state.places.photoTime($0) }
+        guard let first = dates.min(), let last = dates.max() else { return "No date" }
+        let day = first.formatted(date: .abbreviated, time: .omitted)
+        let from = first.formatted(date: .omitted, time: .shortened), to = last.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDate(first, inSameDayAs: last) { return from == to ? "\(day), \(from)" : "\(day), \(from) – \(to)" }
+        return "\(day) – \(last.formatted(date: .abbreviated, time: .omitted))"
     }
 }
 

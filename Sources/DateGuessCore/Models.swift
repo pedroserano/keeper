@@ -57,6 +57,7 @@ public enum EvidenceSource: String, Codable, CaseIterable, Sendable {
     case groupHint
     case group
     case libraryDate
+    case location
     case prior
 
     public var displayName: String {
@@ -74,6 +75,7 @@ public enum EvidenceSource: String, Codable, CaseIterable, Sendable {
         case .groupHint: return "Your group hint"
         case .group: return "Group"
         case .libraryDate: return "Library date"
+        case .location: return "Where it was taken"
         case .prior: return "Background"
         }
     }
@@ -93,6 +95,7 @@ public enum EvidenceSource: String, Codable, CaseIterable, Sendable {
         case .groupHint: return "text.bubble"
         case .group: return "square.stack.3d.up"
         case .libraryDate: return "clock"
+        case .location: return "mappin.and.ellipse"
         case .prior: return "circle.dashed"
         }
     }

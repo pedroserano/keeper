@@ -21,7 +21,7 @@ let package = Package(
         // Dates (from Photo Date Guesser): estimating when undated photos were taken. Pure logic…
         .target(name: "DateGuessCore", path: "Sources/DateGuessCore"),
         // …and its screens, state and PhotoKit/Vision work, shown in Keeper's Dates section.
-        .target(name: "DateGuesser", dependencies: ["DateGuessCore", "KeeperUI"], path: "Sources/DateGuesser"),
+        .target(name: "DateGuesser", dependencies: ["DateGuessCore", "KeeperUI", "KeeperCore"], path: "Sources/DateGuesser"),
         // The app.
         .executableTarget(name: "Keeper", dependencies: ["KeeperCore", "KeeperKit", "KeeperOrientation", "DateGuesser", "KeeperUI"],
                           path: "Sources/Keeper"),

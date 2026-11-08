@@ -49,12 +49,15 @@ struct ContentView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar(session: session) }
                 .toolbar { toolbar }
                 .navigationTitle(session.source.title)
-                .navigationSubtitle(session.libraryName)
+                .modifier(DatesSubtitle(dates: session.titleDates, fallback: session.libraryName))
+                .onChange(of: session.current?.localIdentifier, initial: true) { showCurrentDate() }
+                .onChange(of: session.mode) { showCurrentDate() }
             }
         }
         .environmentObject(session)
         .environmentObject(session.library)
         .sheet(isPresented: $showingDelete) { DeleteQueueSheet().environmentObject(session).environmentObject(session.library) }
+        .sheet(item: $session.infoAsset) { InfoSheet(asset: $0, libraryURL: session.libraryURL).environmentObject(session.library) }
         .sheet(isPresented: $showingShortcuts) { ShortcutsSheet(screen: session.source.title) }
         .onAppear(perform: installKeyMonitor)
         .onDisappear {
@@ -147,6 +150,18 @@ struct ContentView: View {
         // The same toolbar as every other photo screen; Delete Rejected is this screen's own action.
         KeeperToolbar(shortcuts: { showingShortcuts = true }) {
             ShowMenu(selection: $session.filter)
+        } sort: {
+            Menu {
+                Picker("Sort By", selection: $session.sort) {
+                    ForEach(PhotoSort.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Label("Sort", systemImage: "arrow.up.arrow.down")
+            }
+            .disabled(!session.source.sorts)
+            .help(session.source.sorts ? "Sort by the date photos were taken or added"
+                                       : "\(session.source.title) keeps its own order")
         } action: {
             Button { showingDelete = true } label: {
                 Label("Delete Rejected (\(session.rejectCount))", systemImage: "trash")
@@ -156,6 +171,12 @@ struct ContentView: View {
         }
     }
 
+
+    /// Single photo and compare: the current photo's date. The grid sets its own as you scroll.
+    private func showCurrentDate() {
+        guard session.mode != .grid else { return }
+        session.titleDates.show(session.current?.creationDate)
+    }
 
     /// Returns true if the key was a culling key and has been used. Left alone: shortcuts with
     /// ⌘ ⌃ or ⌥ (they belong to the menus), typing in a text field, and anything while a sheet is open.
@@ -295,7 +316,7 @@ struct Sidebar: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                ForEach(DatesItem.allCases.filter { $0 != .places }) { item in
+                ForEach(DatesItem.allCases.filter { $0 != .places && !$0.isAlbumItem }) { item in
                     datesRow(item)
                 }
             } header: {
@@ -312,14 +333,17 @@ struct Sidebar: View {
                 row(.screenshots)
                 row(.bursts)
             }
-            if !library.albums.isEmpty {
-                Section("Albums") {
-                    ForEach(library.albums, id: \.localIdentifier) { album in
-                        row(.album(id: album.localIdentifier, title: album.localizedTitle ?? "Untitled"))
-                    }
+            Section("Albums") {
+                ForEach(DatesItem.albumItems) { item in datesRow(item) }
+                ForEach(library.albums, id: \.localIdentifier) { album in
+                    row(.album(id: album.localIdentifier, title: album.localizedTitle ?? "Untitled"))
                 }
             }
         }
+        // Laid out again once suggestions are ready: Rate to Calibrate and the footer's controls
+        // appear then, and the sidebar otherwise leaves the Look-alikes heading where it was,
+        // on top of Duplicates.
+        .id(session.suggestionsStatus == .ready)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
@@ -808,5 +832,16 @@ struct AcceptRatingsBar: View {
     private var title: String {
         let n = pending?.after.count ?? 0
         return "Accept suggested ratings for \(n.formatted()) \(n == 1 ? "photo" : "photos")?"
+    }
+}
+
+/// The window's subtitle: the dates of the photos in view, or the library's name when there are none.
+/// Only this redraws while you scroll, not the grid.
+private struct DatesSubtitle: ViewModifier {
+    @ObservedObject var dates: TitleDates
+    var fallback: String
+
+    func body(content: Content) -> some View {
+        content.navigationSubtitle(dates.text ?? fallback)
     }
 }

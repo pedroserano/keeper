@@ -94,19 +94,21 @@ struct SelectableGrid<Card: View>: View {
     @ViewBuilder var card: (_ id: String, _ isCurrent: Bool) -> Card
     @State private var width: CGFloat = 900
 
-    static var minimum: CGFloat { 200 }
+    @AppStorage(ThumbnailSizeSlider.storageKey) private var scale = 1.0
+    /// The toolbar's size slider scales this.
+    private var minimum: CGFloat { (200 * scale).rounded() }
     static var spacing: CGFloat { 16 }
     static var padding: CGFloat { 20 }
 
     /// How many cards fit across: what `.adaptive(minimum:)` works out.
     private var columns: Int {
-        max(1, Int((width - 2 * Self.padding + Self.spacing) / (Self.minimum + Self.spacing)))
+        max(1, Int((width - 2 * Self.padding + Self.spacing) / (minimum + Self.spacing)))
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.minimum, maximum: 260), spacing: Self.spacing, alignment: .top)],
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: minimum, maximum: (minimum * 1.3).rounded()), spacing: Self.spacing, alignment: .top)],
                           spacing: 20) {
                     ForEach(ids, id: \.self) { id in
                         card(id, id == cursor.id).id(id)

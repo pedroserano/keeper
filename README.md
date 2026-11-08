@@ -141,7 +141,13 @@ Not Sideways leaves photos as they are, and they stop showing until they change.
 finds join the end of the list without disturbing what you're looking at.
 
 **Squares / Whole Photos**, in the toolbar, switches every grid between square crops and each photo whole
-at its own shape.
+at its own shape. The **size slider** next to it makes thumbnails bigger or smaller in every grid.
+
+**Sort** orders a list by the date photos were taken (oldest or newest first) or by when they were added
+to the library. The window's subtitle shows the dates of the photos in view, as in Photos.
+
+**Get Info** (⌘I) shows the current photo's dates, file, camera and exposure, title and caption, and where
+it was taken: its coordinates and the address Apple Maps gives for them (only the coordinates are sent).
 
 In the background, after the look-alikes scan, Keeper checks every photo once from a small local preview
 (nothing is downloaded), newest first. The first run on a big library takes hours. It shows its progress in
@@ -222,9 +228,24 @@ same way:
 - **Places**, in its own section just above Dates: guesses where photos without a location were taken.
 - **History**: every batch of dates you applied, each with Undo.
 
+The **Albums** section, above your albums:
+
+- **Suggested Albums**: photos taken in one place over no more than 30 days, named like "2026-08 Hartford"
+  (you can change the name). Photos from one place that start in the same month go together, and photos
+  without a location join when Places is sure they were taken there. A group isn't suggested when an album
+  with a year and month in its name already holds at least half of it. Make Album adds the album to Photos.
+- **Missing from Albums**: photos in no album that were taken between an album's first and last photo,
+  near where its photos were taken at the time. Only albums covering 30 days or less are used. Untick any
+  that don't belong, then Add to Album; Not in Album stops them being suggested again.
+- **Album Duplicates**: albums holding two exact copies of a photo: the same original file (Photos'
+  own fingerprint of it) with the same edits, rating and Favorite. Look-alikes, such as a resized
+  version or another crop of the same scanned page, aren't copies and aren't listed. Remove from Album takes the copy that comes later in the album out of that album only. No
+  photo is ever deleted from the library, and Put Back returns them.
+
 Clues include filenames and album names, file formats and camera models, colour and print borders, scenes
-(Christmas, snow, the beach), how old the people in a photo look, look-alike photos, and dated photos of the
-same scene. The **Dates** and **Date Scanning** tabs in Keeper › Settings hold the options. ⌘Z undoes
+(Christmas, snow, the beach), how old the people in a photo look, look-alike photos, dated photos of the
+same scene, and for a photo with a location, dated photos taken within a kilometre of it when they're
+from one trip. The **Dates** and **Date Scanning** tabs in Keeper › Settings hold the options. ⌘Z undoes
 selecting, hiding and changed guesses before you apply. Its data lives next to Keeper's own, one folder
 per library. The first time you open Dates, Keeper copies anything you'd already done in Photo Date
 Guesser (scans, people, groups, decisions and undo history), and leaves that app's files as they are.

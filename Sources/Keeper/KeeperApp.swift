@@ -34,6 +34,11 @@ struct KeeperApp: App {
                 Button("Single Photo") { model.cullingSession?.mode = .single }.keyboardShortcut("2")
                 Button("Compare") { model.cullingSession?.mode = .compare }.keyboardShortcut("3")
                 Divider()
+                Button("Get Info") {
+                    if let s = model.cullingSession, s.dates == nil { s.infoAsset = s.current }
+                }
+                .keyboardShortcut("i")
+                Divider()
                 Toggle("Newest First", isOn: Binding(get: { model.session?.newestFirst ?? false },
                                                      set: { model.session?.newestFirst = $0 }))
                 Toggle("Download Originals from iCloud for Zoom",

@@ -32,6 +32,15 @@ struct AssetImage: View {
         .task(id: "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)|"
                   + "\(Int(pointSize.width))x\(Int(pointSize.height))") {
             let target = CGSize(width: pointSize.width * backingScale, height: pointSize.height * backingScale)
+            // Seen sharp a moment ago (cells are by position, so accepting or hiding a photo moves every
+            // later photo into another cell): show it straight away, not a blurry preview while Photos
+            // is busy, for instance writing rotations.
+            let key = SharpImages.key(asset, target, fill)
+            if let sharp = SharpImages.shared.image(for: key) {
+                image = sharp
+                missingInCloud = false
+                return
+            }
             var gotImage = false
             var inCloud = false
             // Keep the previous photo on screen until this one's first image arrives: no flash between photos.
@@ -40,6 +49,7 @@ struct AssetImage: View {
                 if let new = loaded.image {
                     image = new
                     gotImage = true
+                    if !loaded.isDegraded { SharpImages.shared.store(new, for: key) }
                 }
                 inCloud = inCloud || loaded.isInCloud
             }
@@ -51,12 +61,37 @@ struct AssetImage: View {
     }
 }
 
+/// Sharp thumbnails shown recently, by photo, edit and size, so one that moves to another cell
+/// doesn't load again from a blurry preview.
+final class SharpImages: @unchecked Sendable {
+    static let shared = SharpImages()
+    private let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 800
+        c.totalCostLimit = 400 * 1024 * 1024
+        return c
+    }()
+
+    static func key(_ asset: PHAsset, _ size: CGSize, _ fill: Bool) -> NSString {
+        "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)|\(Int(size.width))x\(Int(size.height))|\(fill)" as NSString
+    }
+
+    func image(for key: NSString) -> NSImage? { cache.object(forKey: key) }
+
+    func store(_ image: NSImage, for key: NSString) {
+        let cost = Int(image.size.width * image.size.height * 4)
+        cache.setObject(image, forKey: key, cost: cost)
+    }
+}
+
 // MARK: - Grid
 
 struct GridView: View {
     @EnvironmentObject private var session: CullingSession
     @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
-    private let cell: CGFloat = 168
+    @AppStorage(ThumbnailSizeSlider.storageKey) private var scale = 1.0
+    /// The toolbar's size slider scales this.
+    private var cell: CGFloat { (168 * scale).rounded() }
     private let spacing: CGFloat = 8
     /// Click-and-drag selection: the rectangle being dragged, and what was selected before it began.
     @State private var marquee: CGRect?
@@ -90,6 +125,7 @@ struct GridView: View {
                             ForEach(session.list.indices, id: \.self) { i in cellView(i, details: false) }
                         }
                     }
+                    .scrollTargetLayout()
                     .background {
                         GeometryReader { g in
                             Color.clear
@@ -123,6 +159,10 @@ struct GridView: View {
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if session.sections != nil, !session.sectionGroups.isEmpty { MergeBar() }
+                }
+                // The window's subtitle shows the dates of the photos in view, as in Photos.
+                .onScrollTargetVisibilityChange(idType: Int.self, threshold: 0.3) { ids in
+                    session.titleDates.show(ids, in: session.list)
                 }
                 .onAppear {
                     session.gridColumns = columns

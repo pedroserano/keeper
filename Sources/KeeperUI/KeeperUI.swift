@@ -365,19 +365,22 @@ private struct KeyCap: View {
 /// The toolbar of every photo screen, in one order on the right: Show, photo shape, the screen's own
 /// action (Sort, New Group, Delete Rejected…), then the keyboard button, always farthest right.
 /// Screens only choose what goes in each slot, so they can't drift apart.
-public struct KeeperToolbar<Show: View, Action: View>: ToolbarContent {
+public struct KeeperToolbar<Show: View, Sort: View, Action: View>: ToolbarContent {
     var show: Show
     var showsPhotoShape: Bool
     var photoShapeEnabled: Bool
+    var sort: Sort
     var action: Action
     var shortcuts: () -> Void
 
     public init(photoShape: Bool = true, photoShapeEnabled: Bool = true,
                 shortcuts: @escaping () -> Void,
-                @ViewBuilder show: () -> Show, @ViewBuilder action: () -> Action) {
+                @ViewBuilder show: () -> Show, @ViewBuilder sort: () -> Sort,
+                @ViewBuilder action: () -> Action) {
         self.show = show()
         self.showsPhotoShape = photoShape
         self.photoShapeEnabled = photoShapeEnabled
+        self.sort = sort()
         self.action = action()
         self.shortcuts = shortcuts
     }
@@ -385,10 +388,24 @@ public struct KeeperToolbar<Show: View, Action: View>: ToolbarContent {
     public var body: some ToolbarContent {
         ToolbarItem { show }
         ToolbarItem {
+            if showsPhotoShape { ThumbnailSizeSlider().disabled(!photoShapeEnabled) }
+        }
+        ToolbarItem {
             if showsPhotoShape { PhotoShapePicker().disabled(!photoShapeEnabled) }
         }
+        ToolbarItem { sort }
         ToolbarItem { action }
         ToolbarItem { ShortcutsToolbarButton(action: shortcuts) }
+    }
+}
+
+extension KeeperToolbar where Sort == EmptyView {
+    /// Screens whose Sort is part of their action menu.
+    public init(photoShape: Bool = true, photoShapeEnabled: Bool = true,
+                shortcuts: @escaping () -> Void,
+                @ViewBuilder show: () -> Show, @ViewBuilder action: () -> Action) {
+        self.init(photoShape: photoShape, photoShapeEnabled: photoShapeEnabled, shortcuts: shortcuts,
+                  show: show, sort: { EmptyView() }, action: action)
     }
 }
 
@@ -418,6 +435,29 @@ public struct ShowMenu<Choice: Hashable & CaseIterable & RawRepresentable>: View
         }
         .fixedSize()
         .help(help)
+    }
+}
+
+/// How big grid thumbnails are, as in Photos' zoom slider. One setting for every grid: a scale of
+/// each grid's own standard size.
+public struct ThumbnailSizeSlider: View {
+    public static let storageKey = "gridThumbnailScale"
+    public static let range: ClosedRange<Double> = 0.5...2.5
+    @AppStorage(ThumbnailSizeSlider.storageKey) private var scale = 1.0
+
+    public init() {}
+
+    public var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo").imageScale(.small).foregroundStyle(.secondary)
+            Slider(value: $scale, in: Self.range)
+                .frame(width: 110)
+            Image(systemName: "photo").imageScale(.large).foregroundStyle(.secondary)
+        }
+        // Room between the icons and the toolbar's rounded background.
+        .padding(.horizontal, 10)
+        .labelsHidden()
+        .help("Make thumbnails bigger or smaller")
     }
 }
 

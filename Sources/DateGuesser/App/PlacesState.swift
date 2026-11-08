@@ -53,6 +53,7 @@ final class PlacesState {
         decisions = store.load([String: PlaceDecision].self, from: "placeDecisions") ?? [:]
         journal = store.load([PlaceBatch].self, from: "placesJournal") ?? []
         lookalikeStat = store.load(ClueCalibration.Stat.self, from: "placeCalibration") ?? ClueCalibration.Stat()
+        rememberWhenTaken()
         refreshOrder()
     }
 
@@ -104,9 +105,14 @@ final class PlacesState {
             self.isScanning = false
             self.scanProgress = nil
             guard !Task.isCancelled, result.located.count + result.missing.count > 0 else { return }
+            self.rememberWhenTaken()
             self.scan = result
             self.store.save(result, to: "placesScan")
             self.refreshOrder()
+            // Undated photos with a location are dated by the photos taken near them.
+            self.app?.recomputeEstimates()
+            self.app?.albumTools.refreshSuggestions()
+            self.app?.albumTools.refreshAdditions()
             // Then learns what places look like, for photos nothing else places.
             self.recompute { self.app?.startFingerprinting() }
         }
@@ -115,7 +121,7 @@ final class PlacesState {
     // MARK: Guessing
 
     /// Photos whose date is good to the minute: not undated, and not dated by this app.
-    private func untrustedDates() -> Set<String> {
+    func untrustedDates() -> Set<String> {
         guard let app else { return [] }
         return Set(app.scan.undated.keys).union(app.appliedIDs)
     }
@@ -310,6 +316,126 @@ final class PlacesState {
         decisions = copy
     }
 
+    /// Takes back a place set for these photos (not yet applied): back to their guesses, deselected.
+    func clearPlace(_ ids: [String]) {
+        decisionHistory.record(ids, from: decisions)
+        var copy = decisions
+        for id in ids {
+            copy[id]?.override = nil
+            copy[id]?.selected = false
+        }
+        decisions = copy
+    }
+
+    // MARK: Confirmed outings
+
+    /// Photos placed before their date was kept with them: take it from the scan while it still
+    /// lists them (a new scan finds them with a location, and no longer has it).
+    private func rememberWhenTaken() {
+        guard journal.contains(where: { $0.entries.contains { $0.taken == nil } }) else { return }
+        var copy = journal
+        var changed = false
+        for i in copy.indices {
+            for j in copy[i].entries.indices where copy[i].entries[j].taken == nil {
+                if let date = scan.missing[copy[i].entries[j].assetID] ?? nil {
+                    copy[i].entries[j].taken = date
+                    changed = true
+                }
+            }
+        }
+        if changed { journal = copy }
+    }
+
+    /// Outings you've given a place: set here and waiting for Apply, or already in Photos.
+    var confirmedOutings: [[String]] {
+        let placed = self.placed
+        var photos: [PlaceOutings.Photo] = []
+        for (id, entry) in placed {
+            if let time = entry.taken ?? (scan.missing[id] ?? nil) {
+                photos.append(.init(id: id, time: time, camera: cameras[id]))
+            }
+        }
+        for (id, d) in decisions where d.override != nil && !d.ignored && placed[id] == nil {
+            if let time = scan.missing[id] ?? nil { photos.append(.init(id: id, time: time, camera: cameras[id])) }
+        }
+        return PlaceOutings.group(photos).sorted { a, b in
+            (photoTime(a[0]) ?? .distantPast) > (photoTime(b[0]) ?? .distantPast)
+        }
+    }
+
+    /// When a photo was taken, also for photos placed here that have a location now.
+    func photoTime(_ id: String) -> Date? { (scan.missing[id] ?? nil) ?? placed[id]?.taken }
+
+    /// Writes a new place for photos already placed here.
+    func changeApplied(_ ids: [String], to choice: PlaceChoice) {
+        guard !isApplying else { return }
+        let placed = self.placed
+        let changes = ids.filter { placed[$0] != nil }.map {
+            PlaceWriter.Change(assetID: $0, point: choice.point, name: choice.name, requireNoLocation: false)
+        }
+        guard !changes.isEmpty else { return }
+        isApplying = true
+        applyProgress = (0, changes.count)
+        Task {
+            var batch = await PlaceWriter.apply(changes) { done, total in
+                await MainActor.run { self.applyProgress = (done, total) }
+            }
+            for i in batch.entries.indices { batch.entries[i].taken = placed[batch.entries[i].assetID]?.taken }
+            if !batch.entries.isEmpty { self.journal.insert(batch, at: 0) }
+            self.isApplying = false
+            self.applyProgress = nil
+            self.app?.banner = "Changed the location of \(batch.entries.count.formatted()) photos in Photos."
+                + (batch.failures.isEmpty ? "" : " \(batch.failures.count) couldn’t be changed.")
+        }
+    }
+
+    /// Puts back what these photos had before they were placed here (no location, for most), and
+    /// takes them out of History. They're back in the list to place.
+    func undoApplied(_ ids: [String]) {
+        guard !isApplying else { return }
+        let placed = self.placed
+        let entries = ids.compactMap { placed[$0] }
+        guard !entries.isEmpty else { return }
+        isApplying = true
+        applyProgress = (0, entries.count)
+        Task {
+            // The first time each photo was placed here holds what it had before.
+            var original: [String: GeoPoint?] = [:]
+            for batch in self.journal.reversed() where !batch.undone {
+                for e in batch.entries where ids.contains(e.assetID) && original[e.assetID] == nil {
+                    original[e.assetID] = .some(e.previous)
+                }
+            }
+            let changes = entries.map {
+                PlaceWriter.Change(assetID: $0.assetID, point: original[$0.assetID] ?? nil, requireNoLocation: false)
+            }
+            let result = await PlaceWriter.apply(changes) { done, total in
+                await MainActor.run { self.applyProgress = (done, total) }
+            }
+            let undone = Set(entries.map(\.assetID)).subtracting(result.failures.keys)
+            var journal = self.journal
+            for i in journal.indices { journal[i].entries.removeAll { undone.contains($0.assetID) } }
+            journal.removeAll { $0.entries.isEmpty && $0.failures.isEmpty }
+            self.journal = journal
+            var scan = self.scan
+            for e in entries where undone.contains(e.assetID) && (original[e.assetID] ?? nil) == nil {
+                scan.missing[e.assetID] = .some(e.taken ?? (scan.missing[e.assetID] ?? nil))
+            }
+            scan.located.remove(undone)
+            self.scan = scan
+            self.store.save(scan, to: "placesScan")
+            var copy = self.decisions
+            for id in undone { copy[id]?.selected = false }
+            self.decisions = copy
+            self.isApplying = false
+            self.applyProgress = nil
+            self.refreshOrder()
+            self.recompute()
+            self.app?.banner = "Took back the location of \(undone.count.formatted()) photos in Photos."
+                + (result.failures.isEmpty ? "" : " \(result.failures.count) couldn’t be changed.")
+        }
+    }
+
     // MARK: Apply & undo
 
     func applyChecked() {
@@ -331,9 +457,10 @@ final class PlacesState {
         isApplying = true
         applyProgress = (0, changes.count)
         Task {
-            let batch = await PlaceWriter.apply(changes) { done, total in
+            var batch = await PlaceWriter.apply(changes) { done, total in
                 await MainActor.run { self.applyProgress = (done, total) }
             }
+            for i in batch.entries.indices { batch.entries[i].taken = self.date(batch.entries[i].assetID) }
             if !batch.entries.isEmpty { self.journal.insert(batch, at: 0) }
             var copy = self.decisions
             for entry in batch.entries { copy[entry.assetID]?.selected = false }

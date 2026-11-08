@@ -7,11 +7,14 @@ import KeeperUI
 
 /// A row of Keeper's Dates section.
 public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
-    case review, events, people, cameras, places, history
+    case review, events, people, cameras, places, history, albumSuggestions, albumAdditions, albumDuplicates
 
     public var id: String { rawValue }
     var item: SidebarItem { SidebarItem(rawValue: rawValue)! }
     public var title: String { item.title }
+    /// The rows of the Albums section; the rest are Places and the Dates section.
+    public static let albumItems: [DatesItem] = [.albumSuggestions, .albumAdditions, .albumDuplicates]
+    public var isAlbumItem: Bool { Self.albumItems.contains(self) }
     public var systemImage: String { item.icon }
 }
 
@@ -75,6 +78,9 @@ public final class DatesModel {
         case .places: state.places.confidentCount
         case .events: state.eventSuggestions.count
         case .people: state.people.count
+        case .albumSuggestions: state.albumTools.shownSuggestions.count
+        case .albumAdditions: state.albumTools.additions.count
+        case .albumDuplicates: state.albumTools.duplicates.count
         case .history, .cameras: 0
         }
     }
@@ -175,6 +181,9 @@ public struct DatesScreen: View {
         case .events: EventsView()
         case .people: PeopleView()
         case .cameras: CamerasView()
+        case .albumSuggestions: AlbumSuggestionsView()
+        case .albumAdditions: AlbumAdditionsView()
+        case .albumDuplicates: AlbumDuplicatesView()
         }
     }
 }

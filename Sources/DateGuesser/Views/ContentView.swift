@@ -4,7 +4,7 @@ import KeeperUI
 import DateGuessCore
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case review, places, history, events, people, cameras
+    case review, places, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
 
     var id: String { rawValue }
 
@@ -16,6 +16,9 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .events: return "Events"
         case .people: return "People"
         case .cameras: return "Cameras"
+        case .albumSuggestions: return "Suggested Albums"
+        case .albumAdditions: return "Missing from Albums"
+        case .albumDuplicates: return "Album Duplicates"
         }
     }
 
@@ -27,6 +30,9 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .events: return "square.stack"
         case .people: return "person.2"
         case .cameras: return "camera"
+        case .albumSuggestions: return "rectangle.stack.badge.plus"
+        case .albumAdditions: return "plus.rectangle.on.rectangle"
+        case .albumDuplicates: return "square.on.square"
         }
     }
 
@@ -110,6 +116,9 @@ struct ContentView: View {
         case .places: return state.places.confidentCount
         case .events: return state.eventSuggestions.count
         case .people: return state.people.count
+        case .albumSuggestions: return state.albumTools.shownSuggestions.count
+        case .albumAdditions: return state.albumTools.additions.count
+        case .albumDuplicates: return state.albumTools.duplicates.count
         case .history, .cameras: return 0
         }
     }
@@ -126,6 +135,9 @@ struct ContentView: View {
             case .events: EventsView()
             case .people: PeopleView()
             case .cameras: CamerasView()
+            case .albumSuggestions: AlbumSuggestionsView()
+            case .albumAdditions: AlbumAdditionsView()
+            case .albumDuplicates: AlbumDuplicatesView()
             }
         }
         .navigationTitle(item.title)

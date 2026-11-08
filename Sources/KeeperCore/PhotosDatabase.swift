@@ -641,6 +641,26 @@ extension PhotosDatabase {
         return out
     }
 
+    /// When each photo was added to the library (seconds since 2001), by UUID. Empty if this
+    /// library's database doesn't record it.
+    public static func readAddedDates(inLibrary library: URL) throws -> [String: Double] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Keeper can't read this library's database.")
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains) else { return [:] }
+        let a = Set(try db.rows("PRAGMA table_info(\(q(assetTable)))").compactMap { $0[1] })
+        guard a.isSuperset(of: ["ZUUID", "ZADDEDDATE"]) else { return [:] }
+        var out: [String: Double] = [:]
+        try db.forEachRow("SELECT ZUUID, ZADDEDDATE FROM \(q(assetTable)) WHERE ZADDEDDATE IS NOT NULL") { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            out[uuid] = sqlite3_column_double(stmt, 1)
+        }
+        return out
+    }
+
     /// Keeper's own album of rejected photos, which doesn't count as "added to an album".
     public static let rejectAlbumTitle = "Keeper – Rejected"
     /// What the album was called before the app was renamed (renamed on first launch).

@@ -1,7 +1,9 @@
 import AppKit
+import CoreLocation
 import Photos
 import ImageIO
 import DateGuessCore
+import KeeperCore
 
 struct AlbumInfo: Identifiable, Hashable {
     var id: String
@@ -100,6 +102,32 @@ final class PhotoLibraryService: @unchecked Sendable {
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
+    /// Every album of your own: its photos, and the ones with a date and a location.
+    func userAlbumDetails() -> [(id: String, title: String, ids: Set<String>, located: [AlbumSuggestions.Photo])] {
+        userAlbumCollections().map { c in
+            var ids = Set<String>()
+            var located: [AlbumSuggestions.Photo] = []
+            PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { asset, _, _ in
+                ids.insert(asset.localIdentifier)
+                if let date = asset.creationDate, let l = asset.location, CLLocationCoordinate2DIsValid(l.coordinate),
+                   l.coordinate.latitude != 0 || l.coordinate.longitude != 0 {
+                    located.append(.init(id: asset.localIdentifier, time: date,
+                                         point: GeoPoint(lat: l.coordinate.latitude, lon: l.coordinate.longitude)))
+                }
+            }
+            return (c.localIdentifier, c.localizedTitle ?? "Untitled album", ids, located)
+        }
+    }
+
+    /// Every album of your own with the photos in it.
+    func userAlbumMembers() -> [(title: String, ids: Set<String>)] {
+        userAlbumCollections().map { c in
+            var ids = Set<String>()
+            PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { asset, _, _ in ids.insert(asset.localIdentifier) }
+            return (c.localizedTitle ?? "Untitled album", ids)
+        }
+    }
+
     /// Asset IDs in the given albums.
     func assetIDs(inAlbums albumIDs: [String]) -> Set<String> {
         guard !albumIDs.isEmpty else { return [] }
@@ -193,16 +221,28 @@ final class PhotoLibraryService: @unchecked Sendable {
         options.isNetworkAccessAllowed = true
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         let size = CGSize(width: side * scale, height: side * scale)
-        return imageManager.requestImage(for: asset, targetSize: size, contentMode: .aspectFill, options: options) { image, _ in
+        // On screen: background analysis waits until it's loaded (ScreenImages).
+        ScreenImages.shared.begin()
+        let pending = PendingThumbnail()
+        let id = imageManager.requestImage(for: asset, targetSize: size, contentMode: .aspectFill, options: options) { image, info in
             handler(image)
+            if (info?[PHImageResultIsDegradedKey] as? Bool) != true { pending.finish() }
         }
+        pending.id = id
+        pendingThumbnails.add(pending)
+        return id
     }
 
-    func cancel(_ id: PHImageRequestID) { imageManager.cancelImageRequest(id) }
+    func cancel(_ id: PHImageRequestID) {
+        imageManager.cancelImageRequest(id)
+        pendingThumbnails.finish(id)
+    }
 
     /// A good-quality rendering for analysis (current edited version, oriented correctly).
     /// - Parameter allowNetwork: false uses only what's on this Mac (nil if the photo is only in iCloud).
     func analysisImage(for asset: PHAsset, maxEdge: Int, allowNetwork: Bool = true) async -> CGImage? {
+        // Background work: let the photos on screen load first, or they stay blurry behind it.
+        await ScreenImages.shared.waitUntilQuiet()
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.resizeMode = .exact
@@ -220,6 +260,37 @@ final class PhotoLibraryService: @unchecked Sendable {
         }
     }
 }
+
+/// An on-screen thumbnail still loading: ends its ScreenImages count once, when the sharp image
+/// arrives or it's cancelled.
+final class PendingThumbnail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    var id: PHImageRequestID = PHInvalidImageRequestID
+
+    func finish() {
+        lock.lock()
+        let first = !done
+        done = true
+        lock.unlock()
+        if first { ScreenImages.shared.end(); pendingThumbnails.remove(self) }
+    }
+}
+
+/// Thumbnails still loading, by request, so cancelling one ends its count.
+final class PendingThumbnails: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byID: [PHImageRequestID: PendingThumbnail] = [:]
+
+    func add(_ p: PendingThumbnail) { lock.lock(); byID[p.id] = p; lock.unlock() }
+    func remove(_ p: PendingThumbnail) { lock.lock(); if byID[p.id] === p { byID[p.id] = nil }; lock.unlock() }
+    func finish(_ id: PHImageRequestID) {
+        lock.lock(); let p = byID[id]; lock.unlock()
+        p?.finish()
+    }
+}
+
+let pendingThumbnails = PendingThumbnails()
 
 /// Thread-safe "only once" guard for continuations.
 final class OnceFlag: @unchecked Sendable {

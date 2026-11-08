@@ -26,6 +26,14 @@ struct LocatedPhotos: Codable {
     }
 
     func point(_ i: Int) -> GeoPoint { GeoPoint(lat: lats[i], lon: lons[i]) }
+
+    /// Drops these photos (their location was taken back).
+    mutating func remove(_ drop: Set<String>) {
+        guard ids.contains(where: drop.contains) else { return }
+        var kept = LocatedPhotos()
+        for i in ids.indices where !drop.contains(ids[i]) { kept.append(ids[i], times[i], point(i)) }
+        self = kept
+    }
 }
 
 /// A named place: one the user picked from Apple Maps, or a dropped pin.
@@ -45,6 +53,8 @@ struct PlaceJournalEntry: Codable, Hashable {
     var previous: GeoPoint?
     var new: GeoPoint
     var name: String?
+    /// When the photo was taken, so its outing can still be shown once it has a location.
+    var taken: Date?
 }
 
 /// One "Apply" of places, kept so it can be undone.
