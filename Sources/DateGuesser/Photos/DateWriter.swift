@@ -30,6 +30,8 @@ enum DateWriter {
         }
     }
 
+    static let notInLibrary = "Photo no longer in the library"
+
     static let chunkSize = 100
 
     static func apply(_ changes: [Change], progress: @escaping @Sendable (Int, Int) async -> Void) async -> ApplyBatch {
@@ -42,7 +44,7 @@ enum DateWriter {
             var pending: [(AssetRef, Change, Date?)] = []
             for change in chunk {
                 guard let asset = assets[change.assetID] else {
-                    batch.failures[change.assetID] = "Photo no longer in the library"
+                    batch.failures[change.assetID] = notInLibrary
                     continue
                 }
                 if change.requireUnchanged,

@@ -993,14 +993,25 @@ final class AppState {
         if !batch.entries.isEmpty { journal.insert(batch, at: 0) }
         var copy = decisions
         for entry in batch.entries { copy[entry.assetID]?.selected = false }
+        // Skipped or failed photos aren't left checked: Apply would only skip them again.
+        for id in batch.failures.keys { copy[id]?.selected = false }
         decisions = copy
+        // Photos whose date was changed in Photos since the last scan: what Keeper knows about them is
+        // out of date, so they come off the list. Look Again lists them again if they still need a date.
+        let changed = batch.failures.filter { $0.value == DateWriter.changedElsewhere || $0.value == DateWriter.notInLibrary }.keys
+        if !changed.isEmpty {
+            var scan = self.scan
+            for id in changed { scan.undated.removeValue(forKey: id) }
+            self.scan = scan
+            store.save(scan, to: "scan")
+        }
         isApplying = false
         applyProgress = nil
         refreshUndatedList()
         let skipped = batch.failures.values.filter { $0 == DateWriter.changedElsewhere }.count
         let failed = batch.failures.count - skipped
         banner = "\(verb) \(batch.entries.count.formatted()) photos in your Photos library."
-            + (skipped == 0 ? "" : " Skipped \(skipped) whose date was changed in Photos since the last scan.")
+            + (skipped == 0 ? "" : " Skipped \(skipped) whose date was changed in Photos since the last scan; they're off the list until you look for undated photos again.")
             + (failed == 0 ? "" : " \(failed) couldn't be changed.")
     }
 

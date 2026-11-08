@@ -10,18 +10,28 @@ final class PlacesState {
     @ObservationIgnored private let store = JSONStore.shared
 
     var scan: PlacesScan
-    var decisions: [String: PlaceDecision] { didSet { scheduleDecisionSave() } }
+    var decisions: [String: PlaceDecision] { didSet { scheduleDecisionSave(); countLikely() } }
     /// ⌘Z for the decisions above.
     @ObservationIgnored var decisionHistory = DecisionHistory<PlaceDecision>()
     var journal: [PlaceBatch] { didSet { store.save(journal, to: "placesJournal") } }
     /// Guesses for photos still without a location.
-    var guesses: [String: PlaceGuessResult] = [:] {
-        didSet { confidentCount = guesses.values.reduce(0) { $0 + ($1.level == .high ? 1 : 0) } }
-    }
-    /// How many guesses are confident: the sidebar count, kept here so redrawing it is free.
+    var guesses: [String: PlaceGuessResult] = [:] { didSet { countLikely() } }
+    /// The sidebar count: the photos Likely shows (not hidden, and given a place or guessed
+    /// confidently), kept here so redrawing the sidebar is free.
     private(set) var confidentCount = 0
     /// Photos still without a location, oldest first (the order Photos shows them).
-    var order: [String] = []
+    var order: [String] = [] { didSet { countLikely() } }
+
+    /// The same test as Places' Likely filter, so the sidebar and the window agree.
+    func isLikely(_ id: String) -> Bool {
+        let d = decision(id)
+        return !d.ignored && (d.override != nil || guesses[id]?.level == .high)
+    }
+
+    private func countLikely() {
+        let n = order.reduce(0) { $0 + (isLikely($1) ? 1 : 0) }
+        if n != confidentCount { confidentCount = n }
+    }
     /// Photos with a real date grouped by camera and time, biggest first.
     var outings: [[String]] = []
     /// What was learned about each camera.

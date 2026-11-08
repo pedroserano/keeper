@@ -18,6 +18,13 @@ struct AssetImage: View {
     @State private var image: NSImage?
     @State private var missingInCloud = false
 
+    /// Pixels to ask Photos for, rounded up to a step of 256: a slightly bigger or smaller cell (the
+    /// size slider) shows the image it already has instead of loading every photo again.
+    private var target: CGSize {
+        func up(_ v: CGFloat) -> CGFloat { (v * backingScale / 256).rounded(.up) * 256 }
+        return CGSize(width: up(pointSize.width), height: up(pointSize.height))
+    }
+
     var body: some View {
         ZStack {
             if let image {
@@ -30,8 +37,8 @@ struct AssetImage: View {
         }
         // The modification date too, so an edit (a rotation) loads the new image.
         .task(id: "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)|"
-                  + "\(Int(pointSize.width))x\(Int(pointSize.height))") {
-            let target = CGSize(width: pointSize.width * backingScale, height: pointSize.height * backingScale)
+                  + "\(Int(target.width))x\(Int(target.height))") {
+            let target = target
             // Seen sharp a moment ago (cells are by position, so accepting or hiding a photo moves every
             // later photo into another cell): show it straight away, not a blurry preview while Photos
             // is busy, for instance writing rotations.
@@ -168,7 +175,11 @@ struct GridView: View {
                     session.gridColumns = columns
                     proxy.scrollTo(session.cursor, anchor: .center)
                 }
-                .onChange(of: columns) { session.gridColumns = columns }
+                .onChange(of: columns) {
+                    session.gridColumns = columns
+                    // Bigger or smaller thumbnails: stay on the current photo.
+                    proxy.scrollTo(session.cursor, anchor: .center)
+                }
                 // Groups: centre the photo, so its group's header is in view and not under the pinned ones.
                 // Only when the cursor moves to another photo: rotating or dismissing one earlier in the
                 // list shifts the cursor's index without moving it, and mustn't scroll you away.

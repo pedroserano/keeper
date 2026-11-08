@@ -444,13 +444,22 @@ public struct ThumbnailSizeSlider: View {
     public static let storageKey = "gridThumbnailScale"
     public static let range: ClosedRange<Double> = 0.5...2.5
     @AppStorage(ThumbnailSizeSlider.storageKey) private var scale = 1.0
+    /// Where the knob is while you drag. The grids change once you let go: resizing a grid of
+    /// thousands of photos on every step of a drag stalled the app.
+    @State private var dragging: Double?
 
     public init() {}
 
     public var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "photo").imageScale(.small).foregroundStyle(.secondary)
-            Slider(value: $scale, in: Self.range)
+            Slider(value: Binding(get: { dragging ?? scale }, set: { dragging = $0 }),
+                   in: Self.range, step: 0.25) { editing in
+                if !editing, let value = dragging {
+                    dragging = nil
+                    if value != scale { scale = value }
+                }
+            }
                 .frame(width: 110)
             Image(systemName: "photo").imageScale(.large).foregroundStyle(.secondary)
         }

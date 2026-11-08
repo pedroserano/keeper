@@ -40,7 +40,7 @@ struct PlacesView: View {
         var ids = places.order.filter { id in
             let d = places.decision(id)
             switch filter {
-            case .likely: return !d.ignored && (d.override != nil || places.guesses[id]?.level == .high)
+            case .likely: return places.isLikely(id)
             case .possible: return !d.ignored && d.override == nil && places.guesses[id]?.level == .medium
             case .unguessed: return !d.ignored && places.guesses[id] == nil && d.override == nil
             case .checked: return !d.ignored && d.selected
