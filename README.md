@@ -219,7 +219,7 @@ same way:
   rewritten.
 - **Events**, **People** and **Cameras**: what you know. Group photos from one event or era, add birth
   years (or read birthdays from Contacts), and the years you used each camera.
-- **Places**: guesses where photos without a location were taken.
+- **Places**, in its own section just above Dates: guesses where photos without a location were taken.
 - **History**: every batch of dates you applied, each with Undo.
 
 Clues include filenames and album names, file formats and camera models, colour and print borders, scenes

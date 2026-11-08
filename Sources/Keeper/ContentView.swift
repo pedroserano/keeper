@@ -314,10 +314,16 @@ struct Sidebar: View {
                 }
             }
             Section {
-                ForEach(DatesItem.allCases) { item in
-                    Label(item.title, systemImage: item.systemImage)
-                        .badge(session.datesModel.map { $0.badge(for: item) }.flatMap { $0 > 0 ? Text($0.formatted()) : nil })
-                        .tag(SidebarPick.dates(item))
+                datesRow(.places)
+            } header: {
+                Text("Places")
+            } footer: {
+                Text("Find photos without a location and suggest where they were taken.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                ForEach(DatesItem.allCases.filter { $0 != .places }) { item in
+                    datesRow(item)
                 }
             } header: {
                 Text("Dates")
@@ -409,6 +415,13 @@ struct Sidebar: View {
             return "Stars from Photos' curation score, which already agrees with your \(e.rated) ratings "
                 + "as well as a fitted model (\(pct(e.curation)) vs \(pct(e.model)))."
         }
+    }
+
+    /// A Dates-model screen (Places, or one of the Dates rows), with its count once it's loaded.
+    private func datesRow(_ item: DatesItem) -> some View {
+        Label(item.title, systemImage: item.systemImage)
+            .badge(session.datesModel.map { $0.badge(for: item) }.flatMap { $0 > 0 ? Text($0.formatted()) : nil })
+            .tag(SidebarPick.dates(item))
     }
 
     private func row(_ source: Source) -> some View {
