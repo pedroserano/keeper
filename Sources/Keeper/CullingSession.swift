@@ -18,6 +18,23 @@ import DateGuesser
 
 let log = Logger(subsystem: "local.keeper", category: "session")
 
+/// Logs how long each stage of a background job took ("similarity: read prints 0.84 s"), to see
+/// where launch time goes. Counts and times only: no names or paths.
+struct StageClock {
+    let job: String
+    private var last = ContinuousClock.now
+
+    init(_ job: String) { self.job = job }
+
+    mutating func lap(_ stage: String) {
+        let now = ContinuousClock.now
+        let c = (now - last).components
+        let text = "timing: \(job) \(stage) \(String(format: "%.2f", Double(c.seconds) + Double(c.attoseconds) / 1e18)) s"
+        log.notice("\(text, privacy: .public)")
+        last = now
+    }
+}
+
 /// The photos being culled, in order. Indexes into a PhotoKit fetch result instead of holding
 /// the photos, so a 100,000-photo library costs almost nothing until photos are on screen.
 struct AssetList: @unchecked Sendable {
@@ -235,7 +252,7 @@ final class CullingSession: ObservableObject {
         }
         if let saved = try? store.setting("aggressiveness"), let value = Double(saved) { aggressiveness = value }
         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { accessGap = .limitedPhotos }
-        log.notice("open: loaded \(self.decisions.count) decisions in \(started.duration(to: .now))")
+        log.notice("open: loaded \(self.decisions.count) decisions in \(started.duration(to: .now), privacy: .public)")
         library.onChange = { [weak self] change in self?.libraryChanged(change) }
         reload(restoreFrom: (try? store.setting("cursor.\(source.key)")) ?? nil)
         refreshCounts()
@@ -266,17 +283,21 @@ final class CullingSession: ObservableObject {
                     keepGoing: { session.value != nil })
             }.value
             guard let self, let result else { return }
+            var clock = StageClock("similarity")
             SimilarityIndexer.saveReport(result, libraryName: libraryName)
-            log.notice("similarity: \(result.groups.count) groups in \(started.duration(to: .now))")
+            log.notice("similarity: \(result.groups.count) groups in \(started.duration(to: .now), privacy: .public)")
             self.groups = result.groups
             self.groupLocalIDs = result.localIDs
             self.carryOverDuplicateChoices(previous: result.previousDuplicates)
             self.similarity = .ready(groups: result.groups.count)
             self.inputsVersion += 1
+            clock.lap("carry over")
             await self.rebuildRecommender()
+            clock.lap("rebuild suggestions")
             if self.source.isSuggestion { self.reload() }
             self.refreshCounts()
-            self.findSideways()
+            clock.lap("reload and count")
+            self.findSideways(photos: result.library)
         }
     }
 
@@ -285,21 +306,22 @@ final class CullingSession: ObservableObject {
     /// Checks every photo's orientation in the background, after the look-alikes scan so the two
     /// don't compete for Vision. The first run on a big library takes hours (it survives quitting);
     /// later ones only check new and changed photos.
-    func findSideways() {
-        let library = library, store = store
+    /// `photos`: every photo, newest first, from the look-alikes scan.
+    func findSideways(photos: [OrientationScanner.Photo]? = nil) {
+        let library = library, store = store, libraryURL = libraryURL
         let session = WeakSession(self)
         loadSideways()
         Task { [weak self] in
             let started = ContinuousClock.now
             let result = await Task.detached(priority: .utility) {
-                await OrientationScanner.run(library: library, store: store,
+                await OrientationScanner.run(library: library, libraryURL: libraryURL, store: store, photos: photos,
                     progress: { done, total in
                         await MainActor.run { session.value?.updateOrientationProgress(done: done, total: total) }
                     },
                     keepGoing: { session.value != nil })
             }.value
             guard let self, let result else { return }
-            log.notice("orientation: done in \(started.duration(to: .now))")
+            log.notice("orientation: done in \(started.duration(to: .now), privacy: .public)")
             self.orientationNetwork = result.networkLoaded
             self.orientationScan = .ready(checked: result.checked)
             self.loadSideways()
@@ -757,14 +779,29 @@ final class CullingSession: ObservableObject {
             let result = await Task.detached(priority: .utility) { () -> Result<Recommender, Error> in
                 do {
                     // Three independent read-only queries, each on its own connection: run together.
-                    async let filesRead = Task.detached(priority: .utility) { (try? PhotosDatabase.readFileInfo(inLibrary: url)) ?? [:] }.value
-                    async let facesRead = Task.detached(priority: .utility) { (try? PhotosDatabase.readFaceInfo(inLibrary: url)) ?? [:] }.value
+                    async let filesRead = Task.detached(priority: .utility) {
+                        var clock = StageClock("suggestions")
+                        defer { clock.lap("read file info") }
+                        return (try? PhotosDatabase.readFileInfo(inLibrary: url)) ?? [:]
+                    }.value
+                    async let facesRead = Task.detached(priority: .utility) {
+                        var clock = StageClock("suggestions")
+                        defer { clock.lap("read faces") }
+                        return (try? PhotosDatabase.readFaceInfo(inLibrary: url)) ?? [:]
+                    }.value
+                    var clock = StageClock("suggestions")
                     let scores = try PhotosDatabase.readAppleScores(inLibrary: url)
+                    clock.lap("read Apple scores")
+                    let screenshots = library.uuids(in: .screenshots)
+                    clock.lap("list screenshots")
                     let files = await filesRead
                     let faces = await facesRead
-                    return .success(Recommender(scores: scores, screenshots: library.uuids(in: .screenshots),
-                                                groups: groups, files: files, faces: faces,
-                                                aggressiveness: aggressiveness, keeperRules: keeping))
+                    clock.lap("wait for the other reads")
+                    let r = Recommender(scores: scores, screenshots: screenshots,
+                                        groups: groups, files: files, faces: faces,
+                                        aggressiveness: aggressiveness, keeperRules: keeping)
+                    clock.lap("build")
+                    return .success(r)
                 } catch {
                     return .failure(error)
                 }
@@ -772,7 +809,7 @@ final class CullingSession: ObservableObject {
             guard let self else { return }
             switch result {
             case .success(let r):
-                log.notice("open: read \(r.scores.count) photos' Apple scores and \(r.faces.count) photos' faces in \(started.duration(to: .now))")
+                log.notice("open: read \(r.scores.count) photos' Apple scores and \(r.faces.count) photos' faces in \(started.duration(to: .now), privacy: .public)")
                 self.recommender = r
                 // Groups or the slider changed while the scores were loading: build with those.
                 if self.inputsVersion != version { await self.rebuildRecommender() }
@@ -782,7 +819,7 @@ final class CullingSession: ObservableObject {
                 self.refreshCounts()
                 if r.hasScores {
                     self.saveCalibration(self.recommender ?? r)
-                    self.learnFromRatings()
+                    self.learnFromRatings(usingLaunchRead: true)
                 }
             case .failure(let error):
                 self.suggestionsStatus = .unavailable(error.localizedDescription)
@@ -818,32 +855,43 @@ final class CullingSession: ObservableObject {
     /// Reads the ratings you've given in Photos, checks how well a model of them predicts ratings it
     /// wasn't fitted to, and switches the stars to that model if it beats curation. Background work;
     /// a few seconds for a big library.
-    func learnFromRatings() {
+    /// `usingLaunchRead`: at launch, take the stars from Photos' database, read moments ago with the
+    /// suggestions (the same ratings PhotoKit gives for every analysed photo, without visiting all
+    /// 200,000 again). After you've rated photos, they're read fresh from PhotoKit.
+    func learnFromRatings(usingLaunchRead: Bool = false) {
         guard let base = recommender, base.hasScores, learning != .learning else { return }
         learning = .learning
         let library = library, libraryName = libraryName, existingSample = calibrationSample
         Task { [weak self] in
             let started = ContinuousClock.now
             let (evaluation, model, sample) = await Task.detached(priority: .utility) {
-                let ratings = library.photoRatings()
+                var clock = StageClock("learning")
+                let ratings = usingLaunchRead ? base.files.compactMapValues { $0.rating > 0 ? $0.rating : nil }
+                                              : library.photoRatings()
+                clock.lap("read ratings")
                 let rated = ratings.compactMap { uuid, rating -> RatedPhoto? in
                     guard let s = base.scores[uuid], s.isAnalysed else { return nil }
                     return RatedPhoto(uuid: uuid, scores: s, rating: rating)
                 }
                 let evaluation = RatingEvaluation.evaluate(rated)
+                clock.lap("evaluate")
                 let model = evaluation.modelWins ? RatingModel.fit(rated) : nil
+                clock.lap("fit")
                 // The sample only needs the stars, not the look-alike groups.
                 let sample = existingSample.isEmpty
                     ? base.with(model: .some(model), groups: []).calibrationSample(excluding: Set(ratings.keys))
                     : existingSample
+                clock.lap("sample")
                 Self.saveLearningReport(evaluation, model: model, libraryName: libraryName)
                 return (evaluation, model, sample)
             }.value
             guard let self else { return }
-            log.notice("learning: \(evaluation.rated) ratings, model \(evaluation.model), curation \(evaluation.curation) in \(started.duration(to: .now))")
+            log.notice("learning: \(evaluation.rated) ratings, model \(evaluation.model), curation \(evaluation.curation) in \(started.duration(to: .now), privacy: .public)")
             self.fittedModel = model
             self.inputsVersion += 1
+            var clock = StageClock("learning")
             await self.rebuildRecommender()
+            clock.lap("rebuild suggestions")
             self.learning = model != nil ? .fitted(evaluation) : .usingCuration(evaluation)
             if self.calibrationSample != sample {
                 self.calibrationSample = sample
@@ -1052,7 +1100,7 @@ final class CullingSession: ObservableObject {
         let result = source == .sideways
             ? library.assets(fetching: Array(sideways.keys))
             : library.fetch(source, newestFirst: newestFirst, range: dateRange)
-        log.notice("open: fetched \(result.count) photos for \(self.source.title) in \(started.duration(to: .now))")
+        log.notice("open: fetched \(result.count) photos for \(self.source.title) in \(started.duration(to: .now), privacy: .public)")
         var keepOrder: [String: Int] = [:]
         if quietly, source == .sideways {
             for i in list.indices { keepOrder[list.asset(at: i).localIdentifier] = i }
@@ -1165,7 +1213,7 @@ final class CullingSession: ObservableObject {
                 return (out.map(\.position), false, sections, groupIndices)
             }.value
             guard let self, !Task.isCancelled else { return }
-            log.notice("open: filtered \(result.count) photos to \(positions.count) in \(started.duration(to: .now))")
+            log.notice("open: filtered \(result.count) photos to \(positions.count) in \(started.duration(to: .now), privacy: .public)")
             self.loading = false
             var newList = AssetList(result: result, positions: positions)
             newList.ascending = ordered
@@ -1244,7 +1292,7 @@ final class CullingSession: ObservableObject {
                 return out
             }.value
             guard let self, !Task.isCancelled else { return }
-            log.notice("open: counted \(out.count) sources in \(started.duration(to: .now))")
+            log.notice("open: counted \(out.count) sources in \(started.duration(to: .now), privacy: .public)")
             self.counts = out
         }
     }

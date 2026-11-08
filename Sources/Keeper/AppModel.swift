@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
         if !skipSystemCheck {
             let started = ContinuousClock.now
             let isSystem = await isSystemLibrary(url)
-            log.notice("open: system-library check took \(started.duration(to: .now))")
+            log.notice("open: system-library check took \(started.duration(to: .now), privacy: .public)")
             switch isSystem {
             case .success(true): break
             case .success(false):

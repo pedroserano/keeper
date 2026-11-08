@@ -93,6 +93,7 @@ public enum EventClusters {
         let minDot = 1 - options.anywhere * options.anywhere / 2 - 0.02
         let chunk = 256
         for start in stride(from: 0, to: ids.count, by: chunk) {
+            if Task.isCancelled { return [] } // a newer run replaced this one
             let rows = min(chunk, ids.count - start)
             var dots = [Float](repeating: 0, count: rows * ids.count)
             EventLinks.multiplyTransposed(Array(flat[(start * dim)..<((start + rows) * dim)]), rows, flat, ids.count, dim, into: &dots)
@@ -132,7 +133,8 @@ public enum EventClusters {
             while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
             return x
         }
-        for e in edges {
+        for (n, e) in edges.enumerated() {
+            if n % 1024 == 0, Task.isCancelled { return [] }
             let a = root(e.a), b = root(e.b)
             guard a != b, members[a].count + members[b].count <= options.maxSize else { continue }
             let combined = groupLimits[a].intersection(groupLimits[b])

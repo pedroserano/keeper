@@ -3,7 +3,8 @@
 //
 // Every photo is checked once, newest first, from a small local preview (nothing is downloaded);
 // results are saved every 250 photos, so quitting loses only a few seconds of work and the next run
-// carries on. Photos that change later (an edit, a rotation) are checked again, and so is everything
+// carries on. Photos edited later (a rotation, a crop, reverting) are checked again, but not ones
+// whose rating, favourite or albums changed (OrientationRecord.editKey), and so is everything
 // when the check itself improves (OrientationRecord.currentEngine). Pauses while the Mac is running hot.
 //
 // Photos taken within a minute of another also compare themselves, turned each way, with that
@@ -14,6 +15,8 @@ import Foundation
 import os
 import Photos
 import KeeperKit
+import KeeperCore
+import KeeperCore
 import KeeperOrientation
 import AppKit
 
@@ -28,19 +31,57 @@ enum OrientationScanner {
     }
 
     /// `progress(done, total)` is called after each batch; return false from `keepGoing` to stop.
-    static func run(library: PhotoLibrary, store: DecisionStore,
+    /// What the walk needs of each photo. Read in the same pass the look-alikes scan already makes
+    /// over the library, so this scan doesn't visit 200,000 photos again just to skip them.
+    struct Photo: Sendable {
+        let id: String
+        let taken: Date?
+        let modDate: Double
+        let isScreenshot: Bool
+
+        init(_ asset: PHAsset) {
+            id = asset.localIdentifier
+            taken = asset.creationDate
+            modDate = OrientationScanner.modDate(asset)
+            isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
+        }
+    }
+
+    /// `photos`: every photo, newest first, as the look-alikes scan found them; nil reads them here.
+    static func run(library: PhotoLibrary, libraryURL: URL, store: DecisionStore, photos given: [Photo]? = nil,
                     progress: @escaping @Sendable (Int, Int) async -> Void,
                     keepGoing: @escaping @Sendable () async -> Bool) async -> Result? {
-        // Loading may compile the network the first time.
-        let network = OrientationNetDetector.builtIn
-        if network == nil { log.notice("orientation: the orientation network didn't load; using faces, people and text") }
-        let analyzer = OrientationAnalyzer(network: network)
-        // Feature prints only for photos with a neighbour: they cost about as much as the network.
-        let printingAnalyzer = OrientationAnalyzer(network: network, collectsPrints: true)
+        // Loaded when the first photo needs checking: loading takes seconds (and compiles the
+        // network the first time), and most launches find nothing new.
+        var analyzers: (plain: OrientationAnalyzer, printing: OrientationAnalyzer, network: Bool)?
+        func loadAnalyzers() -> (plain: OrientationAnalyzer, printing: OrientationAnalyzer, network: Bool) {
+            if let analyzers { return analyzers }
+            let network = OrientationNetDetector.builtIn
+            if network == nil { log.notice("orientation: the orientation network didn't load; using faces, people and text") }
+            // Feature prints only for photos with a neighbour: they cost about as much as the network.
+            let loaded = (OrientationAnalyzer(network: network), OrientationAnalyzer(network: network, collectsPrints: true),
+                          network != nil)
+            analyzers = loaded
+            return loaded
+        }
 
-        let fetch = library.fetch(.allPhotos, newestFirst: true)
+        var clock = StageClock("orientation")
+        let photos: [Photo]
+        if let given { photos = given } else {
+            var read: [Photo] = []
+            library.fetch(.allPhotos, newestFirst: true).enumerateObjects { a, _, _ in read.append(Photo(a)) }
+            photos = read
+        }
         let scanned = (try? store.orientationScanned()) ?? [:]
-        let total = fetch.count
+        // A new rating or favourite moves a photo's modification date too; the edit key says
+        // whether the picture itself changed.
+        let editKeys = (try? PhotosDatabase.readEditKeys(inLibrary: libraryURL)) ?? [:]
+        let savedKeys = (try? store.orientationEditKeys()) ?? [:]
+        var newKeys: [String: String] = [:]
+        func editKey(_ id: String) -> String? { editKeys[String(id.prefix { $0 != "/" })] }
+        clock.lap("load network and records")
+        var walking = Duration.zero, checking = Duration.zero, saving = Duration.zero
+        let total = photos.count
         var index = 0
         var analysed = 0
         var recent: [Check] = [] // the end of the last batch, as neighbours for the start of the next
@@ -58,21 +99,38 @@ enum OrientationScanner {
             }
             // The next 250 photos that need checking (skipping costs almost nothing), and whether each
             // was taken close to the photo before or after it.
-            var todo: [(asset: PHAsset, hasNeighbour: Bool)] = []
-            while index < total, todo.count < 250 {
-                let asset = fetch.object(at: index)
-                if needsCheck(asset, scanned: scanned) {
-                    todo.append((asset, hasNeighbour(fetch, index)))
+            var wanted: [(id: String, hasNeighbour: Bool, editKey: String?)] = []
+            var started = ContinuousClock.now
+            while index < total, wanted.count < 250 {
+                let photo = photos[index]
+                let id = photo.id, key = editKey(id)
+                if photo.isScreenshot {
+                    // Never checked.
+                } else if !OrientationRecord.isCurrent(checkedModDate: scanned[id], modDate: photo.modDate,
+                                                       savedKey: savedKeys[id], currentKey: key) {
+                    wanted.append((id, hasNeighbour(photos, index), key))
+                } else if savedKeys[id] == nil, let key, let date = scanned[id], abs(date - photo.modDate) < 1 {
+                    newKeys[id] = key // checked before keys were kept, and unchanged since
                 }
                 index += 1
             }
+            // Only the photos to check are fetched, in the same order; ones Photos won't let us edit are left out.
+            let fetched = Dictionary(library.assets(withIDs: wanted.map(\.id)).map { ($0.localIdentifier, $0) },
+                                     uniquingKeysWith: { a, _ in a })
+            let todo = wanted.compactMap { w -> (asset: PHAsset, hasNeighbour: Bool, editKey: String?)? in
+                guard let asset = fetched[w.id], asset.canPerform(.content) else { return nil }
+                return (asset, w.hasNeighbour, w.editKey)
+            }
+            walking += started.duration(to: .now); started = .now
             var checks: [Check] = []
+            let loaded = todo.isEmpty ? nil : loadAnalyzers()
+            let analyzer = loaded?.plain, printingAnalyzer = loaded?.printing
             await withTaskGroup(of: Check.self) { group in
                 var next = todo.makeIterator()
                 func add() -> Bool {
                     guard let item = next.next() else { return false }
-                    let a = item.hasNeighbour ? printingAnalyzer : analyzer
-                    group.addTask { await check(item.asset, analyzer: a) }
+                    guard let a = item.hasNeighbour ? printingAnalyzer : analyzer else { return false }
+                    group.addTask { await check(item.asset, editKey: item.editKey, analyzer: a) }
                     return true
                 }
                 for _ in 0..<concurrency where add() {}
@@ -81,17 +139,24 @@ enum OrientationScanner {
                     _ = add()
                 }
             }
-            let records = withNeighbours(checks, previous: &recent, decider: analyzer.decider)
+            checking += started.duration(to: .now); started = .now
+            let records = analyzer.map { withNeighbours(checks, previous: &recent, decider: $0.decider) } ?? []
+            if !newKeys.isEmpty {
+                try? store.setOrientationEditKeys(newKeys)
+                newKeys = [:]
+            }
             if !records.isEmpty {
                 do { try store.saveOrientation(records) } catch {
                     log.error("orientation: couldn't save: \(error.localizedDescription, privacy: .public)")
                 }
             }
             analysed += records.count
+            saving += started.duration(to: .now)
             await progress(done(), total)
         }
+        log.notice("timing: orientation walk \(walking, privacy: .public), check \(checking, privacy: .public), save \(saving, privacy: .public)")
         log.notice("orientation: checked \(analysed) photos this run, \(total) in the library")
-        return Result(checked: total, networkLoaded: network != nil)
+        return Result(checked: total, networkLoaded: analyzers?.network ?? true) // not loaded: nothing needed it
     }
 
     /// One photo's check before neighbours are taken into account.
@@ -103,11 +168,11 @@ enum OrientationScanner {
         var prints: TurnedPrints = [:]
     }
 
-    /// Taken within NeighbourCue.window of the photo before or after it (the fetch is in date order).
-    private static func hasNeighbour(_ fetch: PHFetchResult<PHAsset>, _ i: Int) -> Bool {
-        guard let date = fetch.object(at: i).creationDate else { return false }
-        for j in [i - 1, i + 1] where j >= 0 && j < fetch.count {
-            if let d = fetch.object(at: j).creationDate, abs(d.timeIntervalSince(date)) <= NeighbourCue.window { return true }
+    /// Taken within NeighbourCue.window of the photo before or after it (the list is in date order).
+    static func hasNeighbour(_ photos: [Photo], _ i: Int) -> Bool {
+        guard let date = photos[i].taken else { return false }
+        for j in [i - 1, i + 1] where j >= 0 && j < photos.count {
+            if let d = photos[j].taken, abs(d.timeIntervalSince(date)) <= NeighbourCue.window { return true }
         }
         return false
     }
@@ -160,7 +225,7 @@ enum OrientationScanner {
             }
         }
         var checks: [Check] = []
-        for photo in photos { checks.append(await check(photo, analyzer: analyzer)) }
+        for photo in photos { checks.append(await check(photo, editKey: nil, analyzer: analyzer)) }
         var previous: [Check] = []
         return withNeighbours(checks, previous: &previous, decider: analyzer.decider).first
     }
@@ -169,33 +234,29 @@ enum OrientationScanner {
         (asset.modificationDate ?? asset.creationDate)?.timeIntervalSince1970 ?? 0
     }
 
-    /// New or changed since it was checked; screenshots and photos Photos won't let us edit are left out.
-    private static func needsCheck(_ asset: PHAsset, scanned: [String: Double]) -> Bool {
-        if let date = scanned[asset.localIdentifier], abs(date - modDate(asset)) < 1 { return false }
-        if asset.mediaSubtypes.contains(.photoScreenshot) { return false }
-        return asset.canPerform(.content)
-    }
-
     /// The image request and Vision both block, so they run on a GCD worker rather than tying up
     /// Swift's concurrency pool.
-    private static func check(_ asset: PHAsset, analyzer: OrientationAnalyzer) async -> Check {
+    private static func check(_ asset: PHAsset, editKey: String?, analyzer: OrientationAnalyzer) async -> Check {
         let id = asset.localIdentifier, date = modDate(asset), taken = asset.creationDate
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 let check: Check = autoreleasepool {
                     guard let image = OrientationAnalyzer.analysisImage(for: asset, longEdge: analysisSize) else {
-                        return Check(record: OrientationRecord(assetID: id, modDate: date, status: .unavailable), date: taken)
+                        return Check(record: OrientationRecord(assetID: id, modDate: date, status: .unavailable,
+                                                               editKey: editKey), date: taken)
                     }
                     do {
                         let result = try analyzer.analyze(image)
                         let record = OrientationRecord(assetID: id, modDate: date, status: result.decision.status,
                                                        rotation: result.decision.rotation,
-                                                       confidence: result.decision.confidence, evidence: result.summary)
+                                                       confidence: result.decision.confidence, evidence: result.summary,
+                                                       editKey: editKey)
                         return Check(record: record, date: taken, evidence: result.evidence,
                                      decision: result.decision, prints: result.prints)
                     } catch {
                         return Check(record: OrientationRecord(assetID: id, modDate: date, status: .failed,
-                                                               evidence: error.localizedDescription), date: taken)
+                                                               evidence: error.localizedDescription, editKey: editKey),
+                                     date: taken)
                     }
                 }
                 continuation.resume(returning: check)

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import KeeperUI
 
 /// The current photo in a Dates grid: the one the arrow keys move, Return opens, and G, A and N act
 /// on. `anchor` is where Shift-click ranges start.
@@ -51,6 +52,17 @@ struct GridCursor: Equatable {
     static func neighbour(of id: String, in ids: [String]) -> String? {
         guard let i = ids.firstIndex(of: id) else { return nil }
         return i + 1 < ids.count ? ids[i + 1] : i > 0 ? ids[i - 1] : nil
+    }
+}
+
+/// The bottom bar of a Dates grid ("3 of 120"). It reads the cursor itself, so moving between
+/// photos redraws only this bar and the grid, not the screen that filters and sorts the list.
+struct GridStatusBar: View {
+    var ids: [String]
+    @Binding var cursor: GridCursor
+
+    var body: some View {
+        KeeperStatusBar(position: KeeperStatusBar.position(cursor.id.flatMap(ids.firstIndex(of:)), of: ids.count))
     }
 }
 

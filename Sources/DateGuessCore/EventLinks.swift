@@ -120,6 +120,7 @@ public enum EventLinks {
         var out: [String: (id: String, distance: Float)] = [:]
         let chunk = 256
         for start in stride(from: 0, to: undatedIDs.count, by: chunk) {
+            if Task.isCancelled { return [:] }
             let ids = Array(undatedIDs[start..<min(undatedIDs.count, start + chunk)])
             let rows = ids.flatMap { undated[$0]! }
             var dots = [Float](repeating: 0, count: ids.count * refs.count)
@@ -242,7 +243,110 @@ extension EventLinks {
 
     /// The best dated match for each undated photo, as a clue. Only near-duplicates, or close matches
     /// that share a person, are used: anything looser is mostly coincidence at library scale.
+    ///
+    /// The same rule as comparing each photo with each candidate in turn, but the distances come
+    /// from one matrix multiply per 256 photos (shared with the near-duplicate search): candidates
+    /// that can't be close enough are skipped on that, and the rest are confirmed with `distance`,
+    /// so the clues are exactly the same. Tens of times faster on a big library.
     public static func referenceEvidence(undated: [String: [Float]], people: [String: Set<String>],
+                                         references: [String: Reference]) -> [String: DateEvidence] {
+        let refIDs = Array(references.keys)
+        let refs = refIDs.map { references[$0]! }
+        var byPerson: [String: [Int]] = [:]
+        var datedHere: [Int] = []
+        for (j, ref) in refs.enumerated() {
+            for p in ref.people { byPerson[p, default: []].append(j) }
+            if ref.datedHere { datedHere.append(j) }
+        }
+        // The matrix needs every print the same length (as `nearestDuplicates` does); otherwise
+        // there are no near-duplicates and every candidate is measured directly.
+        let dim = refs.first?.print.count ?? 0
+        let useMatrix = dim > 0 && refs.allSatisfy { $0.print.count == dim }
+        let refMatrix = useMatrix ? refs.flatMap(\.print) : []
+        let refNorms = refs.map { r in r.print.reduce(0) { $0 + $1 * $1 } }
+        let maxDot = 1 - nearDuplicateCutoff * nearDuplicateCutoff / 2 - 0.02
+        // Nothing farther than the looser cutoff can count; the slack covers rounding in the multiply.
+        let reach = samePersonCutoff * samePersonCutoff + 0.01
+
+        var out: [String: DateEvidence] = [:]
+        var seen = [Int](repeating: -1, count: refs.count) // which photo last looked at each candidate
+        var photoNumber = 0
+
+        /// One photo, with its dot products against every reference (nil: measure each directly).
+        func decide(_ id: String, _ print: [Float], dots: ArraySlice<Float>?) {
+            photoNumber += 1
+            let who = people[id] ?? []
+            var best: (distance: Float, ref: Reference)?
+            // A dated duplicate counts even when nobody recognizable is in it (a landscape, a pet):
+            // the reference with the largest dot product, as `nearestDuplicates` picks it.
+            if let dots {
+                var bestDot: Float = -2, bestJ = -1
+                for j in 0..<refs.count where dots[dots.startIndex + j] > bestDot {
+                    bestDot = dots[dots.startIndex + j]
+                    bestJ = j
+                }
+                if bestJ >= 0, bestDot >= maxDot, refIDs[bestJ] != id {
+                    let d = distance(print, refs[bestJ].print)
+                    if d < nearDuplicateCutoff { best = (d, refs[bestJ]) }
+                }
+            }
+            let norm = print.reduce(0) { $0 + $1 * $1 }
+            func consider(_ j: Int) {
+                guard seen[j] != photoNumber else { return }
+                seen[j] = photoNumber
+                guard refIDs[j] != id else { return }
+                if let dots, norm + refNorms[j] - 2 * dots[dots.startIndex + j] > reach { return }
+                let ref = refs[j]
+                let d = distance(print, ref.print)
+                let shared = !who.isDisjoint(with: ref.people)
+                guard d < nearDuplicateCutoff || (shared && d < samePersonCutoff) else { return }
+                if best == nil || d < best!.distance { best = (d, ref) }
+            }
+            for j in datedHere { consider(j) }
+            for p in who { for j in byPerson[p] ?? [] { consider(j) } }
+            guard let best else { return }
+            let ref = best.ref
+            let when = ref.month.map { "\(DateEstimate.monthNames[max(1, min(12, $0)) - 1]) \(ref.year)" } ?? "\(ref.year)"
+            let source = ref.datedHere ? " (a date you applied)" : ""
+            if best.distance < nearDuplicateCutoff {
+                out[id] = DateEvidence(source: .group,
+                                       summary: "Almost identical to a dated photo from \(when)\(source): likely the same picture",
+                                       yearLow: ref.year, yearHigh: ref.year, peakYear: ref.year,
+                                       weight: ref.datedHere ? 0.6 : 0.9,
+                                       season: ref.month.map(Season.from(month:)), seasonWeight: ref.month == nil ? 0 : 0.8,
+                                       exactMonth: ref.datedHere ? nil : ref.month)
+            } else {
+                out[id] = DateEvidence(source: .group,
+                                       summary: "Looks a lot like a dated photo of the same person from \(when)\(source)",
+                                       yearLow: ref.year - 1, yearHigh: ref.year + 1, peakYear: ref.year,
+                                       weight: ref.datedHere ? 0.3 : 0.45)
+            }
+        }
+
+        let matched = useMatrix ? undated.keys.filter { undated[$0]?.count == dim } : []
+        let chunk = 256
+        for start in stride(from: 0, to: matched.count, by: chunk) {
+            // A newer run replaced this one: stop (the caller throws the result away).
+            if Task.isCancelled { return [:] }
+            let ids = Array(matched[start..<min(matched.count, start + chunk)])
+            let rows = ids.flatMap { undated[$0]! }
+            var dots = [Float](repeating: 0, count: ids.count * refs.count)
+            multiplyTransposed(rows, ids.count, refMatrix, refs.count, dim, into: &dots)
+            for (i, id) in ids.enumerated() {
+                decide(id, undated[id]!, dots: dots[(i * refs.count)..<((i + 1) * refs.count)])
+            }
+        }
+        let inMatrix = Set(matched)
+        for (id, print) in undated where !inMatrix.contains(id) {
+            if Task.isCancelled { return [:] }
+            decide(id, print, dots: nil)
+        }
+        return out
+    }
+
+    /// The first version of `referenceEvidence`, one photo and one distance at a time (about 45 s on
+    /// 15,000 undated photos). Kept only so the tests can check the fast version gives the same clues.
+    static func referenceEvidenceOneByOne(undated: [String: [Float]], people: [String: Set<String>],
                                          references: [String: Reference]) -> [String: DateEvidence] {
         var byPerson: [String: [String]] = [:]
         var datedHere: [String] = []
@@ -253,6 +357,8 @@ extension EventLinks {
         let duplicates = nearestDuplicates(undated: undated, references: references)
         var out: [String: DateEvidence] = [:]
         for (id, print) in undated {
+            // A newer run replaced this one: stop (the caller throws the result away).
+            if Task.isCancelled { return [:] }
             let who = people[id] ?? []
             var candidates = Set(datedHere)
             for p in who { candidates.formUnion(byPerson[p] ?? []) }

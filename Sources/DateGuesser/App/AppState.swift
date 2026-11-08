@@ -97,6 +97,8 @@ final class AppState {
     @ObservationIgnored private var decisionsSaveTask: Task<Void, Never>?
 
     init() {
+        let initStarted = ContinuousClock.now
+        defer { Timing.note("startup on main", since: initStarted) }
         settings = store.load(AppSettings.self, from: "settings") ?? AppSettings()
         scan = store.load(ScanSnapshot.self, from: "scan") ?? ScanSnapshot()
         groups = store.load([PhotoGroup].self, from: "groups") ?? []
@@ -129,7 +131,8 @@ final class AppState {
                 if !isEstimating { startFingerprinting() }
             }
         }
-        if !featurePrints.isEmpty { recomputeLinks() }
+        // Unless fingerprinting found nothing to do and already started them.
+        if !featurePrints.isEmpty && linksRuns == 0 { recomputeLinks() }
         places.app = self
         if places.scan.lastScan != nil { places.recompute() }
         // Picks up names added in Photos since last time, without asking for the library again.
@@ -308,31 +311,46 @@ final class AppState {
     }
 
     /// Fingerprints photos analyzed before fingerprints existed, then finds look-alikes.
+    /// Photos whose fingerprint couldn't be made this session (no local preview, say): not tried
+    /// again until next launch, since each try ended in saving every fingerprint and redoing the
+    /// links and places for nothing.
+    @ObservationIgnored private var fingerprintFailed = Set<String>()
+
     func startFingerprinting() {
         guard !isEstimating, settings.backgroundPaused != true else { recomputeLinks(); return }
-        let undatedMissing = undatedSorted.map(\.id).filter { featurePrints[$0] == nil && analyses[$0] != nil }
-        let referencesMissing = trustedReferenceIDs.filter { featurePrints[$0] == nil }
-        let have = Set(undatedMissing + referencesMissing)
+        let failed = fingerprintFailed
+        let undatedMissing = undatedSorted.map(\.id).filter { featurePrints[$0] == nil && analyses[$0] != nil && !failed.contains($0) }
+        let referencesMissing = trustedReferenceIDs.filter { featurePrints[$0] == nil && !failed.contains($0) }
+        let have = Set(undatedMissing + referencesMissing).union(failed)
         let placesMissing = places.fingerprintQueue(have: featurePrints).filter { !have.contains($0) }
         let missing = undatedMissing + referencesMissing + placesMissing
+        Timing.note("fingerprints to make: \(undatedMissing.count) undated, \(referencesMissing.count) dated, \(placesMissing.count) for places")
         guard !missing.isEmpty else { recomputeLinks(); places.recompute(); startFaceAges(); return }
         isEstimating = true
         let phase = !undatedMissing.isEmpty ? "Comparing photos to find ones from the same event…"
             : !referencesMissing.isEmpty ? "Comparing with your dated photos…" : "Learning what your places look like…"
         estimationProgress = EstimationProgress(phase: phase, total: missing.count)
+        let linksBefore = linksRuns, placesBefore = places.runs
         estimateTask = Task {
+            var made = 0
             await EstimationEngine.fingerprints(
                 for: missing,
                 progress: { done in await MainActor.run { self.estimationProgress?.done = done } },
                 deliver: { batch in await MainActor.run {
+                    guard !batch.isEmpty else { return }
+                    made += batch.count
                     self.featurePrints.merge(batch) { _, new in new }
                     self.scheduleFeaturePrintSave()
                 } })
             self.isEstimating = false
             self.estimationProgress = nil
-            self.saveFeaturePrintsNow()
-            self.recomputeLinks()
-            self.places.recompute()
+            if !Task.isCancelled { self.fingerprintFailed.formUnion(missing.filter { self.featurePrints[$0] == nil }) }
+            Timing.note("fingerprints made: \(made) of \(missing.count)")
+            if made > 0 { self.saveFeaturePrintsNow() }
+            // No new fingerprints, and a run started since this began (at launch, say): it already
+            // has everything this would give it.
+            if made > 0 || self.linksRuns == linksBefore { self.recomputeLinks() }
+            if made > 0 || self.places.runs == placesBefore { self.places.recompute() }
             if !Task.isCancelled { self.startFaceAges() }
         }
     }
@@ -345,8 +363,12 @@ final class AppState {
     }
 
     /// Finds look-alike photos off the main thread, then re-estimates.
+    @ObservationIgnored private var linksRuns = 0
+
     func recomputeLinks() {
         linksTask?.cancel()
+        linksRuns += 1
+        let run = linksRuns, prepStarted = ContinuousClock.now
         let order = undatedSorted.map(\.id)
         let packed = featurePrints.filter { scan.undated[$0.key] != nil }
         // Who's in each photo: named people plus Photos' unnamed face groups.
@@ -373,16 +395,29 @@ final class AppState {
         let limits = photoLimits
         limitsUsedForEvents = limits
         isFindingEvents = !packed.isEmpty
+        Timing.note("links #\(run) prep on main", since: prepStarted)
         linksTask = Task.detached(priority: .utility) {
+            let started = ContinuousClock.now
+            var lap = ContinuousClock.now
+            func stage(_ name: String) { Timing.note("links #\(run) \(name)", since: lap); lap = .now }
             let prints = packed.mapValues(EventLinks.unpack)
+            stage("unpack")
             let links = EventLinks.find(order: order, prints: prints, people: who)
+            stage("links")
+            guard !Task.isCancelled else { return }
             let references = refPacked.mapValues { r in
                 EventLinks.Reference(print: EventLinks.unpack(r.0), year: r.1, month: r.2, people: r.3, datedHere: r.4)
             }
             let clues = EventLinks.referenceEvidence(undated: prints, people: who, references: references)
+            stage("references (\(references.count))")
+            guard !Task.isCancelled else { return }
             let probe = YearProbe(probePacked.map { .init(id: $0.0, year: $0.1, print: EventLinks.unpack($0.2)) })
             let lookalikes = probe.evidence(for: prints, maxWeight: AppState.lookalikeWeight)
+            stage("look-alikes (\(probePacked.count))")
+            guard !Task.isCancelled else { return }
             let events = EventClusters.find(order: order, prints: prints, people: who, limits: limits)
+            stage("events")
+            Timing.note("links #\(run) for \(prints.count) photos\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.eventLinks = links
@@ -401,6 +436,8 @@ final class AppState {
         guard printsSaveTask == nil else { return }
         printsSaveTask = Task {
             try? await Task.sleep(nanoseconds: 15_000_000_000)
+            // Cancelled when saved sooner: a cancelled sleep ends at once, and this would save again.
+            guard !Task.isCancelled else { return }
             self.saveFeaturePrintsNow()
         }
     }
@@ -465,6 +502,7 @@ final class AppState {
     func recomputeEstimates() {
         recomputeGeneration += 1
         let generation = recomputeGeneration
+        let prepStarted = ContinuousClock.now
         let undated = scan.undated, analyses = self.analyses, groups = self.groups, people = self.people
         let photoPeople = self.allPhotoPeople()
         let links = self.eventLinks
@@ -478,7 +516,9 @@ final class AppState {
         let formats = appliedFormats(confirmed.map(\.id), undated: undated)
         let faceReadings = self.faceReadings()
         let faceCorrection = self.faceAgeCorrection()
+        Timing.note("estimates #\(generation) prep on main", since: prepStarted)
         Task.detached(priority: .userInitiated) {
+            let started = ContinuousClock.now
             let result = AppState.computeEstimates(undated: undated, analyses: analyses, groups: groups,
                                                    people: people, photoPeople: photoPeople, links: links,
                                                    referenceClues: referenceClues, lookalikeClues: lookalikeClues,
@@ -486,8 +526,12 @@ final class AppState {
                                                    confirmed: confirmed, formats: formats,
                                                    faceReadings: faceReadings, faceCorrection: faceCorrection,
                                                    allowExactMonth: exact)
+            Timing.note("estimates #\(generation) for \(undated.count) photos", since: started)
             await MainActor.run {
-                guard generation == self.recomputeGeneration else { return }
+                guard generation == self.recomputeGeneration else {
+                    Timing.note("estimates #\(generation) thrown away")
+                    return
+                }
                 self.estimates = result.estimates
                 self.eventEstimates = result.events
                 self.photoLimits = result.limits
@@ -727,9 +771,8 @@ final class AppState {
     }
 
     var selectedForApply: [String] {
-        let estimated = Set(estimates.keys)
-        return Self.applyTargets(order: undatedSorted.map(\.id), applied: appliedIDs, decisions: decisions,
-                                 hasEstimate: { estimated.contains($0) })
+        Self.applyTargets(order: undatedSorted.map(\.id), applied: appliedIDs, decisions: decisions,
+                          hasEstimate: { estimates[$0] != nil })
     }
 
     /// The only photos Apply may change: on the undated list from the last scan, not already dated by
@@ -1060,7 +1103,10 @@ final class AppState {
 
     func removePerson(_ id: UUID) {
         people.removeAll { $0.id == id }
-        for i in groups.indices { groups[i].people.removeAll { $0.personID == id } }
+        // Changed on a copy: each change to `groups` itself saves the file and works out estimates again.
+        var copy = groups
+        for i in copy.indices { copy[i].people.removeAll { $0.personID == id } }
+        if copy != groups { groups = copy }
         photoPeople = photoPeople.compactMapValues { hints in
             let kept = hints.filter { $0.personID != id }
             return kept.isEmpty ? nil : kept
@@ -1224,11 +1270,15 @@ final class AppState {
         // And dated photos of people with a birth year, to check the face-age model against.
         faceIDs.formUnion(faceAgeReferenceIDs())
         Task.detached(priority: .userInitiated) {
+            let started = ContinuousClock.now
             let scoped = libraryURL.startAccessingSecurityScopedResource()
             defer { if scoped { libraryURL.stopAccessingSecurityScopedResource() } }
             let result = Result { try PhotosPeopleReader.read(libraryURL: libraryURL, facesFor: faceIDs, undated: notReferences) }
             let cameras = (try? PhotosPeopleReader.readCameras(libraryURL: libraryURL)) ?? [:]
+            Timing.note("read people and faces from Photos", since: started)
             await MainActor.run {
+                let applyStarted = ContinuousClock.now
+                defer { Timing.note("applied people and faces on main", since: applyStarted) }
                 self.isImportingPeople = false
                 switch result {
                 case .failure(let error):
@@ -1236,14 +1286,20 @@ final class AppState {
                 case .success(let read):
                     let before = Set(self.taggedPeople.map { "\($0.id)|\($0.name)|\($0.assetIDs.count)" })
                     if !cameras.isEmpty { self.places.setCameras(cameras) }
-                    self.detectedFaces = read.faces
-                    self.referenceCandidates = read.references
+                    // Only what changed is replaced: each replacement rewrites its file and works
+                    // the estimates out again. A quiet refresh usually finds nothing new.
+                    let changed = self.detectedFaces != read.faces || self.referenceCandidates != read.references
+                        || self.taggedPeople != read.people
+                    if self.detectedFaces != read.faces { self.detectedFaces = read.faces }
+                    if self.referenceCandidates != read.references { self.referenceCandidates = read.references }
                     self.mergeTagged(read.people, undated: undated, quietly: quietly)
                     let after = Set(self.taggedPeople.map { "\($0.id)|\($0.name)|\($0.assetIDs.count)" })
                     if quietly && before != after {
                         self.banner = "Updated names from Photos."
                     }
-                    self.startFingerprinting()
+                    Timing.note(changed ? "people or faces changed in Photos" : "nothing new in Photos")
+                    // Nothing new: the links, places and face ages already reflect it.
+                    if changed || !quietly { self.startFingerprinting() }
                 }
             }
         }
@@ -1264,8 +1320,8 @@ final class AppState {
                 added += 1
             }
         }
-        taggedPeople = tagged
-        people = list
+        if taggedPeople != tagged { taggedPeople = tagged }
+        if people != list { people = list }
         let photos = Set(tagged.flatMap(\.assetIDs)).intersection(undated).count
         if !quietly {
             banner = "Found \(tagged.count) named people in Photos (\(added) new). They’re in \(photos.formatted()) of your undated photos."
@@ -1475,18 +1531,23 @@ final class AppState {
     func createGroup(name: String, assetIDs: [String], kind: GroupKind = .sameEra) -> PhotoGroup {
         let ids = Set(assetIDs)
         // A photo belongs to one group at a time.
-        for i in groups.indices { groups[i].assetIDs.removeAll { ids.contains($0) } }
+        // Changed on a copy, then saved once.
+        var copy = groups
+        for i in copy.indices { copy[i].assetIDs.removeAll { ids.contains($0) } }
         let group = PhotoGroup(name: name, kind: kind, assetIDs: assetIDs)
-        groups.append(group)
+        copy.append(group)
+        groups = copy
         return group
     }
 
     func add(_ assetIDs: [String], to groupID: UUID) {
         let ids = Set(assetIDs)
-        for i in groups.indices where groups[i].id != groupID { groups[i].assetIDs.removeAll { ids.contains($0) } }
-        guard let idx = groups.firstIndex(where: { $0.id == groupID }) else { return }
-        let existing = Set(groups[idx].assetIDs)
-        groups[idx].assetIDs += assetIDs.filter { !existing.contains($0) }
+        var copy = groups
+        for i in copy.indices where copy[i].id != groupID { copy[i].assetIDs.removeAll { ids.contains($0) } }
+        guard let idx = copy.firstIndex(where: { $0.id == groupID }) else { return }
+        let existing = Set(copy[idx].assetIDs)
+        copy[idx].assetIDs += assetIDs.filter { !existing.contains($0) }
+        groups = copy
     }
 
     func remove(_ assetIDs: [String], from groupID: UUID) {
@@ -1509,6 +1570,8 @@ final class AppState {
         guard analysesSaveTask == nil else { return }
         analysesSaveTask = Task {
             try? await Task.sleep(nanoseconds: 8_000_000_000)
+            // Cancelled when saved sooner: a cancelled sleep ends at once, and this would save again.
+            guard !Task.isCancelled else { return }
             self.saveAnalysesNow()
         }
     }

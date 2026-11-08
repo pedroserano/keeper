@@ -977,6 +977,32 @@ import KeeperCore
         #expect(try store.orientationProposals().map(\.assetID) == ["a", "b"])
     }
 
+    @Test func aNewRatingDoesntMeanCheckingAgain() {
+        // Unchanged, or changed with the same edit key (a rating or favourite): still current.
+        #expect(OrientationRecord.isCurrent(checkedModDate: 10, modDate: 10.4, savedKey: nil, currentKey: nil))
+        #expect(OrientationRecord.isCurrent(checkedModDate: 10, modDate: 99, savedKey: "-|1", currentKey: "-|1"))
+        // Edited, reverted, or no key to compare: check again. Never checked: check.
+        #expect(!OrientationRecord.isCurrent(checkedModDate: 10, modDate: 99, savedKey: "-|1", currentKey: "5.0|1"))
+        #expect(!OrientationRecord.isCurrent(checkedModDate: 10, modDate: 99, savedKey: "5.0|1", currentKey: "-|1"))
+        #expect(!OrientationRecord.isCurrent(checkedModDate: 10, modDate: 99, savedKey: nil, currentKey: "-|1"))
+        #expect(!OrientationRecord.isCurrent(checkedModDate: 10, modDate: 99, savedKey: "-|1", currentKey: nil))
+        #expect(!OrientationRecord.isCurrent(checkedModDate: nil, modDate: 10, savedKey: nil, currentKey: nil))
+    }
+
+    @Test func editKeysAreSavedAndFilledIn() throws {
+        let store = try DecisionStore()
+        try store.saveOrientation([
+            OrientationRecord(assetID: "a", modDate: 1, status: .upright, editKey: "-|1"),
+            OrientationRecord(assetID: "b", modDate: 2, status: .upright),
+        ])
+        #expect(try store.orientationEditKeys() == ["a": "-|1"])
+        try store.setOrientationEditKeys(["b": "7.5|6"])
+        #expect(try store.orientationEditKeys() == ["a": "-|1", "b": "7.5|6"])
+        // A fresh check replaces the key with the one it was made against.
+        try store.saveOrientation([OrientationRecord(assetID: "a", modDate: 3, status: .upright, editKey: "9.0|1")])
+        #expect(try store.orientationEditKeys()["a"] == "9.0|1")
+    }
+
     @Test func anOlderEngineChecksAgainButKeepsDismissals() throws {
         let store = try DecisionStore()
         let old = OrientationRecord.currentEngine - 1

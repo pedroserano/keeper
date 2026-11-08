@@ -63,10 +63,13 @@ struct ReviewView: View {
         }
         switch sort {
         case .library: break
+        // Sort keys are worked out once per photo, not on every comparison.
         case .confidence:
-            items.sort { (state.estimates[$0.id]?.estimate.confidence ?? 0) > (state.estimates[$1.id]?.estimate.confidence ?? 0) }
+            let keys = items.map { state.estimates[$0.id]?.estimate.confidence ?? 0 }
+            items = zip(items, keys).sorted { $0.1 > $1.1 }.map(\.0)
         case .year:
-            items.sort { (state.effectiveEstimate($0.id)?.year ?? 0) < (state.effectiveEstimate($1.id)?.year ?? 0) }
+            let keys = items.map { state.effectiveEstimate($0.id)?.year ?? 0 }
+            items = zip(items, keys).sorted { $0.1 < $1.1 }.map(\.0)
         case .clues:
             // The same count the card shows ("3 clues"); ties keep library order.
             let counts = Dictionary(uniqueKeysWithValues: items.map { p in
@@ -105,7 +108,7 @@ struct ReviewView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            KeeperStatusBar(position: KeeperStatusBar.position(cursor.id.flatMap(ids.firstIndex(of:)), of: ids.count))
+            GridStatusBar(ids: ids, cursor: $cursor)
         }
         // Menu items' shortcuts only work while the menu is open, so these keep ⌘A and ⇧⌘A working.
         .background {

@@ -433,6 +433,71 @@ final class DatedReferenceTests: XCTestCase {
     }
 }
 
+final class ReferenceEvidenceTests: XCTestCase {
+    /// A small seeded generator, so a failure can be repeated.
+    struct Seeded: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return state
+        }
+    }
+
+    func unit(_ v: [Float]) -> [Float] {
+        let n = v.map { $0 * $0 }.reduce(0, +).squareRoot()
+        return v.map { $0 / n }
+    }
+
+    /// What a clue says, leaving out its random id.
+    func describe(_ clues: [String: DateEvidence]) -> [String: String] {
+        clues.mapValues { "\($0.summary)|\(String(describing: $0.yearLow))|\(String(describing: $0.yearHigh))|\($0.weight)|\(String(describing: $0.exactMonth))|\($0.seasonWeight)" }
+    }
+
+    /// The fast version must give exactly the clues the one-photo-at-a-time version gives: photos
+    /// close to dated ones on both sides of each cutoff, shared people, dates applied here, and a
+    /// photo matching itself.
+    func testSameCluesAsOneByOne() {
+        for seed in UInt64(1)...3 {
+            var rng = Seeded(state: seed)
+            let dim = 48
+            func random() -> [Float] { unit((0..<dim).map { _ in Float.random(in: -1...1, using: &rng) }) }
+            func near(_ v: [Float], _ noise: Float) -> [Float] {
+                unit(v.map { $0 + Float.random(in: -noise...noise, using: &rng) })
+            }
+            let people = ["ann", "bob", "cy", "dee"]
+            var refs: [String: EventLinks.Reference] = [:]
+            var bases: [[Float]] = []
+            for i in 0..<400 {
+                let v = random()
+                bases.append(v)
+                refs["r\(i)"] = EventLinks.Reference(print: v, year: 1950 + i % 60, month: i % 3 == 0 ? nil : 1 + i % 12,
+                                                     people: Set(people.filter { _ in Bool.random(using: &rng) }.prefix(2)),
+                                                     datedHere: i % 5 == 0)
+            }
+            var undated: [String: [Float]] = [:]
+            var who: [String: Set<String>] = [:]
+            for i in 0..<300 {
+                // Spread around the 0.35 and 0.5 cutoffs.
+                let noise = Float.random(in: 0.01...0.12, using: &rng)
+                undated["u\(i)"] = i % 4 == 0 ? random() : near(bases[i % bases.count], noise)
+                who["u\(i)"] = Set(people.filter { _ in Bool.random(using: &rng) }.prefix(2))
+            }
+            undated["r3"] = refs["r3"]!.print // a photo that is itself a reference never matches itself
+
+            let fast = EventLinks.referenceEvidence(undated: undated, people: who, references: refs)
+            let slow = EventLinks.referenceEvidenceOneByOne(undated: undated, people: who, references: refs)
+            XCTAssertGreaterThan(slow.count, 20, "the data should produce plenty of clues")
+            XCTAssertEqual(describe(fast), describe(slow), "seed \(seed)")
+
+            // One reference with a different print length: no near-duplicates, the rest measured directly.
+            refs["odd"] = EventLinks.Reference(print: [1, 0, 0], year: 2000, month: nil, people: ["ann"], datedHere: true)
+            XCTAssertEqual(describe(EventLinks.referenceEvidence(undated: undated, people: who, references: refs)),
+                           describe(EventLinks.referenceEvidenceOneByOne(undated: undated, people: who, references: refs)),
+                           "seed \(seed), mixed lengths")
+        }
+    }
+}
+
 final class NearDuplicateSpeedTests: XCTestCase {
     /// Thousands of photos each way must stay quick (it reruns whenever matches are refreshed).
     func testNearestDuplicatesMatchesBruteForce() {

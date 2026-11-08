@@ -61,10 +61,12 @@ final class JSONStore: @unchecked Sendable {
     func save<T: Encodable & Sendable>(_ value: T, to name: String) {
         let target = url(name)
         queue.async {
+            let started = ContinuousClock.now
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .secondsSince1970
             guard let data = try? encoder.encode(value) else { return }
             try? data.write(to: target, options: .atomic)
+            Self.noteSave(name, bytes: data.count, since: started)
         }
     }
 
@@ -82,11 +84,19 @@ final class JSONStore: @unchecked Sendable {
     func saveBinary<T: Encodable & Sendable>(_ value: T, to name: String) {
         let target = directory.appendingPathComponent("\(name).plist")
         queue.async {
+            let started = ContinuousClock.now
             let encoder = PropertyListEncoder()
             encoder.outputFormat = .binary
             guard let data = try? encoder.encode(value) else { return }
             try? data.write(to: target, options: .atomic)
+            Self.noteSave(name, bytes: data.count, since: started)
         }
+    }
+
+    /// Logs saves that took a noticeable time (the file's kind, size and time; never its contents).
+    private static func noteSave(_ name: String, bytes: Int, since started: ContinuousClock.Instant) {
+        guard started.duration(to: .now) > .milliseconds(50) else { return }
+        Timing.note("saved \(name) (\(bytes / 1_000_000) MB)", since: started)
     }
 
     /// Blocks until queued writes finish (used at quit).

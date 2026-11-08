@@ -120,9 +120,14 @@ final class PlacesState {
         return Set(app.scan.undated.keys).union(app.appliedIDs)
     }
 
+    /// How many times the guesses have been started (one more each `recompute`).
+    @ObservationIgnored private(set) var runs = 0
+
     func recompute(then done: (@MainActor () -> Void)? = nil) {
         guard let app else { return }
         guessTask?.cancel()
+        runs += 1
+        let run = runs
         isGuessing = true
         let scan = self.scan
         let placed = self.placed
@@ -133,10 +138,13 @@ final class PlacesState {
         let cameras = self.cameras
         let lookalike = lookalikeStat
         guessTask = Task.detached(priority: .utility) {
+            let started = ContinuousClock.now
             let calibration = Self.calibrate(scan: scan, cameras: cameras)
+            Timing.note("places #\(run) calibrate", since: started)
             let guesses = Self.guesses(ids: ids, scan: scan, placed: placed, untrusted: untrusted, prints: prints,
                                        links: links, cameras: cameras, calibration: calibration, lookalike: lookalike)
             let outings = Self.outings(ids: ids, scan: scan, untrusted: untrusted, cameras: cameras)
+            Timing.note("places #\(run) for \(ids.count) photos\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.calibration = calibration
@@ -190,6 +198,7 @@ final class PlacesState {
             }
         }
         for (id, entry) in placed { if let p = prints[id] { examples.append(.init(id: id, point: entry.new, print: EventLinks.unpack(p))) } }
+        if Task.isCancelled { return [:] } // a newer run replaced this one
         let probe = PlaceProbe(examples)
         var queries: [String: [Float]] = [:]
         for id in ids { if let p = prints[id] { queries[id] = EventLinks.unpack(p) } }
@@ -197,7 +206,8 @@ final class PlacesState {
         let lookalikes = probe.evidence(for: queries, maxWeight: lookalikeWeight * lookalike.factor)
 
         var out: [String: PlaceGuessResult] = [:]
-        for id in ids {
+        for (n, id) in ids.enumerated() {
+            if n % 512 == 0, Task.isCancelled { return [:] }
             var evidence: [PlaceEvidence] = []
             if !untrusted.contains(id), let date = scan.missing[id] ?? nil {
                 evidence += timeline.evidence(at: date, excluding: id, reliability: calibration.reliability(camera: cameras[id]))

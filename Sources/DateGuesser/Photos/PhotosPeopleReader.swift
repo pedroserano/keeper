@@ -172,9 +172,12 @@ enum PhotosPeopleReader {
             byGroup[cluster, default: []].append((localID, sqlite3_column_double(statement, 3)))
             info[localID] = (year, month, sqlite3_column_int(statement, 4) != 0)
         }
+        // In a fixed order (people, then biggest face, then photo), so the same library always reads
+        // the same: a re-read that finds nothing new compares equal and changes nothing.
         var out: [String: ReferenceCandidate] = [:]
-        for (cluster, assets) in byGroup {
-            for a in assets.sorted(by: { $0.size > $1.size }).prefix(perGroup) {
+        for cluster in byGroup.keys.sorted() {
+            let assets = byGroup[cluster]!
+            for a in assets.sorted(by: { $0.size != $1.size ? $0.size > $1.size : $0.asset < $1.asset }).prefix(perGroup) {
                 guard let i = info[a.asset] else { continue }
                 out[a.asset, default: ReferenceCandidate(year: i.year, month: i.month, hasGPS: i.gps, clusterIDs: [])]
                     .clusterIDs.append(cluster)

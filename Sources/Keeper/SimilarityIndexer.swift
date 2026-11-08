@@ -21,27 +21,34 @@ enum SimilarityIndexer {
         /// Duplicates under the old rule (no shared capture moment needed), only until saved ticks
         /// have been carried over to the new groups.
         let previousDuplicates: [SimilarGroup]
+        /// Every photo, newest first, for the Sideways scan that follows (so it needn't read them again).
+        let library: [OrientationScanner.Photo]
     }
 
     /// `progress(done, total)` is called after each batch; return false from `keepGoing` to stop.
     static func run(library: PhotoLibrary, store: DecisionStore,
                     progress: @escaping @Sendable (Int, Int) async -> Void,
                     keepGoing: @escaping @Sendable () async -> Bool) async -> Result? {
+        var clock = StageClock("similarity")
         // 1. Every photo's date, to find the ones taken close together.
         var photos: [(uuid: String, date: Date)] = []
         var localIDs: [String: String] = [:]
         var dates: [String: Date] = [:]
+        var everyPhoto: [OrientationScanner.Photo] = []
         library.fetch(.allPhotos, newestFirst: false).enumerateObjects { a, _, _ in
+            everyPhoto.append(OrientationScanner.Photo(a))
             guard let date = a.creationDate else { return }
             let uuid = String(a.localIdentifier.split(separator: "/").first ?? "")
             photos.append((uuid, date))
             localIDs[uuid] = a.localIdentifier
             dates[uuid] = date
         }
+        clock.lap("enumerate")
         let clusters = Similarity.timeClusters(photos)
         let candidates = clusters.flatMap { $0 }
         let done = (try? store.featurePrintUUIDs()) ?? []
         let todo = candidates.filter { !done.contains($0) }
+        clock.lap("find new")
         log.notice("similarity: \(photos.count) photos, \(candidates.count) taken close to another, \(todo.count) to fingerprint")
 
         // 2. Fingerprint what's new, a batch at a time, saving as we go.
@@ -75,18 +82,22 @@ enum SimilarityIndexer {
             await progress(processed, candidates.count)
         }
 
+        clock.lap("fingerprint \(todo.count)")
         // 3. Group them: near-identical copies, and look-alike takes, separately.
         let vectors = (try? store.featurePrints(for: Set(candidates))) ?? [:]
+        clock.lap("read prints")
         let groups = Similarity.groups(clusters: clusters, vectors: vectors, dates: dates, kind: .duplicate)
             + Similarity.groups(clusters: clusters, vectors: vectors, dates: dates, kind: .similar)
         let carriedOver = ((try? store.setting("duplicatesRule")) ?? nil) == CullingSession.duplicatesRule
         let previous = carriedOver ? [] : Similarity.groups(clusters: clusters, vectors: vectors, dates: dates,
                                                              kind: .duplicate, sameMomentDuplicates: false)
         let grouped = Set(groups.flatMap(\.members))
+        clock.lap("group")
+        let histogram = Similarity.nearestNeighbourHistogram(clusters: clusters, vectors: vectors)
+        clock.lap("histogram")
         return Result(groups: groups, localIDs: localIDs.filter { grouped.contains($0.key) },
-                      candidates: candidates.count,
-                      histogram: Similarity.nearestNeighbourHistogram(clusters: clusters, vectors: vectors),
-                      previousDuplicates: previous)
+                      candidates: candidates.count, histogram: histogram, previousDuplicates: previous,
+                      library: everyPhoto.reversed())
     }
 
     /// Vision feature print of a small preview. Photos only stored in iCloud still have a local

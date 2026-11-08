@@ -61,17 +61,19 @@ struct PlacesView: View {
     }
 
     var body: some View {
+        // Worked out once per redraw: both walk every photo missing a place.
         let checked = places.checkedForApply.count
+        let ids = mode == .photos ? visibleIDs : []
         Group {
             if mode == .outings {
                 OutingsList()
             } else {
-                photoGrid
+                photoGrid(ids, checked: checked)
             }
         }
         .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : mode == .outings
-                            ? "\(places.outings.count.formatted()) outings" : "\(visibleIDs.count.formatted()) photos")
-        .toolbar { toolbarItems(mode == .photos ? visibleIDs : [], checked) }
+                            ? "\(places.outings.count.formatted()) outings" : "\(ids.count.formatted()) photos")
+        .toolbar { toolbarItems(ids, checked) }
         .alert("Set the location of \(checked.formatted()) photos?", isPresented: $confirmApply) {
             Button("Set Locations") { places.applyChecked() }
             Button("Cancel", role: .cancel) {}
@@ -80,10 +82,8 @@ struct PlacesView: View {
         }
     }
 
-    private var photoGrid: some View {
-        let ids = visibleIDs
+    private func photoGrid(_ ids: [String], checked: Int) -> some View {
         let actions = gridActions
-        let checked = places.checkedForApply.count
         return SelectableGrid(ids: ids, cursor: $cursor, actions: actions) { id, isCurrent in
             PlaceCard(assetID: id, isCurrent: isCurrent,
                       onOpen: { detailID = id },
@@ -107,7 +107,7 @@ struct PlacesView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            KeeperStatusBar(position: KeeperStatusBar.position(cursor.id.flatMap(ids.firstIndex(of:)), of: ids.count))
+            GridStatusBar(ids: ids, cursor: $cursor)
         }
         .background {
             Group {

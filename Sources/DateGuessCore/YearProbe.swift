@@ -55,6 +55,7 @@ public struct YearProbe: Sendable {
         var out: [String: DateEvidence] = [:]
         let chunk = 256
         for start in stride(from: 0, to: queryIDs.count, by: chunk) {
+            if Task.isCancelled { return [:] } // a newer run replaced this one
             let batch = Array(queryIDs[start..<min(queryIDs.count, start + chunk)])
             let rows = batch.flatMap { Self.normalized(queries[$0]!) }
             var dots = [Float](repeating: 0, count: batch.count * n)

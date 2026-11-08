@@ -84,6 +84,11 @@ public final class DecisionStore: Sendable {
             // Which version of the orientation check made each row, so a better one checks again.
             try db.alter(table: "orientation") { t in t.add(column: "engine", .integer).notNull().defaults(to: 1) }
         }
+        m.registerMigration("v6-orientation-edit-key") { db in
+            // What only an edit changes (see OrientationRecord.editKey), so a new rating or favourite
+            // in Photos, which moves the modification date, doesn't mean checking the photo again.
+            try db.alter(table: "orientation") { t in t.add(column: "editKey", .text) }
+        }
         return m
     }
 
@@ -148,6 +153,25 @@ public final class DecisionStore: Sendable {
                                            arguments: [OrientationRecord.currentEngine])
             while let row = try rows.next() { out[row["assetID"]] = row["modDate"] }
             return out
+        }
+    }
+
+    /// The edit key each checked photo had when it was checked, where known.
+    public func orientationEditKeys() throws -> [String: String] {
+        try dbQueue.read { db in
+            var out: [String: String] = [:]
+            let rows = try Row.fetchCursor(db, sql: "SELECT assetID, editKey FROM orientation WHERE editKey IS NOT NULL")
+            while let row = try rows.next() { out[row["assetID"]] = row["editKey"] }
+            return out
+        }
+    }
+
+    /// Records the edit key of photos checked before keys were kept (their check is still current).
+    public func setOrientationEditKeys(_ keys: [String: String]) throws {
+        try dbQueue.write { db in
+            for (id, key) in keys {
+                try db.execute(sql: "UPDATE orientation SET editKey = ? WHERE assetID = ?", arguments: [key, id])
+            }
         }
     }
 
@@ -243,6 +267,20 @@ public struct OrientationRecord: Codable, Equatable, Sendable, FetchableRecord, 
     public var hidden: Bool
     /// The version of the check that made it; see `currentEngine`.
     public var engine: Int
+    /// When the photo was last edited and its orientation flag, from Photos' database, when it was
+    /// checked. Photos moves the modification date for a new rating or favourite too; only a change
+    /// here means the picture itself changed. Nil where it wasn't known.
+    public var editKey: String?
+
+    /// Whether a saved check still describes the photo: unchanged since, or changed in ways that
+    /// leave the picture as it was (the same edit key).
+    public static func isCurrent(checkedModDate: Double?, modDate: Double,
+                                 savedKey: String?, currentKey: String?) -> Bool {
+        guard let checkedModDate else { return false }
+        if abs(checkedModDate - modDate) < 1 { return true }
+        guard let savedKey, let currentKey else { return false }
+        return savedKey == currentKey
+    }
 
     /// The evidence of a proposal whose turn you picked yourself.
     public static let chosenByYou = "chosen by you"
@@ -253,8 +291,9 @@ public struct OrientationRecord: Codable, Equatable, Sendable, FetchableRecord, 
 
     public init(assetID: String, modDate: Double, status: ScanStatus, rotation: Rotation = .none,
                 confidence: Double = 0, evidence: String = "", hidden: Bool = false,
-                engine: Int = OrientationRecord.currentEngine) {
+                engine: Int = OrientationRecord.currentEngine, editKey: String? = nil) {
         self.engine = engine
+        self.editKey = editKey
         self.assetID = assetID
         self.modDate = modDate
         self.status = status

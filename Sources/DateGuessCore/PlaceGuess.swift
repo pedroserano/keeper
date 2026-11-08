@@ -233,6 +233,7 @@ public struct PlaceProbe: Sendable {
         let n = count
         var out: [String: PlaceEvidence] = [:]
         for start in stride(from: 0, to: queryIDs.count, by: 256) {
+            if Task.isCancelled { return [:] } // a newer run replaced this one
             let batch = Array(queryIDs[start..<min(queryIDs.count, start + 256)])
             let rows = batch.flatMap { YearProbe.normalized(queries[$0]!) }
             var dots = [Float](repeating: 0, count: batch.count * n)

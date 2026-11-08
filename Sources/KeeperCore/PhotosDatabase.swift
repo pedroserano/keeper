@@ -7,7 +7,11 @@
 //   read-only (`mode=ro`). Fast at any library size; used when opening a library.
 
 import Foundation
+import os
 import SQLite3
+
+/// Timings in Keeper's log (counts and times only).
+let timingLog = Logger(subsystem: "local.keeper", category: "database")
 
 public struct PhotosDatabaseError: Error, LocalizedError {
     public enum Kind { case notFound, noAccess, unrecognisedSchema, sql }
@@ -487,6 +491,13 @@ extension PhotosDatabase {
             throw PhotosDatabaseError(kind: .noAccess, message: "Keeper can't read this library's database.")
         }
         let db = try Database(liveReadOnly: path)
+        var lap = ContinuousClock.now
+        func note(_ stage: String) {
+            let c = lap.duration(to: .now).components
+            let text = "timing: file info \(stage) \(String(format: "%.2f", Double(c.seconds) + Double(c.attoseconds) / 1e18)) s"
+            timingLog.notice("\(text, privacy: .public)")
+            lap = .now
+        }
         let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
         guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains) else {
             throw PhotosDatabaseError(kind: .unrecognisedSchema,
@@ -533,12 +544,15 @@ extension PhotosDatabase {
             try db.forEachRow(sql, arguments) { out.insert(sqlite3_column_int64($0, 0)) }
             return out
         }
+        note("open and read the layout")
         let present: Set<Int64>? = r.contains("ZLOCALAVAILABILITY") && r.contains("ZRESOURCETYPE")
             ? try ids("SELECT ZASSET FROM ZINTERNALRESOURCE WHERE ZRESOURCETYPE = 0 AND ZLOCALAVAILABILITY = 1")
             : nil
+        note("local originals")
         let referenced: Set<Int64> = r.contains("ZFILESYSTEMBOOKMARK")
             ? try ids("SELECT ZASSET FROM ZINTERNALRESOURCE WHERE ZFILESYSTEMBOOKMARK IS NOT NULL")
             : []
+        note("referenced files")
         let inAlbum: Set<Int64> = try albumJoin.map { j in
             g.contains("ZKIND") && g.contains("ZTITLE")
                 ? try ids("""
@@ -547,9 +561,11 @@ extension PhotosDatabase {
                   """, [rejectAlbumTitle, legacyRejectAlbumTitle])
                 : []
         } ?? []
+        note("albums")
         let withKeywords: Set<Int64> = try (xx.isEmpty ? nil : keywordJoin).map { j in
             try ids("SELECT \(q(j.attributes)) FROM \(q(j.table))")
         } ?? []
+        note("keywords")
         let location = a.contains("ZLATITUDE") ? "(a.ZLATITUDE IS NOT NULL AND a.ZLATITUDE != -180)" : "0"
         let camera = e.isEmpty ? "0" : "(\(has("e", e, "ZCAMERAMAKE")) OR \(has("e", e, "ZCAMERAMODEL")))"
 
@@ -598,6 +614,29 @@ extension PhotosDatabase {
             info.addedDate = f(20)
             info.modifiedDate = f(21)
             out[uuid] = info
+        }
+        note("photos")
+        return out
+    }
+
+    /// Each photo's edit key, by UUID: when it was last edited ("-" if never) and its orientation
+    /// flag. Only an edit (a rotation, a crop, reverting) changes these; ratings, favourites, albums
+    /// and Photos' own analysis don't. Empty if this library's database doesn't record them.
+    public static func readEditKeys(inLibrary library: URL) throws -> [String: String] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Keeper can't read this library's database.")
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains) else { return [:] }
+        let a = Set(try db.rows("PRAGMA table_info(\(q(assetTable)))").compactMap { $0[1] })
+        guard a.isSuperset(of: ["ZUUID", "ZADJUSTMENTTIMESTAMP", "ZORIENTATION"]) else { return [:] }
+        var out: [String: String] = [:]
+        try db.forEachRow("SELECT ZUUID, ZADJUSTMENTTIMESTAMP, ZORIENTATION FROM \(q(assetTable))\(a.contains("ZKIND") ? " WHERE ZKIND = 0" : "")") { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            let edited = sqlite3_column_type(stmt, 1) == SQLITE_NULL ? "-" : String(sqlite3_column_double(stmt, 1))
+            out[uuid] = "\(edited)|\(sqlite3_column_int64(stmt, 2))"
         }
         return out
     }
