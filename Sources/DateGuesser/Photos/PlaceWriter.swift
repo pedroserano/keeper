@@ -16,11 +16,9 @@ enum LocationScanner {
             let end = min(index + 2000, total)
             for asset in all.objects(at: IndexSet(integersIn: index..<end)) {
                 if asset.mediaSubtypes.contains(.photoScreenshot) { continue }
-                if let location = asset.location, CLLocationCoordinate2DIsValid(location.coordinate),
-                   location.coordinate.latitude != 0 || location.coordinate.longitude != 0 {
+                if let point = realPoint(asset.location) {
                     if let date = asset.creationDate {
-                        scan.located.append(asset.localIdentifier, date,
-                                            GeoPoint(lat: location.coordinate.latitude, lon: location.coordinate.longitude))
+                        scan.located.append(asset.localIdentifier, date, point)
                     }
                 } else {
                     scan.missing[asset.localIdentifier] = .some(asset.creationDate)
@@ -30,6 +28,13 @@ enum LocationScanner {
             await progress(index, total)
         }
         return scan
+    }
+
+    /// A photo's location, or nil when it has none. Photos can store an empty or invalid one
+    /// (0,0 or out of range), which counts as no location both here and when setting one.
+    static func realPoint(_ location: CLLocation?) -> GeoPoint? {
+        guard let c = location?.coordinate, CLLocationCoordinate2DIsValid(c), c.latitude != 0 || c.longitude != 0 else { return nil }
+        return GeoPoint(lat: c.latitude, lon: c.longitude)
     }
 }
 
@@ -59,7 +64,7 @@ enum PlaceWriter {
                     batch.failures[change.assetID] = "Photo no longer in the library"
                     continue
                 }
-                let current = asset.location.map { GeoPoint(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+                let current = LocationScanner.realPoint(asset.location)
                 if change.requireNoLocation, current != nil {
                     batch.failures[change.assetID] = changedElsewhere
                     continue

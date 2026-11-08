@@ -338,6 +338,14 @@ final class PlacesState {
             var copy = self.decisions
             for entry in batch.entries { copy[entry.assetID]?.selected = false }
             self.decisions = copy
+            // Photos that turned out to have a location aren't missing one: take them off the list.
+            let located = batch.failures.filter { $0.value == PlaceWriter.changedElsewhere }.keys
+            if !located.isEmpty {
+                var scan = self.scan
+                for id in located { scan.missing.removeValue(forKey: id) }
+                self.scan = scan
+                self.store.save(scan, to: "placesScan")
+            }
             self.isApplying = false
             self.applyProgress = nil
             self.refreshOrder()
