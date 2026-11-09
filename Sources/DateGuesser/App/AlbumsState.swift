@@ -170,7 +170,7 @@ final class AlbumsState {
     @concurrent
     nonisolated static func additions(scan: PlacesScan, placed: [String: PlaceJournalEntry], untrusted: Set<String>,
                                       guesses: [String: PlaceGuessResult]) async -> [AlbumAdditions.Addition] {
-        let albums = PhotoLibraryService.shared.userAlbumDetails()
+        let albums = PhotoLibraryService.shared.userAlbumDetails(located: scan.located)
         var inSomeAlbum = Set<String>()
         for a in albums { inSomeAlbum.formUnion(a.ids) }
         var loose: [AlbumSuggestions.Photo] = []

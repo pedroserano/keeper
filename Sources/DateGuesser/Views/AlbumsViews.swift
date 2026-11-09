@@ -289,7 +289,9 @@ private struct AdditionRow: View {
                     .disabled(albums.isAdding || ticked == 0)
             }
             ThumbnailStrip {
-                HStack(spacing: 6) {
+                // Lazy: an album can have hundreds of candidates, and loading every thumbnail at
+                // once stalled the screen.
+                LazyHStack(spacing: 6) {
                     // Every one is shown (the strip scrolls): only photos you can see get added.
                     ForEach(addition.ids, id: \.self) { id in
                         let on = albums.isTicked(id, in: addition)

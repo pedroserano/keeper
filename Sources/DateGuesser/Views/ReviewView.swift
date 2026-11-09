@@ -7,9 +7,6 @@ struct ReviewView: View {
     var goToPeople: () -> Void = {}
 
     @Environment(\.showShortcuts) private var showShortcuts
-    /// Suggested events (photos that look alike or were scanned together, dated in one go) instead of
-    /// photos one by one. Its own button joined to Show, as Places' Outings.
-    @State private var showEvents = false
     var _filter = State<Filter>(initialValue: .toReview)
     private var filter: Filter { get { _filter.wrappedValue } nonmutating set { _filter.wrappedValue = newValue } }
     var _sort = State<Sort>(initialValue: .library)
@@ -26,7 +23,6 @@ struct ReviewView: View {
     @State private var cursor = GridCursor()
     var _rotateRequest = State<[String]?>(initialValue: nil)
     private var rotateRequest: [String]? { get { _rotateRequest.wrappedValue } nonmutating set { _rotateRequest.wrappedValue = newValue } }
-    static let eventsHelp = "Events: photos that look alike, were scanned together or show the same people, dated in one go"
     /// More than this many selected photos asks first before R rotates them all.
     static let rotateWithoutAsking = 10
 
@@ -91,14 +87,6 @@ struct ReviewView: View {
     }
 
     var body: some View {
-        if showEvents {
-            EventsView(undated: .init(filter: _filter.projectedValue, showEvents: $showEvents))
-        } else {
-            photoGrid
-        }
-    }
-
-    @ViewBuilder private var photoGrid: some View {
         let ids = visibleIDs
         let selectedCount = state.selectedForApply.count
         let actions = gridActions
@@ -186,8 +174,7 @@ struct ReviewView: View {
     @ToolbarContentBuilder
     private func toolbarItems(_ ids: [String], _ selectedCount: Int) -> some ToolbarContent {
         KeeperToolbar(shortcuts: showShortcuts) {
-            ShowMenuWithView(selection: _filter.projectedValue, showView: $showEvents,
-                             title: "Events", systemImage: "square.stack", viewHelp: Self.eventsHelp)
+            ShowMenu(selection: _filter.projectedValue)
         } action: {
             sortMenu
         }

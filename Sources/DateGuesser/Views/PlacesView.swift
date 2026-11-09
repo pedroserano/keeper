@@ -9,9 +9,6 @@ struct PlacesView: View {
     private var places: PlacesState { state.places }
 
     @State private var filter: Filter = .likely
-    /// Outings instead of photos. Not one of the filters: a list of outings, each placed with one
-    /// search, so it has its own button next to Show.
-    @State private var showOutings = false
     @State private var sort: Sort = .library
     /// The current photo (arrow keys, Return, G, A, N). Selected photos are the ones to place.
     @State private var cursor = GridCursor()
@@ -61,17 +58,9 @@ struct PlacesView: View {
     var body: some View {
         // Worked out once per redraw: both walk every photo missing a place.
         let checked = places.checkedForApply.count
-        let outings = showOutings
-        let ids = outings ? [] : visibleIDs
-        Group {
-            if outings {
-                OutingsList()
-            } else {
-                photoGrid(ids, checked: checked)
-            }
-        }
-        .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : outings
-                            ? "\(places.openOutings.count.formatted()) outings" : "\(ids.count.formatted()) photos")
+        let ids = visibleIDs
+        photoGrid(ids, checked: checked)
+        .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : "\(ids.count.formatted()) photos")
         .toolbar { toolbarItems(ids, checked) }
         .alert("Look for photos without a location again?", isPresented: $confirmRescan) {
             Button("Look Again") { places.startScan() }
@@ -188,10 +177,9 @@ struct PlacesView: View {
     @ToolbarContentBuilder
     private func toolbarItems(_ ids: [String], _ checked: Int) -> some ToolbarContent {
         // Show is one drop-down: five filters as buttons don't fit, and the toolbar then hides
-        // things in a » menu. Outings, which isn't a filter, is its own button joined to it.
-        KeeperToolbar(photoShapeEnabled: !showOutings, shortcuts: showShortcuts) {
-            ShowMenuWithView(selection: $filter, showView: $showOutings, title: "Outings", systemImage: "figure.walk",
-                             viewHelp: "Outings: photos from one camera taken close together, placed with one search")
+        // things in a » menu. Outings has its own sidebar row.
+        KeeperToolbar(shortcuts: showShortcuts) {
+            ShowMenu(selection: $filter)
         } action: {
             Menu {
                 Picker("Sort By", selection: $sort) {
@@ -580,6 +568,20 @@ struct PlaceDetailSheet: View {
     }
 }
 
+/// Outings' own screen (a row under Places in the sidebar).
+struct OutingsScreen: View {
+    @Environment(AppState.self) private var state
+    @Environment(\.showShortcuts) private var showShortcuts
+
+    var body: some View {
+        OutingsList()
+            .navigationSubtitle("\(state.places.outingsToPlace.count.formatted()) to place")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { ShortcutsToolbarButton(action: showShortcuts) }
+            }
+    }
+}
+
 /// Outings: photos from one camera taken close together, placed with one search.
 struct OutingsList: View {
     @Environment(AppState.self) private var state
@@ -594,9 +596,7 @@ struct OutingsList: View {
     var body: some View {
         let places = state.places
         let outings: [[String]] = page == .toPlace
-            ? places.openOutings.filter { members in
-                members.contains { !places.decision($0).ignored && places.decision($0).override == nil }
-            }
+            ? places.outingsToPlace
             : places.confirmedOutings
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {

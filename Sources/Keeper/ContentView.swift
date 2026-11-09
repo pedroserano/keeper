@@ -309,7 +309,7 @@ struct Sidebar: View {
                 }
             }
             Section {
-                datesRow(.places)
+                ForEach(DatesItem.placeItems) { item in datesRow(item) }
             } header: {
                 Text("Places")
             } footer: {
@@ -317,7 +317,7 @@ struct Sidebar: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                ForEach(DatesItem.allCases.filter { $0 != .places && !$0.isAlbumItem }) { item in
+                ForEach(DatesItem.allCases.filter { !$0.isPlaceItem && !$0.isAlbumItem }) { item in
                     datesRow(item)
                 }
             } header: {

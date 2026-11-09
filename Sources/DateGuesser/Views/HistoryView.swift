@@ -3,6 +3,9 @@ import KeeperUI
 import DateGuessCore
 
 struct HistoryView: View {
+    /// Dates' History or Places' History: each section of the sidebar has its own.
+    enum Kind { case dates, places }
+    var kind: Kind = .dates
     @Environment(\.showShortcuts) private var showShortcuts
     @Environment(AppState.self) private var state
     var _batchToUndo = State<ApplyBatch?>(initialValue: nil)
@@ -84,17 +87,22 @@ struct HistoryView: View {
     }
 
     private var items: [Item] {
-        (state.journal.map(Item.dates) + state.places.journal.map(Item.places)).sorted { $0.date > $1.date }
+        switch kind {
+        case .dates: state.journal.map(Item.dates).sorted { $0.date > $1.date }
+        case .places: state.places.journal.map(Item.places).sorted { $0.date > $1.date }
+        }
     }
 
     var body: some View {
         Group {
             if items.isEmpty {
                 ContentUnavailableView("No Changes Yet", systemImage: "clock.arrow.circlepath",
-                                       description: Text("Each time you apply dates or places, the old ones are kept here so you can put them back."))
+                                       description: Text(kind == .dates
+                                                         ? "Each time you apply dates, the old ones are kept here so you can put them back."
+                                                         : "Each time you apply places, the old ones are kept here so you can put them back."))
             } else {
                 List {
-                    if !state.dateShifts.isEmpty { shiftedSection }
+                    if kind == .dates && !state.dateShifts.isEmpty { shiftedSection }
                     ForEach(items) { item in
                         switch item {
                         case .dates(let batch): dateSection(batch)
@@ -105,8 +113,9 @@ struct HistoryView: View {
                 .listStyle(.inset)
             }
         }
-        .onAppear { state.checkShiftedDates() }
+        .onAppear { if kind == .dates { state.checkShiftedDates() } }
         .toolbar {
+            if kind == .dates {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     state.checkShiftedDates()
@@ -115,6 +124,7 @@ struct HistoryView: View {
                 }
                 .disabled(state.isCheckingShifts || state.journal.isEmpty)
                 .help("Look for photos this app dated whose date was changed in Photos since")
+            }
             }
             ToolbarItem(placement: .primaryAction) { ShortcutsToolbarButton(action: showShortcuts) }
         }

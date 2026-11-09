@@ -103,17 +103,19 @@ final class PhotoLibraryService: @unchecked Sendable {
     }
 
     /// Every album of your own: its photos, and the ones with a date and a location.
-    func userAlbumDetails() -> [(id: String, title: String, ids: Set<String>, located: [AlbumSuggestions.Photo])] {
-        userAlbumCollections().map { c in
+    /// - Parameter all: every located photo (the Places scan). Reading `asset.location` here instead
+    ///   made PhotoKit fetch each one on the main thread, which froze the app for a big library.
+    func userAlbumDetails(located all: LocatedPhotos) -> [(id: String, title: String, ids: Set<String>, located: [AlbumSuggestions.Photo])] {
+        var index: [String: Int] = [:]
+        index.reserveCapacity(all.count)
+        for (i, id) in all.ids.enumerated() { index[id] = i }
+        return userAlbumCollections().map { c in
             var ids = Set<String>()
             var located: [AlbumSuggestions.Photo] = []
             PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { asset, _, _ in
-                ids.insert(asset.localIdentifier)
-                if let date = asset.creationDate, let l = asset.location, CLLocationCoordinate2DIsValid(l.coordinate),
-                   l.coordinate.latitude != 0 || l.coordinate.longitude != 0 {
-                    located.append(.init(id: asset.localIdentifier, time: date,
-                                         point: GeoPoint(lat: l.coordinate.latitude, lon: l.coordinate.longitude)))
-                }
+                let id = asset.localIdentifier
+                ids.insert(id)
+                if let i = index[id] { located.append(.init(id: id, time: all.times[i], point: all.point(i))) }
             }
             return (c.localIdentifier, c.localizedTitle ?? "Untitled album", ids, located)
         }

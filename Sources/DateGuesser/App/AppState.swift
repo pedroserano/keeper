@@ -1,4 +1,3 @@
-import CoreLocation
 import Foundation
 import Observation
 import Photos
@@ -409,6 +408,7 @@ final class AppState {
                 times[id] = Double(e.year) + ((1...12).contains(e.month) ? Double(e.month - 1) / 12 : 0.5)
             }
         }
+        let located = places.scan.located
         isFindingEvents = !packed.isEmpty
         Timing.note("links #\(run) prep on main", since: prepStarted)
         linksTask = Task.detached(priority: .utility) {
@@ -430,13 +430,11 @@ final class AppState {
             let lookalikes = probe.evidence(for: prints, maxWeight: AppState.lookalikeWeight)
             stage("look-alikes (\(probePacked.count))")
             guard !Task.isCancelled else { return }
+            // A location in Photos, from the Places scan (asking PhotoKit for each photo's location
+            // makes it fetch them on the main thread).
             var photoPlaces = knownPlaces
-            let unplaced = order.filter { photoPlaces[$0] == nil && times[$0] != nil }
-            for (id, asset) in PhotoLibraryService.shared.assets(for: unplaced) {
-                if let c = asset.location?.coordinate, CLLocationCoordinate2DIsValid(c), c.latitude != 0 || c.longitude != 0 {
-                    photoPlaces[id] = GeoPoint(lat: c.latitude, lon: c.longitude)
-                }
-            }
+            let wanted = Set(order.filter { photoPlaces[$0] == nil && times[$0] != nil })
+            for (i, id) in located.ids.enumerated() where wanted.contains(id) { photoPlaces[id] = located.point(i) }
             stage("places (\(photoPlaces.count) located)")
             guard !Task.isCancelled else { return }
             let events = EventClusters.find(order: order, prints: prints, people: who, limits: limits,

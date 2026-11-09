@@ -4,7 +4,7 @@ import KeeperUI
 import DateGuessCore
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case review, places, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
+    case review, places, outings, placeHistory, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
 
     var id: String { rawValue }
 
@@ -12,6 +12,8 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .review: return "Undated Photos"
         case .places: return "Places"
+        case .outings: return "Outings"
+        case .placeHistory: return "History"
         case .history: return "History"
         case .events: return "Events"
         case .people: return "People"
@@ -26,6 +28,8 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .review: return "photo.on.rectangle"
         case .places: return "mappin.and.ellipse"
+        case .outings: return "figure.walk"
+        case .placeHistory: return "clock.arrow.circlepath"
         case .history: return "clock.arrow.circlepath"
         case .events: return "square.stack"
         case .people: return "person.2"
@@ -36,7 +40,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         }
     }
 
-    static let library: [SidebarItem] = [.review, .places, .history]
+    static let library: [SidebarItem] = [.review, .places, .outings, .placeHistory, .history]
     static let clues: [SidebarItem] = [.events, .people, .cameras]
 }
 
@@ -119,7 +123,8 @@ struct ContentView: View {
         case .albumSuggestions: return state.albumTools.shownSuggestions.count
         case .albumAdditions: return state.albumTools.additions.count
         case .albumDuplicates: return state.albumTools.duplicates.count
-        case .history, .cameras: return 0
+        case .outings: return state.places.outingsToPlace.count
+        case .history, .placeHistory, .cameras: return 0
         }
     }
 
@@ -131,7 +136,9 @@ struct ContentView: View {
             switch item {
             case .review: ReviewView(goToPeople: { selection = .people })
             case .places: PlacesView()
-            case .history: HistoryView()
+            case .outings: OutingsScreen()
+            case .placeHistory: HistoryView(kind: .places)
+            case .history: HistoryView(kind: .dates)
             case .events: EventsView()
             case .people: PeopleView()
             case .cameras: CamerasView()

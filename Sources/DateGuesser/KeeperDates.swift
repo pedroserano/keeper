@@ -7,7 +7,7 @@ import KeeperUI
 
 /// A row of Keeper's Dates section.
 public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
-    case review, events, people, cameras, places, history, albumSuggestions, albumAdditions, albumDuplicates
+    case review, events, people, cameras, places, outings, placeHistory, history, albumSuggestions, albumAdditions, albumDuplicates
 
     public var id: String { rawValue }
     var item: SidebarItem { SidebarItem(rawValue: rawValue)! }
@@ -15,6 +15,9 @@ public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Se
     /// The rows of the Albums section; the rest are Places and the Dates section.
     public static let albumItems: [DatesItem] = [.albumSuggestions, .albumAdditions, .albumDuplicates]
     public var isAlbumItem: Bool { Self.albumItems.contains(self) }
+    /// The rows of the Places section.
+    public static let placeItems: [DatesItem] = [.places, .outings, .placeHistory]
+    public var isPlaceItem: Bool { Self.placeItems.contains(self) }
     public var systemImage: String { item.icon }
 }
 
@@ -60,13 +63,13 @@ public final class DatesModel {
     /// ⌘Z on a Dates screen: takes back the last selection, hide or changed guess there (applied
     /// dates and places are undone from History).
     public func undo(on item: DatesItem) {
-        let done = item == .places ? state.places.decisionHistory.undo(&state.places.decisions)
+        let done = item.isPlaceItem ? state.places.decisionHistory.undo(&state.places.decisions)
                                    : state.decisionHistory.undo(&state.decisions)
         state.banner = done ? "Undone. ⇧⌘Z redoes it." : "Nothing to undo here. Applied changes are undone from History."
     }
 
     public func redo(on item: DatesItem) {
-        let done = item == .places ? state.places.decisionHistory.redo(&state.places.decisions)
+        let done = item.isPlaceItem ? state.places.decisionHistory.redo(&state.places.decisions)
                                    : state.decisionHistory.redo(&state.decisions)
         if done { state.banner = "Redone." }
     }
@@ -77,11 +80,12 @@ public final class DatesModel {
         case .review: state.undatedSorted.count
         case .places: state.places.confidentCount
         case .events: state.eventSuggestions.count
+        case .outings: state.places.outingsToPlace.count
         case .people: state.people.count
         case .albumSuggestions: state.albumTools.shownSuggestions.count
         case .albumAdditions: state.albumTools.additions.count
         case .albumDuplicates: state.albumTools.duplicates.count
-        case .history, .cameras: 0
+        case .history, .placeHistory, .cameras: 0
         }
     }
 
@@ -177,7 +181,9 @@ public struct DatesScreen: View {
         switch item.item {
         case .review: ReviewView(goToPeople: { select(.people) })
         case .places: PlacesView()
-        case .history: HistoryView()
+        case .outings: OutingsScreen()
+        case .placeHistory: HistoryView(kind: .places)
+        case .history: HistoryView(kind: .dates)
         case .events: EventsView()
         case .people: PeopleView()
         case .cameras: CamerasView()

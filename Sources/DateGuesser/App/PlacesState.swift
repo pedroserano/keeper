@@ -40,6 +40,12 @@ final class PlacesState {
     /// Outings minus the ones you said aren't one.
     var openOutings: [[String]] { outings.filter { !$0.allSatisfy(notOutings.contains) } }
     func notOneOuting(_ members: [String]) { notOutings.formUnion(members) }
+    /// Outings with a photo still waiting for a place (the Outings list and its sidebar count).
+    var outingsToPlace: [[String]] {
+        openOutings.filter { members in
+            members.contains { !decision($0).ignored && decision($0).override == nil }
+        }
+    }
     /// What was learned about each camera.
     var calibration = PlaceCalibration()
     /// Each photo's camera, read from the Photos library.
