@@ -17,10 +17,20 @@ struct AssetImage: View {
 
     @State private var image: NSImage?
     @State private var missingInCloud = false
+    /// Which photo `image` is of (a cell keeps the previous photo's until the new one's arrives), and
+    /// whether it's sharp.
+    @State private var shownID: String?
+    @State private var shownSharp = false
+    /// Asks again when Photos settles: a blurry preview loads properly, a sharp image comes from SharpImages.
+    @ObservedObject private var refresh = ImageRefresh.shared
 
     /// Pixels to ask Photos for, rounded up to a step of 256: a slightly bigger or smaller cell (the
     /// size slider) shows the image it already has instead of loading every photo again.
-    private var target: CGSize {
+    private var target: CGSize { Self.pixels(for: pointSize) }
+
+    /// The pixel size AssetImage asks Photos for at this point size (look-ahead caching must ask for
+    /// exactly the same, or Photos can't reuse what it rendered ahead).
+    static func pixels(for pointSize: CGSize) -> CGSize {
         func up(_ v: CGFloat) -> CGFloat { (v * backingScale / 256).rounded(.up) * 256 }
         return CGSize(width: up(pointSize.width), height: up(pointSize.height))
     }
@@ -37,28 +47,63 @@ struct AssetImage: View {
         }
         // The modification date too, so an edit (a rotation) loads the new image.
         .task(id: "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)|"
-                  + "\(Int(target.width))x\(Int(target.height))") {
+                  + "\(Int(target.width))x\(Int(target.height))|\(refresh.generation)") {
             let target = target
+            let id = asset.localIdentifier
+            let original = CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
             // Seen sharp a moment ago (cells are by position, so accepting or hiding a photo moves every
             // later photo into another cell): show it straight away, not a blurry preview while Photos
             // is busy, for instance writing rotations.
             let key = SharpImages.key(asset, target, fill)
             if let sharp = SharpImages.shared.image(for: key) {
-                image = sharp
+                show(sharp, of: id, sharp: true)
                 missingInCloud = false
                 return
             }
-            var gotImage = false
+            // Photos moves a photo's modification date for things that don't change the picture (its
+            // own analysis, iCloud): until the new image is sharp, the last sharp one stands in.
+            if let stale = SharpImages.shared.latest(id, target, fill) { show(stale, of: id, sharp: true) }
+            else if shownID != id { shownSharp = false }
+            var gotImage = shownID == id
             var inCloud = false
-            // Keep the previous photo on screen until this one's first image arrives: no flash between photos.
-            for await loaded in library.images(for: asset, targetSize: target,
-                                               contentMode: fill ? .aspectFill : .aspectFit) {
-                if let new = loaded.image {
-                    image = new
-                    gotImage = true
-                    if !loaded.isDegraded { SharpImages.shared.store(new, for: key) }
+            // While Photos is busy (saving rotations, say) it can answer with only a small preview, even
+            // marked final, or not at all. Ask again, a little later each time (up to every 20 s), for as
+            // long as the photo is on screen, and give up on a request that hangs.
+            var attempt = 0
+            while !Task.isCancelled {
+                if attempt > 0 {
+                    try? await Task.sleep(for: .seconds(min(20, 1.5 * pow(2, Double(attempt - 1)))))
+                    if Task.isCancelled { return }
                 }
-                inCloud = inCloud || loaded.isInCloud
+                var sharp = false
+                let stream = library.images(for: asset, targetSize: target, contentMode: fill ? .aspectFill : .aspectFit,
+                                            highQualityOnly: attempt > 0)
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { @MainActor in
+                        for await loaded in stream {
+                            inCloud = inCloud || loaded.isInCloud
+                            guard let new = loaded.image else { continue }
+                            gotImage = true
+                            if !loaded.isDegraded, Self.bigEnough(new, for: target, fill: fill, original: original) {
+                                sharp = true
+                                show(new, of: id, sharp: true)
+                                SharpImages.shared.store(new, for: key, latest: SharpImages.latestKey(id, target, fill))
+                            } else if !(shownID == id && shownSharp && Self.sameShape(image, new)) {
+                                // A blurry preview never replaces a sharp image of the same photo, unless
+                                // the photo changed shape (rotated).
+                                show(new, of: id, sharp: false)
+                            }
+                        }
+                    }
+                    group.addTask { try? await Task.sleep(for: .seconds(15)) }
+                    await group.next()
+                    group.cancelAll()
+                }
+                if sharp || Task.isCancelled || (!gotImage && inCloud) { break }
+                // A sharp stand-in of the same photo looks right: don't keep at it for ever.
+                if attempt >= 5, shownID == id, shownSharp { break }
+                if attempt == 5 { log.notice("images: thumbnail still a preview after 6 tries; still asking") }
+                attempt += 1
             }
             if !gotImage && !Task.isCancelled {
                 image = nil
@@ -68,13 +113,42 @@ struct AssetImage: View {
     }
 }
 
+extension AssetImage {
+    private func show(_ new: NSImage, of id: String, sharp: Bool) {
+        image = new
+        shownID = id
+        shownSharp = sharp
+    }
+
+    /// Both landscape or both portrait (a rotation swaps them).
+    static func sameShape(_ a: NSImage?, _ b: NSImage) -> Bool {
+        guard let a, let ra = a.representations.first, let rb = b.representations.first,
+              ra.pixelsWide > 0, ra.pixelsHigh > 0, rb.pixelsWide > 0, rb.pixelsHigh > 0 else { return false }
+        let wa = Double(ra.pixelsWide) / Double(ra.pixelsHigh), wb = Double(rb.pixelsWide) / Double(rb.pixelsHigh)
+        if abs(wa - 1) < 0.05 || abs(wb - 1) < 0.05 { return abs(wa - wb) < 0.1 }
+        return (wa > 1) == (wb > 1)
+    }
+
+    /// At least 3/4 of the pixels asked for, along the side that limits it (a panorama in a square
+    /// fits by its width), or the whole original when it's smaller than that.
+    static func bigEnough(_ image: NSImage, for target: CGSize, fill: Bool, original: CGSize) -> Bool {
+        guard let rep = image.representations.first else { return true }
+        let w = CGFloat(rep.pixelsWide), h = CGFloat(rep.pixelsHigh)
+        guard w > 0, h > 0 else { return true }
+        // The whole original (either way round, for a rotated photo).
+        if max(w, h) >= max(original.width, original.height) * 0.95 { return true }
+        let fits = fill ? max(target.width / w, target.height / h) : min(target.width / w, target.height / h)
+        return fits <= 1 / 0.75
+    }
+}
+
 /// Sharp thumbnails shown recently, by photo, edit and size, so one that moves to another cell
 /// doesn't load again from a blurry preview.
 final class SharpImages: @unchecked Sendable {
     static let shared = SharpImages()
     private let cache: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
-        c.countLimit = 800
+        c.countLimit = 2000
         c.totalCostLimit = 400 * 1024 * 1024
         return c
     }()
@@ -83,11 +157,22 @@ final class SharpImages: @unchecked Sendable {
         "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)|\(Int(size.width))x\(Int(size.height))|\(fill)" as NSString
     }
 
+    /// The same photo at this size, whatever its modification date: the last sharp image of it.
+    static func latestKey(_ id: String, _ size: CGSize, _ fill: Bool) -> NSString {
+        "latest|\(id)|\(Int(size.width))x\(Int(size.height))|\(fill)" as NSString
+    }
+
     func image(for key: NSString) -> NSImage? { cache.object(forKey: key) }
 
-    func store(_ image: NSImage, for key: NSString) {
+    func latest(_ id: String, _ size: CGSize, _ fill: Bool) -> NSImage? {
+        cache.object(forKey: Self.latestKey(id, size, fill))
+    }
+
+    func store(_ image: NSImage, for key: NSString, latest: NSString? = nil) {
         let cost = Int(image.size.width * image.size.height * 4)
         cache.setObject(image, forKey: key, cost: cost)
+        // The same image object: it costs no more memory, so it's counted once.
+        if let latest { cache.setObject(image, forKey: latest, cost: 0) }
     }
 }
 
@@ -548,7 +633,7 @@ struct SingleView: View {
         let list = session.list
         guard !list.isEmpty else { return }
         let range = max(session.cursor - 1, 0)...min(session.cursor + 2, list.count - 1)
-        let target = CGSize(width: size.width * backingScale, height: size.height * backingScale)
+        let target = AssetImage.pixels(for: size)
         library.cacheWindow(range.filter { $0 != session.cursor }.map { list.asset(at: $0) }, targetSize: target)
     }
 }

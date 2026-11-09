@@ -152,15 +152,16 @@ struct ContentView: View {
             ShowMenu(selection: $session.filter)
         } sort: {
             Menu {
-                Picker("Sort By", selection: $session.sort) {
-                    ForEach(PhotoSort.allCases) { Text($0.rawValue).tag($0) }
+                Picker("Sort By", selection: session.source == .sideways ? $session.sidewaysSort : $session.sort) {
+                    ForEach(PhotoSort.options(sideways: session.source == .sideways)) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.inline)
             } label: {
                 Label("Sort", systemImage: "arrow.up.arrow.down")
             }
             .disabled(!session.source.sorts)
-            .help(session.source.sorts ? "Sort by the date photos were taken or added"
+            .help(session.source == .sideways ? "Sort by how sure Keeper is, or by date"
+                  : session.source.sorts ? "Sort by the date photos were taken or added"
                                        : "\(session.source.title) keeps its own order")
         } action: {
             Button { showingDelete = true } label: {

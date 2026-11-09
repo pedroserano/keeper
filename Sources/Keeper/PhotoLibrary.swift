@@ -65,8 +65,8 @@ enum Source: Hashable, Codable {
         [.suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots].contains(self)
     }
 
-    /// Lists in date order, which Sort can change (suggestions and Sideways Photos have their own order).
-    var sorts: Bool { !isSuggestion && self != .sideways }
+    /// Lists Sort can change (suggestions keep Apple's order; Sideways Photos has its own choices).
+    var sorts: Bool { !isSuggestion }
 
     /// Duplicates and similar shots, shown group by group.
     var isGroups: Bool { groupKind != nil }
@@ -113,6 +113,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
     nonisolated func photoLibraryDidChange(_ change: PHChange) {
         Task { @MainActor in
             self.scheduleAlbumReload()
+            ImageRefresh.shared.libraryChanged()
             self.onChange?(change)
         }
     }
@@ -244,10 +245,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
             if !background { ScreenImages.shared.begin() }
             var ended = background
             let end = { if !ended { ended = true; ScreenImages.shared.end() } }
-            let options = PHImageRequestOptions()
-            options.deliveryMode = highQualityOnly ? .highQualityFormat : .opportunistic
-            options.resizeMode = .fast
-            options.isNetworkAccessAllowed = allowNetwork
+            let options = Self.requestOptions(highQualityOnly: highQualityOnly, allowNetwork: allowNetwork)
             let manager = imageManager
             let id = manager.requestImage(for: asset, targetSize: targetSize, contentMode: contentMode,
                                           options: options) { image, info in
@@ -266,6 +264,16 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
     }
 
+    /// The options thumbnails and photos are asked for with. Look-ahead caching uses the same, since
+    /// Photos only hands back a cached render to a request with matching options.
+    nonisolated static func requestOptions(highQualityOnly: Bool = false, allowNetwork: Bool = false) -> PHImageRequestOptions {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = highQualityOnly ? .highQualityFormat : .opportunistic
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = allowNetwork
+        return options
+    }
+
     private var cached: (assets: [PHAsset], size: CGSize) = ([], .zero)
 
     /// Keeps just these photos rendered ahead at this size, and stops the ones you've moved past.
@@ -275,12 +283,12 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         let ids = Set(assets.map(\.localIdentifier))
         let stale = cached.size == targetSize ? cached.assets.filter { !ids.contains($0.localIdentifier) } : cached.assets
         if !stale.isEmpty {
-            imageManager.stopCachingImages(for: stale, targetSize: cached.size, contentMode: .aspectFit, options: nil)
+            imageManager.stopCachingImages(for: stale, targetSize: cached.size, contentMode: .aspectFit, options: Self.requestOptions())
         }
         let had = cached.size == targetSize ? Set(cached.assets.map(\.localIdentifier)) : []
         let new = assets.filter { !had.contains($0.localIdentifier) }
         if !new.isEmpty {
-            imageManager.startCachingImages(for: new, targetSize: targetSize, contentMode: .aspectFit, options: nil)
+            imageManager.startCachingImages(for: new, targetSize: targetSize, contentMode: .aspectFit, options: Self.requestOptions())
         }
         cached = (assets, targetSize)
     }
@@ -379,5 +387,23 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         else { throw CocoaError(.fileNoSuchFile) }
         rejectAlbum = album
         return album
+    }
+}
+
+/// Tells thumbnails still showing a blurry preview to ask Photos again, once Photos has been quiet
+/// for a moment after a change (a run of rotations keeps it busy, and its answers meanwhile can be
+/// small previews). Sharp thumbnails come from SharpImages, so asking again costs them nothing.
+@MainActor
+final class ImageRefresh: ObservableObject {
+    static let shared = ImageRefresh()
+    @Published private(set) var generation = 0
+    private var pending: Task<Void, Never>?
+
+    func libraryChanged() {
+        pending?.cancel()
+        pending = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled { self?.generation += 1 }
+        }
     }
 }

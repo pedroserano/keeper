@@ -200,6 +200,15 @@ final class CullingSession: ObservableObject {
     /// Get Info (⌘I) is showing this photo.
     @Published var infoAsset: PHAsset?
 
+    /// Sideways Photos' own order, surest first unless you choose a date order.
+    @Published var sidewaysSort: PhotoSort = PhotoSort(rawValue: UserDefaults.standard.string(forKey: PhotoSort.sidewaysStorageKey) ?? "") ?? .certainty {
+        didSet {
+            guard sidewaysSort != oldValue else { return }
+            UserDefaults.standard.set(sidewaysSort.rawValue, forKey: PhotoSort.sidewaysStorageKey)
+            if source == .sideways { reload() }
+        }
+    }
+
     /// The View menu's Newest First.
     var newestFirst: Bool {
         get { sort == .newest }
@@ -1128,7 +1137,7 @@ final class CullingSession: ObservableObject {
         let keepAsset = keepingID.flatMap { library.assets(withIDs: [$0]).first }
 
         // The common case needs no scan: every photo in the source, straight from PhotoKit.
-        let byAdded = sort == .recentlyAdded && source.sorts
+        let byAdded = sort == .recentlyAdded && source.sorts && source != .sideways
         if filter == .all && source != .unreviewed && source != .rejected && source != .sideways && !source.isSuggestion && !byAdded {
             loading = false
             sections = nil
@@ -1150,7 +1159,7 @@ final class CullingSession: ObservableObject {
         let filter = filter
         let source = source
         let recommender = recommender
-        let sideways = sideways, minConfidence = sidewaysMinConfidence
+        let sideways = sideways, minConfidence = sidewaysMinConfidence, sidewaysSort = sidewaysSort
         let sampleOrder = Dictionary(calibrationSample.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         // Duplicates or Similar Shots: each unresolved group together, in date order, the one to keep first.
         var groupOrder: [String: Double] = [:]
@@ -1188,8 +1197,15 @@ final class CullingSession: ObservableObject {
                         // A moved modification date is checked again (proposedRotation), not dropped.
                         guard let r = sideways[asset.localIdentifier], r.confidence >= minConfidence else { return }
                         // Photos already listed keep their places; new finds follow, surest first.
-                        if let place = keepOrder[asset.localIdentifier] { out.append((i, Double(place) - 1_000_000)) }
-                        else { out.append((i, -r.confidence)) }
+                        if let place = keepOrder[asset.localIdentifier] { out.append((i, Double(place) - 1_000_000_000)) }
+                        else {
+                            // The list comes newest first.
+                            switch sidewaysSort {
+                            case .newest: out.append((i, Double(i)))
+                            case .oldest: out.append((i, -Double(i)))
+                            default: out.append((i, -r.confidence))
+                            }
+                        }
                         return
                     }
                     guard source.isSuggestion else {
@@ -1740,8 +1756,16 @@ enum PhotoSort: String, CaseIterable, Identifiable {
     case oldest = "Oldest First"
     case newest = "Newest First"
     case recentlyAdded = "Recently Added"
+    /// Sideways Photos only: the photos Keeper is surest about first.
+    case certainty = "Most Certain First"
 
     static let storageKey = "photoSort"
+    static let sidewaysStorageKey = "sidewaysSort"
+
+    /// The choices a list offers.
+    static func options(sideways: Bool) -> [PhotoSort] {
+        sideways ? [.certainty, .oldest, .newest] : [.oldest, .newest, .recentlyAdded]
+    }
     var id: String { rawValue }
 }
 
