@@ -66,9 +66,12 @@ struct AssetImage: View {
             else if shownID != id { shownSharp = false }
             var gotImage = shownID == id
             var inCloud = false
-            // While Photos is busy (saving rotations, say) it can answer with only a small preview, even
-            // marked final, or not at all. Ask again, a little later each time (up to every 20 s), for as
-            // long as the photo is on screen, and give up on a request that hangs.
+            // The first ask is local only (quick while scrolling). With Optimize Mac Storage, the sharp
+            // version of a photo may only be in iCloud (Photos removes them from the Mac as space runs
+            // short), and locally there's just a small preview: later asks may download it, as Photos
+            // does. Photos also answers with a small preview while busy (saving rotations, say). Ask
+            // again, a little later each time (up to every 20 s), while the photo is on screen, and give
+            // up on a request that hangs.
             var attempt = 0
             while !Task.isCancelled {
                 if attempt > 0 {
@@ -76,12 +79,15 @@ struct AssetImage: View {
                     if Task.isCancelled { return }
                 }
                 var sharp = false
+                let network = attempt > 0
                 let stream = library.images(for: asset, targetSize: target, contentMode: fill ? .aspectFill : .aspectFit,
-                                            highQualityOnly: attempt > 0)
+                                            highQualityOnly: attempt > 0, allowNetwork: network)
+                ImageStats.shared.asked(network: network)
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { @MainActor in
                         for await loaded in stream {
                             inCloud = inCloud || loaded.isInCloud
+                            ImageStats.shared.answered(loaded, target: target, fill: fill, original: original)
                             guard let new = loaded.image else { continue }
                             gotImage = true
                             if !loaded.isDegraded, Self.bigEnough(new, for: target, fill: fill, original: original) {
@@ -95,11 +101,14 @@ struct AssetImage: View {
                             }
                         }
                     }
-                    group.addTask { try? await Task.sleep(for: .seconds(15)) }
+                    // A download (a whole RAW file, for the full-size view) can rightly take a while.
+                    group.addTask { try? await Task.sleep(for: .seconds(network ? 90 : 15)) }
                     await group.next()
                     group.cancelAll()
                 }
-                if sharp || Task.isCancelled || (!gotImage && inCloud) { break }
+                if sharp || Task.isCancelled { break }
+                // Only in iCloud and the download didn't come (offline, say): show the cloud meanwhile.
+                if network, !gotImage, inCloud { missingInCloud = true }
                 // A sharp stand-in of the same photo looks right: don't keep at it for ever.
                 if attempt >= 5, shownID == id, shownSharp { break }
                 if attempt == 5 { log.notice("images: thumbnail still a preview after 6 tries; still asking") }
@@ -110,6 +119,53 @@ struct AssetImage: View {
                 missingInCloud = inCloud
             }
         }
+    }
+}
+
+/// Totals of what Photos answered on-screen image requests with, logged every 20 s while there's
+/// news (counts only), so blurry photos can be explained from the log.
+@MainActor
+final class ImageStats {
+    static let shared = ImageStats()
+    private var asks = 0, networkAsks = 0, sharp = 0, small = 0, previews = 0, none = 0, inCloud = 0
+    private var smallRatios: [Double] = []
+    private var flush: Task<Void, Never>?
+
+    func asked(network: Bool) {
+        asks += 1
+        if network { networkAsks += 1 }
+        schedule()
+    }
+
+    func answered(_ loaded: LoadedImage, target: CGSize, fill: Bool, original: CGSize) {
+        if loaded.isInCloud { inCloud += 1 }
+        guard let image = loaded.image else { none += 1; return }
+        if loaded.isDegraded { previews += 1; return }
+        if AssetImage.bigEnough(image, for: target, fill: fill, original: original) { sharp += 1; return }
+        small += 1
+        if let rep = image.representations.first, rep.pixelsWide > 0 {
+            smallRatios.append(Double(max(rep.pixelsWide, rep.pixelsHigh)) / Double(max(target.width, target.height)))
+        }
+    }
+
+    private func schedule() {
+        guard flush == nil else { return }
+        flush = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            self?.report()
+        }
+    }
+
+    private func report() {
+        flush = nil
+        let median = smallRatios.sorted().dropFirst(smallRatios.count / 2).first ?? 0
+        log.notice("""
+            images: \(self.asks) asks (\(self.networkAsks) may download): \(self.sharp) sharp, \
+            \(self.small) too small (median \(Int(median * 100))% of asked), \(self.previews) previews, \
+            \(self.none) no image, \(self.inCloud) in iCloud
+            """)
+        asks = 0; networkAsks = 0; sharp = 0; small = 0; previews = 0; none = 0; inCloud = 0
+        smallRatios = []
     }
 }
 

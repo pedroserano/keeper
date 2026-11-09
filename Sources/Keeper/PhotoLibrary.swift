@@ -123,8 +123,20 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
     /// Lazy: PhotoKit loads objects only as they're asked for, so this is fast at any library size.
     /// `range` is for Date Range: whole days, first to last inclusive.
     nonisolated func fetch(_ source: Source, newestFirst: Bool, range: ClosedRange<Date>? = nil) -> PHFetchResult<PHAsset> {
+        fetch(source, sortedNewestFirst: newestFirst, range: range)
+    }
+
+    /// How many photos a source has. Unsorted, which saves Photos sorting the whole library.
+    nonisolated func count(_ source: Source, range: ClosedRange<Date>? = nil) -> Int {
+        fetch(source, sortedNewestFirst: nil, range: range).count
+    }
+
+    private nonisolated func fetch(_ source: Source, sortedNewestFirst newestFirst: Bool?,
+                                   range: ClosedRange<Date>?) -> PHFetchResult<PHAsset> {
         let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: !newestFirst)]
+        if let newestFirst {
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: !newestFirst)]
+        }
         options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
         if source == .dateRange, let range {
             let calendar = Calendar.current

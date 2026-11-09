@@ -241,7 +241,14 @@ final class CullingSession: ObservableObject {
     var gridColumns = 1
 
     private var filterTask: Task<Void, Never>?
-    private var countsTask: Task<Void, Never>?
+    /// Counting asks Photos to count the library and every album: one at a time, and another one
+    /// afterwards if something changed meanwhile. (Started over each time, counts piled up during a
+    /// run of rotations and kept Photos too busy to hand out images.)
+    private var countsRunning = false
+    private var countsAgain = false
+    /// Albums are most of the counting time (one ask of Photos each) and rarely change with what you
+    /// do here, so they're counted again at most once a minute, or when an album has no count yet.
+    private var albumsCounted: ContinuousClock.Instant?
     private var writes: Task<Void, Never>?
     /// Ratings and Favorites Keeper has written that Photos hasn't reported back yet, so the
     /// stars and heart don't flicker back to the old value while the write is under way.
@@ -1297,12 +1304,18 @@ final class CullingSession: ObservableObject {
 
     func refreshCounts() {
         countsDebounce?.cancel()
-        countsTask?.cancel()
+        if countsRunning { countsAgain = true; return }
+        countsRunning = true
+        countsAgain = false
         let library = library
         let seenIDs = decisions.values.filter { $0.seenAt != nil }.map(\.assetID)
         let rejectedIDs = decisions.values.filter { $0.flag == .reject }.map(\.assetID)
         let range = dateRange
-        let albums = library.albums.map { Source.album(id: $0.localIdentifier, title: $0.localizedTitle ?? "Untitled") }
+        let allAlbums = library.albums.map { Source.album(id: $0.localIdentifier, title: $0.localizedTitle ?? "Untitled") }
+        let albumsDue = albumsCounted.map { $0.duration(to: .now) > .seconds(60) } ?? true
+            || allAlbums.contains { counts[$0] == nil }
+        let albums = albumsDue ? allAlbums : []
+        if albumsDue { albumsCounted = .now }
         let recommender = recommender
         let sampleCount = calibrationSample.count
         var unresolvedPhotos: [SimilarGroup.Kind: Int] = [:]
@@ -1311,11 +1324,11 @@ final class CullingSession: ObservableObject {
         }
         let sidewaysDates = sideways.filter { $0.value.confidence >= sidewaysMinConfidence }.mapValues(\.modDate)
         let haveGroups = !groups.isEmpty || { if case .ready = similarity { return true } else { return false } }()
-        countsTask = Task { [weak self] in
+        Task { [weak self] in
             let started = ContinuousClock.now
             let out = await Task.detached(priority: .utility) { () -> [Source: Int] in
                 var out: [Source: Int] = [:]
-                let all = library.fetch(.allPhotos, newestFirst: false).count
+                let all = library.count(.allPhotos)
                 out[.allPhotos] = all
                 // Only seen photos still in the library count, so deleted ones can't hold it above 0.
                 out[.unreviewed] = max(all - library.assets(withIDs: seenIDs).count, 0)
@@ -1334,14 +1347,15 @@ final class CullingSession: ObservableObject {
                 // Still in the library (a moved modification date is checked again, not dropped).
                 out[.sideways] = library.assets(withIDs: Array(sidewaysDates.keys)).count
                 for s in [Source.favorites, .dateRange, .screenshots, .bursts] + albums {
-                    if Task.isCancelled { break }
-                    out[s] = library.fetch(s, newestFirst: false, range: range).count
+                    out[s] = library.count(s, range: range)
                 }
                 return out
             }.value
-            guard let self, !Task.isCancelled else { return }
+            guard let self else { return }
             log.notice("open: counted \(out.count) sources in \(started.duration(to: .now), privacy: .public)")
-            self.counts = out
+            self.counts.merge(out) { _, new in new }
+            self.countsRunning = false
+            if self.countsAgain { self.refreshCounts() }
         }
     }
 
@@ -1394,7 +1408,8 @@ final class CullingSession: ObservableObject {
         } else {
             apply(after, keepingID: keep?.localIdentifier)
         }
-        refreshCounts()
+        // Once changes pause: a run of rotations reports one change after another.
+        scheduleCountsRefresh()
     }
 
     // MARK: Moving
