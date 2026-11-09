@@ -586,6 +586,33 @@ final class EventLimitTests: XCTestCase {
         XCTAssertEqual(l.high, 1985)
     }
 
+    /// Two so-so look-alikes scanned far apart: grouped only when taken in the same place around
+    /// the same time.
+    func testSamePlaceAroundTheSameTimeLinksSoSoLookAlikes() {
+        let t: Float = 0.609 // distance about 0.6: too far on looks alone
+        var prints = ["beach1": [Float(1), 0, 0, 0], "beach2": [cos(t), sin(t), 0, 0]]
+        var order = ["beach1"]
+        for i in 0..<60 { // more than the import-order window between them
+            let id = "x\(i)"
+            prints[id] = [0, 0, Float(i % 2 == 0 ? 1 : -1), 0]
+            order.append(id)
+        }
+        order.append("beach2")
+        let here = GeoPoint(lat: 41.38, lon: 2.17), nearby = GeoPoint(lat: 41.385, lon: 2.172)
+        let elsewhere = GeoPoint(lat: 48.85, lon: 2.35)
+        func grouped(_ places: [String: GeoPoint], _ times: [String: Double]) -> Bool {
+            EventClusters.find(order: order, prints: prints, places: places, times: times)
+                .contains { $0.contains("beach1") && $0.contains("beach2") }
+        }
+        let close = ["beach1": 1987.5, "beach2": 1987.9]
+        XCTAssertFalse(grouped([:], close), "looks alone aren't enough")
+        XCTAssertTrue(grouped(["beach1": here, "beach2": nearby], close))
+        XCTAssertFalse(grouped(["beach1": here, "beach2": nearby], ["beach1": 1987.5, "beach2": 1993.0]),
+                       "the same place years apart isn't one event")
+        XCTAssertFalse(grouped(["beach1": here, "beach2": elsewhere], close))
+        XCTAssertFalse(grouped(["beach1": here, "beach2": nearby], [:]), "no guessed dates, no place link")
+    }
+
     /// Two nearly identical backyard photos: one scanned in 1985, one showing someone born in 1990.
     func testLookAlikesThatCantBeTheSameDayStayApart() {
         let p = [Float(1), 0, 0, 0], q = [Float(0.999), 0.04, 0, 0]

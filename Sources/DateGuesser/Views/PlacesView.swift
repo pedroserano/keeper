@@ -9,6 +9,9 @@ struct PlacesView: View {
     private var places: PlacesState { state.places }
 
     @State private var filter: Filter = .likely
+    /// Outings instead of photos. Not one of the filters: a list of outings, each placed with one
+    /// search, so it has its own button next to Show.
+    @State private var showOutings = false
     @State private var sort: Sort = .library
     /// The current photo (arrow keys, Return, G, A, N). Selected photos are the ones to place.
     @State private var cursor = GridCursor()
@@ -24,8 +27,6 @@ struct PlacesView: View {
         case unguessed = "No Guess"
         case checked = "Selected"
         case hidden = "Hidden"
-        /// Not a filter: photos from one camera taken close together, placed with one search.
-        case outings = "Outings"
         var id: String { rawValue }
     }
 
@@ -45,7 +46,6 @@ struct PlacesView: View {
             case .unguessed: return !d.ignored && places.guesses[id] == nil && d.override == nil
             case .checked: return !d.ignored && d.selected
             case .hidden: return d.ignored
-            case .outings: return false
             }
         }
         switch sort {
@@ -61,7 +61,7 @@ struct PlacesView: View {
     var body: some View {
         // Worked out once per redraw: both walk every photo missing a place.
         let checked = places.checkedForApply.count
-        let outings = filter == .outings
+        let outings = showOutings
         let ids = outings ? [] : visibleIDs
         Group {
             if outings {
@@ -71,7 +71,7 @@ struct PlacesView: View {
             }
         }
         .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : outings
-                            ? "\(places.outings.count.formatted()) outings" : "\(ids.count.formatted()) photos")
+                            ? "\(places.openOutings.count.formatted()) outings" : "\(ids.count.formatted()) photos")
         .toolbar { toolbarItems(ids, checked) }
         .alert("Look for photos without a location again?", isPresented: $confirmRescan) {
             Button("Look Again") { places.startScan() }
@@ -187,11 +187,11 @@ struct PlacesView: View {
 
     @ToolbarContentBuilder
     private func toolbarItems(_ ids: [String], _ checked: Int) -> some ToolbarContent {
-        // Show is one drop-down: six filters as buttons don't fit, and the toolbar then hides
-        // things in a » menu.
-        KeeperToolbar(photoShapeEnabled: filter != .outings, shortcuts: showShortcuts) {
-            ShowMenu(selection: $filter,
-                     help: "Which photos to show. Outings: photos from one camera taken close together, placed with one search.")
+        // Show is one drop-down: five filters as buttons don't fit, and the toolbar then hides
+        // things in a » menu. Outings, which isn't a filter, is its own button joined to it.
+        KeeperToolbar(photoShapeEnabled: !showOutings, shortcuts: showShortcuts) {
+            ShowMenuWithView(selection: $filter, showView: $showOutings, title: "Outings", systemImage: "figure.walk",
+                             viewHelp: "Outings: photos from one camera taken close together, placed with one search")
         } action: {
             Menu {
                 Picker("Sort By", selection: $sort) {
@@ -594,7 +594,7 @@ struct OutingsList: View {
     var body: some View {
         let places = state.places
         let outings: [[String]] = page == .toPlace
-            ? places.outings.filter { members in
+            ? places.openOutings.filter { members in
                 members.contains { !places.decision($0).ignored && places.decision($0).override == nil }
             }
             : places.confirmedOutings
@@ -627,7 +627,7 @@ struct OutingsList: View {
                     ContentUnavailableView("No Outings to Place", systemImage: "figure.walk",
                                            description: Text(places.outings.isEmpty
                                                              ? "Outings need photos with a real date. Scans and other undated photos are placed one by one."
-                                                             : "Every outing has a place. See them under Confirmed."))
+                                                             : "Every outing has a place, or you said it isn’t one. Placed ones are under Confirmed."))
                 } else {
                     ContentUnavailableView("No Confirmed Outings", systemImage: "mappin.circle",
                                            description: Text("Outings you give a place show here, so you can change or undo it."))
@@ -760,6 +760,9 @@ private struct OutingRow: View {
                 if !checked.isEmpty {
                     Text("\(checked.count.formatted()) selected").font(.caption).foregroundStyle(Theme.accent)
                 }
+                Button("Not One Outing") { places.notOneOuting(members) }
+                    .buttonStyle(.borderless)
+                    .help("These weren’t taken in one place: take this outing off the list. The photos stay in Places, to place one by one.")
             }
             ThumbnailStrip {
                 LazyHStack(spacing: 6) {

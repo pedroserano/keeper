@@ -34,6 +34,12 @@ final class PlacesState {
     }
     /// Photos with a real date grouped by camera and time, biggest first.
     var outings: [[String]] = []
+    /// Photos from outings you said aren't one outing (Not One Outing). Kept, so they don't come back;
+    /// an outing that gains a photo you haven't seen in one shows again.
+    var notOutings: Set<String> { didSet { store.save(notOutings, to: "notOutings") } }
+    /// Outings minus the ones you said aren't one.
+    var openOutings: [[String]] { outings.filter { !$0.allSatisfy(notOutings.contains) } }
+    func notOneOuting(_ members: [String]) { notOutings.formUnion(members) }
     /// What was learned about each camera.
     var calibration = PlaceCalibration()
     /// Each photo's camera, read from the Photos library.
@@ -63,6 +69,7 @@ final class PlacesState {
         decisions = store.load([String: PlaceDecision].self, from: "placeDecisions") ?? [:]
         journal = store.load([PlaceBatch].self, from: "placesJournal") ?? []
         lookalikeStat = store.load(ClueCalibration.Stat.self, from: "placeCalibration") ?? ClueCalibration.Stat()
+        notOutings = store.load(Set<String>.self, from: "notOutings") ?? []
         rememberWhenTaken()
         refreshOrder()
     }

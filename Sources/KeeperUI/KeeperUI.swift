@@ -438,6 +438,54 @@ public struct ShowMenu<Choice: Hashable & CaseIterable & RawRepresentable>: View
     }
 }
 
+/// Show's filters joined to a button for a different view of the same photos (Places' Outings,
+/// Undated's Events): one control, so the button reads as part of Show. Choosing any filter, even
+/// the one already chosen, leaves that view.
+public struct ShowMenuWithView<Choice: Hashable & CaseIterable & RawRepresentable>: View
+    where Choice.RawValue == String, Choice.AllCases: RandomAccessCollection {
+    @Binding var selection: Choice
+    @Binding var showView: Bool
+    var title: String
+    var systemImage: String
+    var help: String
+    var viewHelp: String
+
+    public init(selection: Binding<Choice>, showView: Binding<Bool>, title: String, systemImage: String,
+                help: String = "Which photos to show", viewHelp: String) {
+        _selection = selection
+        _showView = showView
+        self.title = title
+        self.systemImage = systemImage
+        self.help = help
+        self.viewHelp = viewHelp
+    }
+
+    public var body: some View {
+        let first = Choice.allCases.first == selection && !showView
+        ControlGroup {
+            Menu {
+                ForEach(Array(Choice.allCases), id: \.self) { choice in
+                    // Buttons, not a Picker: a Picker doesn't report choosing what's already chosen.
+                    Button { selection = choice; showView = false } label: {
+                        if choice == selection && !showView { Label(choice.rawValue, systemImage: "checkmark") }
+                        else { Text(choice.rawValue) }
+                    }
+                }
+            } label: {
+                Label(selection.rawValue, systemImage: first ? "line.3.horizontal.decrease.circle"
+                                                             : "line.3.horizontal.decrease.circle.fill")
+                    .labelStyle(.titleAndIcon)
+            }
+            .help(help)
+            Toggle(isOn: $showView) {
+                Label(title, systemImage: systemImage).labelStyle(.titleAndIcon)
+            }
+            .help(viewHelp)
+        }
+        .fixedSize()
+    }
+}
+
 /// How big grid thumbnails are, as in Photos' zoom slider. One setting for every grid: a scale of
 /// each grid's own standard size.
 public struct ThumbnailSizeSlider: View {

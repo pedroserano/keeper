@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Observation
 import Photos
@@ -397,6 +398,17 @@ final class AppState {
         }
         let limits = photoLimits
         limitsUsedForEvents = limits
+        // Where and roughly when, for events: a place given in Places (set or applied) or the
+        // photo's location in Photos (looked up below), and the current date guess.
+        var knownPlaces: [String: GeoPoint] = [:]
+        for (id, entry) in places.placed where scan.undated[id] != nil { knownPlaces[id] = entry.new }
+        var times: [String: Double] = [:]
+        for id in order {
+            if let p = places.decision(id).override?.point { knownPlaces[id] = p }
+            if let e = effectiveEstimate(id) {
+                times[id] = Double(e.year) + ((1...12).contains(e.month) ? Double(e.month - 1) / 12 : 0.5)
+            }
+        }
         isFindingEvents = !packed.isEmpty
         Timing.note("links #\(run) prep on main", since: prepStarted)
         linksTask = Task.detached(priority: .utility) {
@@ -418,7 +430,17 @@ final class AppState {
             let lookalikes = probe.evidence(for: prints, maxWeight: AppState.lookalikeWeight)
             stage("look-alikes (\(probePacked.count))")
             guard !Task.isCancelled else { return }
-            let events = EventClusters.find(order: order, prints: prints, people: who, limits: limits)
+            var photoPlaces = knownPlaces
+            let unplaced = order.filter { photoPlaces[$0] == nil && times[$0] != nil }
+            for (id, asset) in PhotoLibraryService.shared.assets(for: unplaced) {
+                if let c = asset.location?.coordinate, CLLocationCoordinate2DIsValid(c), c.latitude != 0 || c.longitude != 0 {
+                    photoPlaces[id] = GeoPoint(lat: c.latitude, lon: c.longitude)
+                }
+            }
+            stage("places (\(photoPlaces.count) located)")
+            guard !Task.isCancelled else { return }
+            let events = EventClusters.find(order: order, prints: prints, people: who, limits: limits,
+                                            places: photoPlaces, times: times)
             stage("events")
             Timing.note("links #\(run) for \(prints.count) photos\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
             guard !Task.isCancelled else { return }

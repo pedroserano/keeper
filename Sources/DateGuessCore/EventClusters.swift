@@ -58,9 +58,22 @@ public enum EventClusters {
         /// Two groups merge only if the average distance between their photos is below this.
         public var averageCutoff: Float
         public var maxSize: Int
+        /// Taken in the same place (within `placeKm`) around the same time (guessed dates within
+        /// `placeYears`): as believable as the same person.
+        public var samePlace: Float
+        public var placeKm: Double
+        public var placeYears: Double
+        /// The average-likeness cutoff for joining groups along a same-place link.
+        public var placeAverageCutoff: Float
 
         public init(anywhere: Float = 0.5, neighbors: Float = 0.65, samePerson: Float = 0.7,
-                    window: Int = 40, averageCutoff: Float = 0.55, maxSize: Int = 60) {
+                    window: Int = 40, averageCutoff: Float = 0.55, maxSize: Int = 60,
+                    samePlace: Float = 0.7, placeKm: Double = 1, placeYears: Double = 1,
+                    placeAverageCutoff: Float = 0.65) {
+            self.placeAverageCutoff = placeAverageCutoff
+            self.samePlace = samePlace
+            self.placeKm = placeKm
+            self.placeYears = placeYears
             self.anywhere = anywhere
             self.neighbors = neighbors
             self.samePerson = samePerson
@@ -70,22 +83,32 @@ public enum EventClusters {
         }
     }
 
-    struct Edge { let a: Int; let b: Int; let d: Float }
+    struct Edge { let a: Int; let b: Int; let d: Float; var cutoff: Float? = nil }
 
     /// - Returns: groups of two or more photos, biggest first, each in import order.
     /// - Parameter limits: firm year limits per photo. Photos whose limits can't overlap (scanned in 1985
     ///   vs. showing someone born in 1990) are never put in the same event, however alike they look.
+    /// - Parameters:
+    ///   - places: where photos were taken (their location in Photos, or the place given in Places).
+    ///   - times: each photo's guessed date as a year with a fraction. A place only links photos
+    ///     whose guesses are close: the same spot years apart isn't one event.
     public static func find(order: [String], prints: [String: [Float]], people: [String: Set<String>] = [:],
-                            limits: [String: YearLimits] = [:], options: Options = .init()) -> [[String]] {
+                            limits: [String: YearLimits] = [:], places: [String: GeoPoint] = [:],
+                            times: [String: Double] = [:], options: Options = .init()) -> [[String]] {
         let ids = order.filter { prints[$0] != nil }
         guard ids.count > 1, let dim = prints[ids[0]]?.count, dim > 0 else { return [] }
         let vectors = ids.map { prints[$0]! }
         let index = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
         var edges: [Edge] = []
-        var seen = Set<Int64>()
-        func add(_ i: Int, _ j: Int, _ d: Float) {
+        var seen: [Int64: Int] = [:]
+        func add(_ i: Int, _ j: Int, _ d: Float, cutoff: Float? = nil) {
             let key = Int64(min(i, j)) << 32 | Int64(max(i, j))
-            if seen.insert(key).inserted { edges.append(Edge(a: i, b: j, d: d)) }
+            if let e = seen[key] {
+                if let cutoff { edges[e].cutoff = max(edges[e].cutoff ?? 0, cutoff) }
+            } else {
+                seen[key] = edges.count
+                edges.append(Edge(a: i, b: j, d: d, cutoff: cutoff))
+            }
         }
 
         // Anywhere: all pairs, via matrix multiplication (distance² = 2 − 2·dot for unit vectors).
@@ -123,6 +146,32 @@ public enum EventClusters {
             }}
         }
 
+        // Same place around the same time. Buckets of about 2 km, compared with their neighbours.
+        let located = places.compactMap { id, p -> (Int, GeoPoint, Double)? in
+            guard let i = index[id], let t = times[id] else { return nil }
+            return (i, p, t)
+        }
+        if located.count > 1 {
+            let cell = 0.02
+            func key(_ p: GeoPoint) -> (Int, Int) { (Int((p.lat / cell).rounded(.down)), Int((p.lon / cell).rounded(.down))) }
+            var buckets: [Int64: [Int]] = [:]
+            func code(_ k: (Int, Int)) -> Int64 { Int64(k.0) << 32 | Int64(UInt32(bitPattern: Int32(truncatingIfNeeded: k.1))) }
+            for (n, l) in located.enumerated() { buckets[code(key(l.1)), default: []].append(n) }
+            for (n, l) in located.enumerated() {
+                if n % 512 == 0, Task.isCancelled { return [] }
+                let k = key(l.1)
+                for dy in -1...1 { for dx in -1...1 {
+                    for m in buckets[code((k.0 + dy, k.1 + dx))] ?? [] where m > n {
+                        let o = located[m]
+                        guard abs(l.2 - o.2) <= options.placeYears,
+                              l.1.distanceKm(to: o.1) <= options.placeKm else { continue }
+                        let d = EventLinks.distance(vectors[l.0], vectors[o.0])
+                        if d < options.samePlace { add(l.0, o.0, d, cutoff: options.placeAverageCutoff) }
+                    }
+                }}
+            }
+        }
+
         // Closest links first; merge two groups only if they look alike on average.
         edges.sort { $0.d < $1.d }
         var parent = Array(0..<ids.count)
@@ -141,7 +190,7 @@ public enum EventClusters {
             guard !combined.isImpossible else { continue }
             var total: Float = 0
             for x in members[a] { for y in members[b] { total += EventLinks.distance(vectors[x], vectors[y]) } }
-            guard total / Float(members[a].count * members[b].count) < options.averageCutoff else { continue }
+            guard total / Float(members[a].count * members[b].count) < max(options.averageCutoff, e.cutoff ?? 0) else { continue }
             parent[a] = b
             members[b] += members[a]
             members[a] = []

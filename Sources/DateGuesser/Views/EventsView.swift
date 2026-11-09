@@ -12,6 +12,14 @@ struct EventsView: View {
     @State private var suggestions: [GroupSuggestion] = []
     @State var page: Page = .suggested
     @Environment(\.showShortcuts) private var showShortcuts
+    /// Shown inside Undated Photos (its Events button) rather than from the sidebar: Show is then
+    /// Undated's filters joined to Events, and Suggested or Confirmed sits beside it.
+    var undated: Undated?
+
+    struct Undated {
+        var filter: Binding<ReviewView.Filter>
+        var showEvents: Binding<Bool>
+    }
 
     enum Page: String, CaseIterable, Identifiable {
         case suggested = "Suggested"
@@ -28,7 +36,21 @@ struct EventsView: View {
         }
         .toolbar {
             KeeperToolbar(shortcuts: showShortcuts) {
-                ShowMenu(selection: $page, help: "Suggested events, or the events you confirmed")
+                if let undated {
+                    HStack(spacing: 8) {
+                    ShowMenuWithView(selection: undated.filter, showView: undated.showEvents,
+                                     title: "Events", systemImage: "square.stack", viewHelp: ReviewView.eventsHelp)
+                    Picker("Events", selection: $page) {
+                        ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Suggested events, or the events you confirmed")
+                    }
+                } else {
+                    ShowMenu(selection: $page, help: "Suggested events, or the events you confirmed")
+                }
             } action: {
                 Button {
                     showingNewGroup = true
