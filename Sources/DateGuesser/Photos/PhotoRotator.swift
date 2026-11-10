@@ -186,9 +186,16 @@ enum PhotoRotator {
 final class ImageRevisions {
     static let shared = ImageRevisions()
     private(set) var revisions: [String: Int] = [:]
+    /// Bumped when Photos reports any change (after Keeper's own writes settle): every thumbnail
+    /// showing loads again, for a new rating, Favorite or rotation.
+    private(set) var generation = 0
 
     func revision(_ id: String) -> Int { revisions[id] ?? 0 }
-    func bump(_ id: String) { revisions[id, default: 0] += 1 }
+    func bump(_ id: String) {
+        PhotoLibraryService.shared.forget(id)
+        revisions[id, default: 0] += 1
+    }
+    func bumpAll() { generation += 1 }
 }
 
 /// Single-key commands: R rotates the selected photos, Space checks them, / shows the shortcuts. The
@@ -215,12 +222,15 @@ final class KeyCommands {
     func pop(_ id: UUID) { handlers.removeAll { $0.id == id } }
 
     private func handle(_ event: NSEvent) -> Bool {
-        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+        let mods = event.modifierFlags.intersection([.command, .control, .option])
+        guard mods.isEmpty || mods == .command,
               !event.isARepeat || (123...126).contains(event.keyCode),   // arrow keys repeat
               let window = NSApp.keyWindow,
               !(window.firstResponder is NSText) else { return false }
-        // "r" whether or not Shift is down; "?" as typed with Shift-/.
-        let keys = [event.charactersIgnoringModifiers?.lowercased(), event.characters].compactMap { $0 }
+        // "r" whether or not Shift is down; "?" as typed with Shift-/. With ⌘ a handler's key is
+        // written "⌘i", so plain-key handlers never see ⌘ shortcuts.
+        let plain = [event.charactersIgnoringModifiers?.lowercased(), event.characters].compactMap { $0 }
+        let keys = mods == .command ? plain.map { "⌘" + $0 } : plain
         for handler in handlers.reversed() where keys.contains(handler.key) && handler.perform() { return true }
         return false
     }

@@ -276,15 +276,15 @@ public struct ShortcutSection: Identifiable, Sendable {
     /// The keys that work the same on every screen.
     public static let everywhere = ShortcutSection("Every screen", [
         Shortcut(["←", "→", "↑", "↓"], "Move between photos"),
-        Shortcut(["Return"], "Open the photo"),
-        Shortcut(["Space"], "See the photo bigger; Space again to go back"),
+        Shortcut(["Return"], "The photo's details (⌘I too)"),
+        Shortcut(["Space"], "Show the photo filling the window; Space again to go back"),
         Shortcut(["Esc"], "Back out one step: zoom, the open photo, then the selection"),
         Shortcut(["G"], "Select or deselect the current photo (⌘-click and Shift-click too)"),
         Shortcut(["⌘", "A"], "Select every photo shown"),
         Shortcut(["⇧", "⌘", "A"], "Deselect them all"),
         Shortcut(["A"], "Accept Keeper's suggestion"),
         Shortcut(["N"], "Turn the suggestion down"),
-        Shortcut(["R"], "Rotate 90° clockwise in Photos (the selected photos, or the current one)"),
+        Shortcut(["R"], "Rotate 90° clockwise in Photos: the selected photos, or else the current one (asks first above 10)"),
         Shortcut(["⌘", "Z"], "Undo"),
         Shortcut(["⇧", "⌘", "Z"], "Redo"),
         Shortcut(["?"], "Show or hide this guide"),
@@ -499,5 +499,77 @@ public struct PhotoShapePicker: View {
         }
         .pickerStyle(.segmented)
         .help("Grid shows photos as squares, or whole at their own shape")
+    }
+}
+
+// MARK: The right-click menu every photo screen shares
+
+/// One right-click menu for a photo everywhere, always in this order: Select, Get Info, Show in
+/// Photos, Set Date…, Set Location…, Rotate, then Hide or Don't Show Again. A screen leaves out
+/// (passes nil for) only what doesn't apply there. `count` is how many photos the menu acts on: the
+/// selection when the photo is in it, otherwise just this one.
+public struct PhotoMenu: View {
+    public struct Item {
+        public var title: String
+        public var disabled: Bool
+        public var action: () -> Void
+        public init(_ title: String, disabled: Bool = false, action: @escaping () -> Void) {
+            self.title = title
+            self.disabled = disabled
+            self.action = action
+        }
+    }
+
+    var count: Int
+    var isSelected: Bool?
+    var select: ((Bool) -> Void)?
+    var getInfo: (() -> Void)?
+    var infoTitle: String
+    var showInPhotos: (() -> Void)?
+    var setDate: (() -> Void)?
+    var setLocation: (() -> Void)?
+    var rotate: (() -> Void)?
+    var rotateDisabled: Bool
+    var hide: Item?
+
+    public init(count: Int = 1, isSelected: Bool? = nil, select: ((Bool) -> Void)? = nil,
+                getInfo: (() -> Void)? = nil, infoTitle: String = "Get Info",
+                showInPhotos: (() -> Void)? = nil,
+                setDate: (() -> Void)? = nil, setLocation: (() -> Void)? = nil,
+                rotate: (() -> Void)? = nil, rotateDisabled: Bool = false,
+                hide: Item? = nil) {
+        self.count = count
+        self.isSelected = isSelected
+        self.select = select
+        self.getInfo = getInfo
+        self.infoTitle = infoTitle
+        self.showInPhotos = showInPhotos
+        self.setDate = setDate
+        self.setLocation = setLocation
+        self.rotate = rotate
+        self.rotateDisabled = rotateDisabled
+        self.hide = hide
+    }
+
+    /// " of 12 Photos" when the menu acts on more than one.
+    private var photos: String { count == 1 ? "" : " of \(count.formatted()) Photos" }
+
+    public var body: some View {
+        if let isSelected, let select {
+            Button(isSelected ? "Deselect  G" : "Select  G") { select(!isSelected) }
+        }
+        if let getInfo { Button("\(infoTitle)  ⌘I", action: getInfo) }
+        if let showInPhotos { Button("Show in Photos", action: showInPhotos) }
+        if setDate != nil || setLocation != nil || rotate != nil { Divider() }
+        if let setDate { Button("Set Date\(photos)…", action: setDate) }
+        if let setLocation { Button("Set Location\(photos)…", action: setLocation) }
+        if let rotate {
+            Button(count == 1 ? "Rotate Clockwise  R" : "Rotate \(count.formatted()) Photos Clockwise  R", action: rotate)
+                .disabled(rotateDisabled)
+        }
+        if let hide {
+            Divider()
+            Button(hide.title, action: hide.action).disabled(hide.disabled)
+        }
     }
 }

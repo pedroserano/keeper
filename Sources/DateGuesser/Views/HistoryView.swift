@@ -3,9 +3,11 @@ import KeeperUI
 import DateGuessCore
 
 struct HistoryView: View {
-    /// Dates' History or Places' History: each section of the sidebar has its own.
-    enum Kind { case dates, places }
-    var kind: Kind = .dates
+    /// One History for every date and place change. Dates or places alone are for tests and
+    /// older links.
+    enum Kind { case all, dates, places }
+    var kind: Kind = .all
+    private var showsDates: Bool { kind != .places }
     @Environment(\.showShortcuts) private var showShortcuts
     @Environment(AppState.self) private var state
     var _batchToUndo = State<ApplyBatch?>(initialValue: nil)
@@ -87,22 +89,19 @@ struct HistoryView: View {
     }
 
     private var items: [Item] {
-        switch kind {
-        case .dates: state.journal.map(Item.dates).sorted { $0.date > $1.date }
-        case .places: state.places.journal.map(Item.places).sorted { $0.date > $1.date }
-        }
+        let dates = kind == .places ? [] : state.journal.map(Item.dates)
+        let places = kind == .dates ? [] : state.places.journal.map(Item.places)
+        return (dates + places).sorted { $0.date > $1.date }
     }
 
     var body: some View {
         Group {
             if items.isEmpty {
                 ContentUnavailableView("No Changes Yet", systemImage: "clock.arrow.circlepath",
-                                       description: Text(kind == .dates
-                                                         ? "Each time you apply dates, the old ones are kept here so you can put them back."
-                                                         : "Each time you apply places, the old ones are kept here so you can put them back."))
+                                       description: Text("Each time you apply dates or places, the old ones are kept here so you can put them back."))
             } else {
                 List {
-                    if kind == .dates && !state.dateShifts.isEmpty { shiftedSection }
+                    if showsDates && !state.dateShifts.isEmpty { shiftedSection }
                     ForEach(items) { item in
                         switch item {
                         case .dates(let batch): dateSection(batch)
@@ -113,9 +112,9 @@ struct HistoryView: View {
                 .listStyle(.inset)
             }
         }
-        .onAppear { if kind == .dates { state.checkShiftedDates() } }
+        .onAppear { if showsDates { state.checkShiftedDates() } }
         .toolbar {
-            if kind == .dates {
+            if showsDates {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     state.checkShiftedDates()
@@ -226,13 +225,12 @@ struct HistoryView: View {
     }
 }
 
-/// One exact date, written to Photos, for a group of photos whose dates were shifted there.
+/// One date for a group of photos whose dates were shifted in Photos. It waits in To Apply.
 private struct SetShiftedDateButton: View {
     var state: AppState
     var shifts: [AppState.DateShift]
     @State private var showing = false
-    @State private var year = YearBounds.currentYear() - 30
-    @State private var month = 1
+    @State private var choice = DateChoice(year: YearBounds.currentYear() - 30, month: 1)
 
     var body: some View {
         Button("Set Date…") {
@@ -240,43 +238,19 @@ private struct SetShiftedDateButton: View {
             let calendar = Calendar.current
             let pairs = shifts.map { (calendar.component(.year, from: $0.appDate), calendar.component(.month, from: $0.appDate)) }
             if let top = Dictionary(grouping: pairs, by: { $0.0 * 12 + $0.1 }).max(by: { $0.value.count < $1.value.count })?.value.first {
-                year = top.0
-                month = top.1
+                choice = DateChoice(year: top.0, month: top.1)
             }
             showing = true
         }
         .buttonStyle(.borderedProminent)
-        .disabled(state.isApplying)
-        .help("Give all of them one exact date in Photos")
+        .help("Give all of them one date (it waits in To Apply)")
         .popover(isPresented: $showing, arrowEdge: .bottom) {
-            Form {
-                LabeledContent("Year") {
-                    YearComboBox(year: year, range: state.lowestYear...YearBounds.currentYear()) { year = $0 }
-                        .frame(width: 90)
-                }
-                Picker("Month", selection: $month) {
-                    ForEach(1...12, id: \.self) { m in Text(DateEstimate.monthNames[m - 1]).tag(m) }
-                }
-                Text("Every one of the \(shifts.count.formatted()) photos gets \(DateEstimate.monthNames[month - 1]) 1, \(String(year)) in Photos. You can undo this from History.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .formStyle(.grouped)
-            .frame(width: 340)
-            .safeAreaInset(edge: .bottom) {
-                HStack {
-                    Spacer()
-                    Button("Cancel") { showing = false }
-                        .keyboardShortcut(.cancelAction)
-                    Button(shifts.count == 1 ? "Set Date in Photos" : "Set Date for \(shifts.count.formatted()) Photos") {
-                        state.setDateInPhotos(shifts, year: year, month: month)
-                        showing = false
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding([.horizontal, .bottom], 16)
+            DatePickerPanel(title: DatePickerPanel.title(shifts.count), choice: $choice,
+                            range: state.lowestYear...YearBounds.currentYear(), seasons: false,
+                            note: "Each photo gets the 1st of the month. It waits in To Apply until you apply it.",
+                            confirm: "Set Date", onCancel: { showing = false }) {
+                if let text = state.queueDate(shifts, year: choice.year, month: choice.month ?? 1) { state.banner = text }
+                showing = false
             }
         }
     }

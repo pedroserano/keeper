@@ -67,16 +67,14 @@ struct ShortcutsSheet: View {
             Shortcut(["N"], "In Sideways Photos: not sideways, leave it as it is"),
         ]),
         ShortcutSection("Looking closer", [
-            Shortcut(["Return"], "Switch between the grid and one photo"),
-            Shortcut(["Space"], "In a photo: 100% zoom on and off"),
             Shortcut(["Z"], "100% zoom on the main face"),
             Shortcut(["C"], "Compare with its look-alikes, burst frames or nearby shots"),
             Shortcut(["I"], "Show Apple Photos' scores for this photo"),
-            Shortcut(["⌘", "1"], "Grid; ⌘2 one photo, ⌘3 compare"),
+            Shortcut(["⌘", "1"], "Grid; ⌘2 one photo, ⌘3 compare (double-click a photo opens it too)"),
         ]),
         ShortcutSection("Duplicates and Similar Shots", [
             Shortcut(["↑", "↓"], "Previous or next group; with ⇧, select groups"),
-            Shortcut(["G"], "Tick or untick the group (or the selected groups)"),
+            Shortcut(["G"], "Select or deselect the group (or the selected groups)"),
             Shortcut(["K"], "Keep this one when merging. In compare: keep this one, reject the others"),
         ]),
     ]

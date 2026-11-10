@@ -136,6 +136,7 @@ private struct ZoomedPhoto: View {
         .onAppear { loader.load(request.id, side: 2400) }
         .onChange(of: request.id) { loader.load(request.id, side: 2400) }
         .onChange(of: ImageRevisions.shared.revision(request.id)) { loader.load(request.id, side: 2400, force: true) }
+        .onChange(of: ImageRevisions.shared.generation) { loader.load(request.id, side: 2400, force: true) }
         .onDisappear { loader.cancel() }
         // Pushed last, so these win over the screen underneath while it's open.
         .onSpaceKey { zoom.close(); return true }

@@ -24,7 +24,7 @@ struct PlacesView: View {
         /// Photos you gave a place here (one by one, with Set Place or with their outing), waiting for Apply.
         case setByYou = "Set by You"
         case checked = "Selected"
-        case hidden = "Hidden"
+        case hidden = "Not Shown"
         var id: String { rawValue }
     }
 
@@ -97,7 +97,7 @@ struct PlacesView: View {
                     let hiddenSelected = selectedShown.filter { places.decision($0).ignored }
                     if !hiddenSelected.isEmpty {
                         Button("Show \(hiddenSelected.count.formatted()) Again") { places.setIgnored(hiddenSelected, false) }
-                            .help("Bring the selected hidden photos back (N)")
+                            .help("Show the selected photos again (N)")
                     }
                     SetPlaceButton(places: places, ids: selectedShown.filter { !places.decision($0).ignored })
                     Button(checked == 0 ? "Apply" : "Apply \(checked.formatted())") { confirmApply = true }
@@ -222,15 +222,16 @@ struct PlacesView: View {
 
     private func checkMenu(_ ids: [String]) -> some View {
         let confident = ids.filter { places.guesses[$0]?.level == .high }
-        // Photos you gave a place (one by one or with their outing) that wait for Apply, shown or not.
-        let confirmed = places.order.filter { let d = places.decision($0); return !d.ignored && d.override != nil }
+        // Shown photos you gave a place (one by one or with their outing). Like every Select item,
+        // only photos on screen: the Set by You filter shows them all.
+        let confirmed = ids.filter { let d = places.decision($0); return !d.ignored && d.override != nil }
         return Menu {
             Button("Select All Shown  ⌘A") { places.select(ids, true) }
             Button("Select Confident (\(confident.count.formatted()))") { places.select(confident, true) }
                 .disabled(confident.isEmpty)
-            Button("Select Confirmed (\(confirmed.count.formatted()))") { places.select(confirmed, true) }
+            Button("Select Set by You (\(confirmed.count.formatted()))") { places.select(confirmed, true) }
                 .disabled(confirmed.isEmpty)
-                .help("Every photo you gave a place that’s waiting for Apply, also in outings")
+                .help("The photos shown that you gave a place, one by one or with their outing")
             Divider()
             Button("Deselect All Shown  ⇧⌘A") { places.select(ids, false) }
         } label: {
@@ -283,7 +284,6 @@ struct PlaceCard: View {
     var onToggle: () -> Void = {}
     var onRotate: () -> Void = {}
     @State private var showWhy = false
-    @State private var showSearch = false
     @AppStorage(PhotoShapePicker.storageKey) private var wholePhotos = false
 
     var body: some View {
@@ -339,20 +339,8 @@ struct PlaceCard: View {
                 .lineLimit(1)
 
             HStack(spacing: 4) {
-                Button {
-                    showSearch = true
-                } label: {
-                    Label(decision.override == nil ? "Set Place…" : "Change…", systemImage: "magnifyingglass")
-                }
-                .help("Search Apple Maps for the place")
-                .popover(isPresented: $showSearch, arrowEdge: .bottom) {
-                    PlaceSearchField { choice in
-                        places.setOverride(assetID, choice)
-                        showSearch = false
-                    }
-                    .frame(width: 340)
-                    .padding(12)
-                }
+                PlacePickerButton(title: decision.override == nil ? "Set Place…" : "Change Place…", count: 1,
+                                  help: "Search Apple Maps for the place") { places.setOverride(assetID, $0) }
                 if decision.override != nil, guess != nil {
                     Button("Use Guess") { places.setOverride(assetID, nil) }
                         .help("Go back to the app’s guess")
@@ -372,17 +360,18 @@ struct PlaceCard: View {
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .opacity(decision.ignored ? 0.5 : 1)
         .contextMenu {
-            Button(decision.selected ? "Deselect" : "Select") { places.setSelected(assetID, !decision.selected) }
-            Button("Show on a Map…") { onOpen() }
-            Button("Show in Photos") { Task { await state.showInPhotos(assetID) } }
-            Button(decision.selected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise  R") { onRotate() }
-                .disabled(state.isRotating)
-            Divider()
-            if decision.ignored {
-                Button("Show This Photo Again  N") { places.setIgnored(assetID, false) }
-            } else {
-                Button("Leave Without a Location (Don’t Show Again)  N") { places.setIgnored(assetID, true) }
-            }
+            let ids = state.placesMenuIDs(assetID)
+            PhotoMenu(
+                count: ids.count,
+                isSelected: decision.selected, select: { places.setSelected(assetID, $0) },
+                getInfo: onOpen, infoTitle: "Show on a Map…",
+                showInPhotos: { Task { await state.showInPhotos(assetID) } },
+                setDate: { state.photoInfoRequest = PhotoInfoRequest(ids: ids, kind: .date, startDate: places.date(assetID)) },
+                setLocation: { state.photoInfoRequest = PhotoInfoRequest(ids: ids, kind: .location) },
+                rotate: onRotate, rotateDisabled: state.isRotating,
+                hide: decision.ignored
+                    ? PhotoMenu.Item("Show Again  N") { places.setIgnored(assetID, false) }
+                    : PhotoMenu.Item("Don’t Show Again  N") { places.setIgnored(assetID, true) })
         }
     }
 
@@ -474,35 +463,17 @@ struct PlaceSearchField: View {
     }
 }
 
-/// One place for every checked photo.
+/// One place for every selected photo.
 struct SetPlaceButton: View {
     var places: PlacesState
     var ids: [String]
-    @State private var showing = false
 
     var body: some View {
-        Button {
-            showing = true
-        } label: {
-            Label("Set Place", systemImage: "mappin.and.ellipse")
-        }
-        .keyboardShortcut("l", modifiers: .command)
-        .disabled(ids.isEmpty)
-        .help(ids.isEmpty ? "Select photos first, then give them all one place (⌘L)"
-              : "Give the \(ids.count.formatted()) selected photos one place (⌘L)")
-        .popover(isPresented: $showing, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(ids.count == 1 ? "Place for 1 photo" : "Place for \(ids.count.formatted()) photos").font(.headline)
-                PlaceSearchField { choice in
-                    places.setPlace(ids, choice)
-                    showing = false
-                }
-                Text("Nothing changes in Photos until you click Apply.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(width: 360)
-            .padding(14)
-        }
+        PlacePickerButton(title: "Set Place", count: ids.count,
+                          help: ids.isEmpty ? "Select photos first, then give them all one place (⌘L)"
+                                            : "Give the \(ids.count.formatted()) selected photos one place (⌘L)",
+                          shortcut: "l") { places.setPlace(ids, $0) }
+            .disabled(ids.isEmpty)
     }
 }
 
@@ -598,11 +569,18 @@ struct OutingsScreen: View {
     @Environment(AppState.self) private var state
     @Environment(\.showShortcuts) private var showShortcuts
 
+    @State private var page: OutingsList.Page = .toPlace
+
     var body: some View {
-        OutingsList()
+        OutingsList(page: page)
             .navigationSubtitle("\(state.places.outingsToPlaceCount.formatted()) to place")
+            // The same toolbar as every screen: its filter is in Show.
             .toolbar {
-                ToolbarItem(placement: .primaryAction) { ShortcutsToolbarButton(action: showShortcuts) }
+                KeeperToolbar(photoShape: false, shortcuts: showShortcuts) {
+                    ShowMenu(selection: $page, help: "Outings still to place, or the ones you gave a place")
+                } action: {
+                    EmptyView()
+                }
             }
     }
 }
@@ -610,7 +588,7 @@ struct OutingsScreen: View {
 /// Outings: photos from one camera taken close together, placed with one search.
 struct OutingsList: View {
     @Environment(AppState.self) private var state
-    @State private var page: Page = .toPlace
+    var page: Page
 
     enum Page: String, CaseIterable, Identifiable {
         case toPlace = "To Place"
@@ -632,12 +610,6 @@ struct OutingsList: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Picker("Outings", selection: $page) {
-                        ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
                 }
                 ForEach(outings, id: \.self) { members in
                     if page == .toPlace { OutingRow(members: members) } else { ConfirmedOutingRow(members: members) }
@@ -666,9 +638,7 @@ struct OutingsList: View {
 private struct ConfirmedOutingRow: View {
     @Environment(AppState.self) private var state
     var members: [String]
-    @State private var showSearch = false
     @State private var confirmUndo = false
-    @State private var pendingChange: PlaceChoice?
 
     var body: some View {
         let places = state.places
@@ -709,36 +679,17 @@ private struct ConfirmedOutingRow: View {
                     Text("\(points.count) different places").font(.callout)
                 }
                 Spacer()
-                Button {
-                    showSearch = true
-                } label: {
-                    Label("Change…", systemImage: "magnifyingglass")
+                PlacePickerButton(title: "Change Place…", count: members.count, help: "Give this outing another place") { choice in
+                    if !waiting.isEmpty { places.setPlace(waiting, choice) }
+                    // Already placed in Photos: the new place waits in To Apply, like every change.
+                    if !applied.isEmpty, let app = places.app { app.banner = app.queuePlace(applied, choice) }
                 }
                 .disabled(places.isApplying)
-                .popover(isPresented: $showSearch, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("New place for \(members.count.formatted()) photos").font(.headline)
-                        PlaceSearchField { choice in
-                            showSearch = false
-                            if !waiting.isEmpty { places.setPlace(waiting, choice) }
-                            if !applied.isEmpty { pendingChange = choice }
-                        }
-                    }
-                    .frame(width: 340)
-                    .padding(12)
-                }
                 Button("Undo…") { confirmUndo = true }
                     .disabled(places.isApplying)
                     .help("Take this place back")
             }
             .controlSize(.small)
-        }
-        .alert("Change the location of \(applied.count.formatted()) photos in Photos?",
-               isPresented: Binding(get: { pendingChange != nil }, set: { if !$0 { pendingChange = nil } })) {
-            Button("Change") { if let c = pendingChange { places.changeApplied(applied, to: c) }; pendingChange = nil }
-            Button("Cancel", role: .cancel) { pendingChange = nil }
-        } message: {
-            Text("They already have this outing’s place in Photos. The new one replaces it, the same way Image ▸ Location does.")
         }
         .alert("Take back this outing’s place?", isPresented: $confirmUndo) {
             Button("Take Back") {
@@ -766,7 +717,6 @@ private struct ConfirmedOutingRow: View {
 private struct OutingRow: View {
     @Environment(AppState.self) private var state
     var members: [String]
-    @State private var showSearch = false
     @State private var detailID: String?
 
     var body: some View {
@@ -817,22 +767,8 @@ private struct OutingRow: View {
                     Text("No guess").font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    showSearch = true
-                } label: {
-                    Label(chosen.isEmpty ? "Set Place…" : "Change…", systemImage: "magnifyingglass")
-                }
-                .popover(isPresented: $showSearch, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Place for \(open.count.formatted()) photos").font(.headline)
-                        PlaceSearchField { choice in
-                            places.setPlace(open, choice)
-                            showSearch = false
-                        }
-                    }
-                    .frame(width: 340)
-                    .padding(12)
-                }
+                PlacePickerButton(title: chosen.isEmpty ? "Set Place…" : "Change Place…", count: open.count,
+                                  help: "Give every photo in this outing one place") { places.setPlace(open, $0) }
                 if chosen.isEmpty, let best {
                     Button("Use Guess for All") {
                         let name = PlaceNames.shared.name(for: best.estimate.point) ?? PlaceLabel.coordinates(best.estimate.point)

@@ -30,7 +30,7 @@ struct ReviewView: View {
         case toReview = "All"
         case selected = "Selected"
         case low = "Unsure"
-        case ignored = "Hidden"
+        case ignored = "Not Shown"
         var id: String { rawValue }
     }
 
@@ -193,7 +193,7 @@ struct ReviewView: View {
             checkMenu(ids)
             if !hiddenSelected.isEmpty {
                 Button("Show \(hiddenSelected.count.formatted()) Again") { state.setIgnored(hiddenSelected, false) }
-                    .help("Bring the selected hidden photos back (N)")
+                    .help("Show the selected photos again (N)")
             }
             SetDateButton(state: state, ids: ids.filter { state.decision($0).selected && !state.decision($0).ignored })
             Button(selectedCount == 0 ? "Apply" : "Apply \(selectedCount.formatted())") { confirmApply = true }
@@ -388,18 +388,18 @@ struct ReviewCard: View {
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .opacity(decision.ignored ? 0.5 : 1)
             .contextMenu {
-                Button(decision.selected ? "Deselect" : "Select") { state.setSelected(assetID, !decision.selected) }
-                    .disabled(decision.ignored)
-                Button("Details & Who’s in It…") { onOpen() }
-                Button("Show in Photos") { Task { await state.showInPhotos(assetID) } }
-                Button(decision.selected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise  R") { onRotate() }
-                    .disabled(state.isRotating)
-                Divider()
-                if decision.ignored {
-                    Button("Review This Photo Again  N") { state.setIgnored(assetID, false) }
-                } else {
-                    Button("Keep Current Date (Don’t Show Again)  N") { state.setIgnored(assetID, true) }
-                }
+                let ids = state.reviewMenuIDs(assetID)
+                PhotoMenu(
+                    count: ids.count,
+                    isSelected: decision.selected, select: { state.setSelected(assetID, $0) },
+                    getInfo: onOpen, infoTitle: "Details & Who’s in It…",
+                    showInPhotos: { Task { await state.showInPhotos(assetID) } },
+                    setDate: { state.photoInfoRequest = PhotoInfoRequest(ids: ids, kind: .date, startDate: state.effectiveEstimate(assetID)?.date()) },
+                    setLocation: { state.photoInfoRequest = PhotoInfoRequest(ids: ids, kind: .location) },
+                    rotate: onRotate, rotateDisabled: state.isRotating,
+                    hide: decision.ignored
+                        ? PhotoMenu.Item("Show Again  N") { state.setIgnored(assetID, false) }
+                        : PhotoMenu.Item("Don’t Show Again  N") { state.setIgnored(assetID, true) })
             }
         }
     }
@@ -603,26 +603,21 @@ struct SameEventStrip: View {
     }
 }
 
-/// One date for every checked photo, instead of setting each photo's own controls.
+/// One date for every selected photo, instead of setting each photo's own controls.
 struct SetDateButton: View {
     var state: AppState
-    /// The checked photos shown.
+    /// The selected photos shown.
     var ids: [String]
     @State private var showing = false
-    @State private var year = YearBounds.currentYear() - 30
-    /// Nil keeps each photo's own guessed season.
-    @State private var season: Season?
-    @State private var month: Int?
+    /// No season or month keeps each photo's own guessed season.
+    @State private var choice = DateChoice(year: YearBounds.currentYear() - 30)
 
     var body: some View {
         Button {
             // Start from the year most of them are guessed at.
             let years = ids.compactMap { state.effectiveEstimate($0)?.year }
-            if let common = Dictionary(grouping: years, by: { $0 }).max(by: { $0.value.count < $1.value.count })?.key {
-                year = common
-            }
-            season = nil
-            month = nil
+            let common = Dictionary(grouping: years, by: { $0 }).max(by: { $0.value.count < $1.value.count })?.key
+            choice = DateChoice(year: common ?? choice.year)
             showing = true
         } label: {
             Label("Set Date", systemImage: "calendar.badge.clock")
@@ -632,45 +627,12 @@ struct SetDateButton: View {
         .help(ids.isEmpty ? "Select photos first, then give them all one date (⌘D)"
               : "Give the \(ids.count.formatted()) selected photos one date (⌘D)")
         .popover(isPresented: $showing, arrowEdge: .bottom) {
-            Form {
-                LabeledContent("Year") {
-                    YearComboBox(year: year, range: state.lowestYear...YearBounds.currentYear()) { year = $0 }
-                        .frame(width: 90)
-                }
-                Picker("Month", selection: Binding(
-                    get: { month.map { "m\($0)" } ?? season.map { "s\($0.rawValue)" } ?? "keep" },
-                    set: { tag in
-                        if tag.hasPrefix("m") { month = Int(tag.dropFirst()); season = nil }
-                        else if tag.hasPrefix("s") { season = Season(rawValue: String(tag.dropFirst())); month = nil }
-                        else { season = nil; month = nil }
-                    })) {
-                    Text("Keep Each Photo’s Season").tag("keep")
-                    Section("Season") {
-                        ForEach(Season.allCases) { s in Text(s.displayName).tag("s\(s.rawValue)") }
-                    }
-                    Section("Month") {
-                        ForEach(1...12, id: \.self) { m in Text(DateEstimate.monthNames[m - 1]).tag("m\(m)") }
-                    }
-                }
-                Text("Nothing changes in Photos until you click Apply.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .formStyle(.grouped)
-            .frame(width: 340)
-            .safeAreaInset(edge: .bottom) {
-                HStack {
-                    Spacer()
-                    Button("Cancel") { showing = false }
-                        .keyboardShortcut(.cancelAction)
-                    Button(ids.count == 1 ? "Set Date" : "Set Date for \(ids.count.formatted()) Photos") {
-                        state.setDate(ids, year: year, season: season, month: month)
-                        showing = false
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding([.horizontal, .bottom], 16)
+            DatePickerPanel(title: DatePickerPanel.title(ids.count), choice: $choice,
+                            range: state.lowestYear...YearBounds.currentYear(), keepSeason: true,
+                            note: "Nothing changes in Photos until you apply it.",
+                            confirm: "Set Date", onCancel: { showing = false }) {
+                state.setDate(ids, year: choice.year, season: choice.season, month: choice.month)
+                showing = false
             }
         }
     }

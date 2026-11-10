@@ -378,7 +378,7 @@ struct EventDateControls: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!changed)
                 .help(changed ? (inPhotos.isEmpty ? "Give every photo in this event this same date"
-                                 : "Give every photo in this event this same date; you’ll be asked once before photos in Photos change")
+                                 : "Give every photo in this event this same date; photos already dated in Photos wait in To Apply")
                       : "Pick a year and a month or season, then click OK")
                 Button {
                     draft = nil
@@ -403,8 +403,9 @@ struct EventDateControls: View {
         var p = p
         if p.month == nil && p.season == nil { p.month = state.eventShownMonth(group) }
         if !open.isEmpty { state.setEventDate(group.id, year: p.year, month: p.month, season: p.season) }
-        if !inPhotos.isEmpty {
-            state.eventDateRequest = .init(groupID: group.id, year: p.year, month: p.month, season: p.season, count: inPhotos.count)
+        // Already dated in Photos: the new date waits in To Apply, like every change.
+        if !inPhotos.isEmpty, let text = state.changeAppliedDates(group.id, year: p.year, month: p.month, season: p.season) {
+            state.banner = text
         }
     }
 }
@@ -425,12 +426,12 @@ struct EventDateConfirmations: ViewModifier {
                 if !shown, state.eventDateRequest != nil { cancel() }
             })) {
             if let r = request {
-                Button(r.undo ? "Undo Applied Dates" : "Change in Photos") {
+                Button(r.undo ? "Undo Applied Dates" : "Set Date") {
                     state.eventDateRequest = nil
                     if r.undo {
                         state.undoAppliedDates(r.groupID)
-                    } else {
-                        state.changeAppliedDates(r.groupID, year: r.year, month: r.month, season: r.season)
+                    } else if let text = state.changeAppliedDates(r.groupID, year: r.year, month: r.month, season: r.season) {
+                        state.banner = text
                     }
                 }
             }
@@ -438,7 +439,7 @@ struct EventDateConfirmations: ViewModifier {
         } message: {
             Text(request?.undo == true
                  ? "Each photo gets back the date it had before this app changed it. Photos whose date you changed in Photos yourself are left alone."
-                 : "They’re already dated in your Photos library, so this changes them there. You can undo it from History.")
+                 : "They’re already dated in your Photos library. The new date waits in To Apply until you apply it.")
         }
     }
 
@@ -451,7 +452,7 @@ struct EventDateConfirmations: ViewModifier {
         guard let r else { return "" }
         if r.undo { return "Put back the earlier dates of \(r.count) photos?" }
         let when = r.month.map { "\(DateEstimate.monthNames[$0 - 1]) \(r.year)" } ?? r.season.map { "\($0.displayName) \(r.year)" } ?? String(r.year)
-        return "Change the date of \(r.count) photos in Photos to \(when)?"
+        return "Give \(r.count) photos \(when)?"
     }
 }
 

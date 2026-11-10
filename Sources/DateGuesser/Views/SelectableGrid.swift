@@ -86,7 +86,7 @@ struct GridActions {
     var allSelected: (() -> [String])? = nil
 }
 
-/// A grid of photo cards that works the way Keeper's lists do: ← → ↑ ↓ move, Return opens, Space
+/// A grid of photo cards that works the way Keeper's lists do: ← → ↑ ↓ move, Return (or ⌘I) opens, Space
 /// shows the photo filling the window, G selects, A accepts, N declines, R rotates, Esc deselects.
 struct SelectableGrid<Card: View>: View {
     var ids: [String]
@@ -122,12 +122,17 @@ struct SelectableGrid<Card: View>: View {
                 if let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } }
             }
         }
+        // Keeper's rating keys act on this grid's current photo.
+        .onAppear { DatesModel.gridCurrent = cursor.id }
+        .onChange(of: cursor.id) { _, id in DatesModel.gridCurrent = id }
+        .onDisappear { if DatesModel.gridCurrent == cursor.id { DatesModel.gridCurrent = nil } }
         .modifier(KeyCommandModifier(key: Self.left) { move(-1) })
         .modifier(KeyCommandModifier(key: Self.right) { move(1) })
         .modifier(KeyCommandModifier(key: Self.up) { move(-columns) })
         .modifier(KeyCommandModifier(key: Self.down) { move(columns) })
         .modifier(KeyCommandModifier(key: "\r") { onCurrent { actions.open($0) } })
         .modifier(KeyCommandModifier(key: "\u{3}") { onCurrent { actions.open($0) } })
+        .modifier(KeyCommandModifier(key: "⌘i") { onCurrent { actions.open($0) } })
         .modifier(KeyCommandModifier(key: " ") { onCurrent { PhotoZoom.shared.open($0, in: ids, scope: "main") } })
         .modifier(KeyCommandModifier(key: "g") {
             onCurrent { id in if actions.canSelect(id) { actions.select([id], !actions.isSelected(id)) } }

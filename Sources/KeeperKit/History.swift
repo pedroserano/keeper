@@ -1,6 +1,8 @@
 // Undo and redo for decisions and rotations. Each entry is one key press, which may touch several
 // photos (for example "keep this frame, reject the rest" in compare view).
 
+import Foundation
+
 public struct Change: Equatable, Sendable {
     public let label: String
     public let before: [Decision]
@@ -33,36 +35,55 @@ public struct History: Sendable {
 
     public init(limit: Int = 1000) { self.limit = limit }
 
+    /// When each change on the stacks was made, so ⌘Z on a screen with a second undo list (the
+    /// Dates screens) can take back whichever came last.
+    private var undoTimes: [Date] = []
+    private var redoTimes: [Date] = []
+
     public var canUndo: Bool { !undoStack.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
+    /// When the change ⌘Z would take back was made.
+    public var undoTime: Date? { undoTimes.last }
+    /// When the change ⇧⌘Z would redo was made.
+    public var redoTime: Date? { redoTimes.last }
 
-    public mutating func record(_ change: Change) {
+    public mutating func record(_ change: Change, at time: Date = Date()) {
         undoStack.append(change)
-        if undoStack.count > limit { undoStack.removeFirst(undoStack.count - limit) }
+        undoTimes.append(time)
+        if undoStack.count > limit {
+            undoStack.removeFirst(undoStack.count - limit)
+            undoTimes.removeFirst(undoTimes.count - limit)
+        }
         redoStack.removeAll()
+        redoTimes.removeAll()
     }
 
     /// Returns the change to apply to undo the last action (already reversed).
     public mutating func undo() -> Change? {
         guard let change = undoStack.popLast() else { return nil }
         redoStack.append(change)
+        if let t = undoTimes.popLast() { redoTimes.append(t) }
         return change.reversed
     }
 
     public mutating func redo() -> Change? {
         guard let change = redoStack.popLast() else { return nil }
         undoStack.append(change)
+        if let t = redoTimes.popLast() { undoTimes.append(t) }
         return change
     }
 
     /// Drops the last recorded change without making it redoable, e.g. when it failed to apply.
     public mutating func discardLast() {
         _ = undoStack.popLast()
+        _ = undoTimes.popLast()
     }
 
     /// Forget everything, e.g. after a delete that can't be undone in Keeper.
     public mutating func clear() {
         undoStack.removeAll()
         redoStack.removeAll()
+        undoTimes.removeAll()
+        redoTimes.removeAll()
     }
 }

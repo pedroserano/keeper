@@ -13,8 +13,8 @@ struct ShortcutsView: View {
     static let sections: [ShortcutSection] = [
         ShortcutSection("Review and Places", [
             Shortcut(["A"], "Accept the guess: select the photo to apply, and go to the next"),
-            Shortcut(["N"], "Turn the guess down: hide the photo (in Hidden, bring it back)"),
-            Shortcut(["Return"], "The photo's details (in Places, its map)"),
+            Shortcut(["N"], "Don’t show the photo again (in Not Shown: show it again)"),
+            Shortcut(["Return"], "The photo's details (in Places, its map); ⌘I too"),
             Shortcut(["⌘", "D"], "Give every selected photo one date"),
             Shortcut(["⌘", "L"], "Give every selected photo one place"),
         ]),

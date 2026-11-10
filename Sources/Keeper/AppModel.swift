@@ -58,12 +58,34 @@ final class AppModel: ObservableObject {
     }
 
     /// ⌘Z and ⇧⌘Z: the culling list's own history, or the Dates screen's.
+    /// On a Dates screen ⌘Z takes back whichever came last: a selection or Don't Show Again there,
+    /// or a rating, Favorite or rotation (Keeper's own changes, made there too).
     func undo() {
-        if let session, let item = session.dates { session.datesModel?.undo(on: item) } else { cullingSession?.undo() }
+        guard let s = cullingSession else { return }
+        if let item = s.dates, let dates = s.datesModel {
+            if let mine = s.history.undoTime, mine > (dates.undoTime(on: item) ?? .distantPast) {
+                s.undo()
+                dates.say("Undid \(s.lastUndoLabel ?? "it"). ⇧⌘Z redoes it.")
+            } else {
+                dates.undo(on: item)
+            }
+        } else {
+            s.undo()
+        }
     }
 
     func redo() {
-        if let session, let item = session.dates { session.datesModel?.redo(on: item) } else { cullingSession?.redo() }
+        guard let s = cullingSession else { return }
+        if let item = s.dates, let dates = s.datesModel {
+            if let mine = s.history.redoTime, mine > (dates.redoTime(on: item) ?? .distantPast) {
+                s.redo()
+                dates.say("Redone.")
+            } else {
+                dates.redo(on: item)
+            }
+        } else {
+            s.redo()
+        }
     }
 
     func open(_ url: URL, skipSystemCheck: Bool = false) async {

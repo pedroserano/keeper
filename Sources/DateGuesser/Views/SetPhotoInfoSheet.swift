@@ -1,29 +1,36 @@
 import SwiftUI
 import DateGuessCore
 
-/// Right-click › Set Date or Set Location on photos in Keeper's albums: one date or one place for
-/// every photo picked, written to Photos straight away and undoable from History.
+/// Right-click › Set Date… or Set Location…: one date or one place for every photo picked. Like
+/// every change, it waits in To Apply until you apply it.
 public struct SetPhotoInfoSheet: View {
     public enum Kind: String, Identifiable, Sendable {
         case date, location
         public var id: String { rawValue }
     }
 
-    var model: DatesModel?
+    var state: AppState?
     var ids: [String]
     var kind: Kind
     /// Closes the sheet; the text is what happened, to show (nil when cancelled).
     var onDone: (String?) -> Void
-    @State private var day: Date
+    @State private var choice: DateChoice
     @State private var place: PlaceChoice?
-    @State private var writing = false
 
     public init(model: DatesModel?, ids: [String], kind: Kind, startDate: Date?, onDone: @escaping (String?) -> Void) {
-        self.model = model
+        self.init(state: model?.state, ids: ids, kind: kind, startDate: startDate, onDone: onDone)
+    }
+
+    init(state: AppState?, ids: [String], kind: Kind, startDate: Date?, onDone: @escaping (String?) -> Void) {
+        self.state = state
         self.ids = ids
         self.kind = kind
         self.onDone = onDone
-        _day = State(initialValue: startDate ?? Date())
+        let calendar = Calendar.current
+        let start = startDate ?? Date()
+        _choice = State(initialValue: DateChoice(year: calendar.component(.year, from: start),
+                                                 month: calendar.component(.month, from: start),
+                                                 day: calendar.component(.day, from: start)))
     }
 
     private var count: String { ids.count == 1 ? "1 Photo" : "\(ids.count.formatted()) Photos" }
@@ -31,14 +38,13 @@ public struct SetPhotoInfoSheet: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(kind == .date ? "Set Date for \(count)" : "Set Location for \(count)").font(.headline)
-            if model == nil {
+            if state == nil {
                 ProgressView("Loading…").controlSize(.small)
             } else if kind == .date {
-                DatePicker("Date", selection: $day, displayedComponents: .date)
-                    .datePickerStyle(.graphical)
-                    .labelsHidden()
-                Text("Each photo keeps its own time of day. You can undo this from Undated Photos › History.")
-                    .font(.caption).foregroundStyle(.secondary)
+                DatePickerForm(choice: $choice, range: (state?.lowestYear ?? 1850)...YearBounds.currentYear(),
+                               seasons: false, days: true,
+                               note: "Each photo keeps its own time of day (the 1st without an exact day). It waits in To Apply until you apply it.")
+                    .frame(height: 230)
             } else {
                 PlaceSearchField { place = $0 }
                 if let place {
@@ -46,19 +52,17 @@ public struct SetPhotoInfoSheet: View {
                         icon: { Image(systemName: "mappin.circle.fill").foregroundStyle(Theme.accent) }
                         .font(.callout.weight(.semibold))
                 }
-                Text("Replaces any location they have. You can undo this from Places › History.")
+                Text("Replaces any location they have. It waits in To Apply until you apply it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
-                if writing { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Cancel") { onDone(nil) }
                     .keyboardShortcut(.cancelAction)
-                    .disabled(writing)
                 Button(kind == .date ? "Set Date" : "Set Location") { write() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(model == nil || writing || (kind == .location && place == nil))
+                    .disabled(state == nil || (kind == .location && place == nil))
             }
         }
         .padding(20)
@@ -66,18 +70,34 @@ public struct SetPhotoInfoSheet: View {
     }
 
     private func write() {
-        guard let model else { return }
-        writing = true
-        Task {
-            let message: String
-            switch kind {
-            case .date: message = await model.setDate(ids, to: day)
-            case .location:
-                guard let place else { writing = false; return }
-                message = await model.state.places.setLocationInPhotos(ids, place)
+        guard let state else { return }
+        switch kind {
+        case .date:
+            guard let day = choice.date() else { return }
+            onDone(state.queueDate(ids, day: day))
+        case .location:
+            guard let place else { return }
+            onDone(state.queuePlace(ids, place))
+        }
+    }
+}
+
+/// Right-click › Set Date… or Set Location… on a Dates screen, shown by the screen around it.
+struct PhotoInfoRequest: Identifiable {
+    let id = UUID()
+    var ids: [String]
+    var kind: SetPhotoInfoSheet.Kind
+    var startDate: Date?
+}
+
+extension View {
+    /// Shows Set Date… / Set Location… when a Dates screen's right-click menu asks for it.
+    func photoInfoSheet(_ state: AppState) -> some View {
+        sheet(item: Binding(get: { state.photoInfoRequest }, set: { state.photoInfoRequest = $0 })) { request in
+            SetPhotoInfoSheet(state: state, ids: request.ids, kind: request.kind, startDate: request.startDate) { message in
+                state.photoInfoRequest = nil
+                if let message { state.banner = message }
             }
-            writing = false
-            onDone(message)
         }
     }
 }

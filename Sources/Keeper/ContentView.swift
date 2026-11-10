@@ -66,6 +66,13 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingShortcuts) { ShortcutsSheet(screen: session.source.title) }
+        .alert("Rotate \((session.rotateRequest?.count ?? 0).formatted()) selected photos?",
+               isPresented: Binding(get: { session.rotateRequest != nil }, set: { if !$0 { session.rotateRequest = nil } })) {
+            Button("Rotate") { if let ids = session.rotateRequest { session.rotate(ids: ids) }; session.rotateRequest = nil }
+            Button("Cancel", role: .cancel) { session.rotateRequest = nil }
+        } message: {
+            Text("Each turns 90° clockwise in Photos. It’s an edit, so Image ▸ Revert to Original in Photos brings the original back.")
+        }
         .onAppear(perform: installKeyMonitor)
         .onDisappear {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -186,10 +193,35 @@ struct ContentView: View {
         session.titleDates.show(session.current?.creationDate)
     }
 
+    /// On the Dates and Places screens: 0–5 rate and F favorites the current photo (or the one
+    /// filling the window), as in Keeper's lists. Their other keys are the screens' own.
+    private func handleRatingKey(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              let window = event.window, window.sheetParent == nil, window.attachedSheet == nil,
+              !((window.firstResponder as? NSText)?.isEditable ?? false),
+              let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let action: Action
+        switch key {
+        case "0", "1", "2", "3", "4", "5": action = .rate(Int(key)!)
+        case "f": action = .toggleFavorite
+        default: return false
+        }
+        guard let id = DatesModel.photoForKeys, let asset = session.library.assets(withIDs: [id]).first else { return false }
+        let wasFavorite = session.isFavorite(asset)
+        session.perform(action, on: asset)
+        let text: String = switch action {
+        case .rate(let n): n == 0 ? "Cleared the rating." : "Rated \(n) \(n == 1 ? "star" : "stars")."
+        default: wasFavorite ? "Removed from Favorites." : "Added to Favorites."
+        }
+        session.datesModel?.say(text)
+        return true
+    }
+
     /// Returns true if the key was a culling key and has been used. Left alone: shortcuts with
     /// ⌘ ⌃ or ⌥ (they belong to the menus), typing in a text field, and anything while a sheet is open.
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard session.dates == nil, !showingDelete, !showingShortcuts, let window = event.window,
+        if session.dates != nil { return handleRatingKey(event) }
+        guard !showingDelete, !showingShortcuts, let window = event.window,
               window.identifier != SettingsWindowMarker.identifier,
               window.sheetParent == nil, window.attachedSheet == nil else { return false }
         if let text = window.firstResponder as? NSText, text.isEditable { return false }
@@ -267,6 +299,14 @@ struct Sidebar: View {
                     }
                 }
             })) {
+            Section {
+                ForEach(DatesItem.changeItems) { item in datesRow(item) }
+            } header: {
+                Text("Changes")
+            } footer: {
+                Text("Dates and places you set wait in To Apply until you apply them; History undoes them.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Library") {
                 row(.allPhotos)
                 row(.unreviewed)
@@ -324,7 +364,7 @@ struct Sidebar: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                ForEach(DatesItem.allCases.filter { !$0.isPlaceItem && !$0.isAlbumItem }) { item in
+                ForEach(DatesItem.allCases.filter { !$0.isPlaceItem && !$0.isAlbumItem && !$0.isChangeItem }) { item in
                     datesRow(item)
                 }
             } header: {

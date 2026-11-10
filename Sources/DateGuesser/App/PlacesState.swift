@@ -542,29 +542,6 @@ final class PlacesState {
     /// When a photo was taken, also for photos placed here that have a location now.
     func photoTime(_ id: String) -> Date? { (scan.missing[id] ?? nil) ?? placed[id]?.taken }
 
-    /// Writes a new place for photos already placed here.
-    func changeApplied(_ ids: [String], to choice: PlaceChoice) {
-        guard !isApplying else { return }
-        let placed = self.placed
-        let changes = ids.filter { placed[$0] != nil }.map {
-            PlaceWriter.Change(assetID: $0, point: choice.point, name: choice.name, requireNoLocation: false)
-        }
-        guard !changes.isEmpty else { return }
-        isApplying = true
-        applyProgress = (0, changes.count)
-        Task {
-            var batch = await PlaceWriter.apply(changes) { done, total in
-                await MainActor.run { self.applyProgress = (done, total) }
-            }
-            for i in batch.entries.indices { batch.entries[i].taken = placed[batch.entries[i].assetID]?.taken }
-            if !batch.entries.isEmpty { self.journal.insert(batch, at: 0) }
-            self.isApplying = false
-            self.applyProgress = nil
-            self.app?.banner = "Changed the location of \(batch.entries.count.formatted()) photos in Photos."
-                + (batch.failures.isEmpty ? "" : " \(batch.failures.count) couldn’t be changed.")
-        }
-    }
-
     /// Puts back what these photos had before they were placed here (no location, for most), and
     /// takes them out of History. They're back in the list to place.
     func undoApplied(_ ids: [String]) {
@@ -615,13 +592,20 @@ final class PlacesState {
     // MARK: Apply & undo
 
     func applyChecked() {
-        guard !isApplying else { return }
+        Task { await applyCheckedNow() }
+    }
+
+    /// Writes the places of the photos selected in Places. Returns what happened (nil if there was
+    /// nothing to write).
+    @discardableResult
+    func applyCheckedNow() async -> String? {
+        guard !isApplying else { return nil }
         let changes: [PlaceWriter.Change] = checkedForApply.compactMap { id in
             guard let point = effectivePoint(id) else { return nil }
             let name = decision(id).override?.name ?? PlaceNames.shared.name(for: point)
             return PlaceWriter.Change(assetID: id, point: point, name: name)
         }
-        guard !changes.isEmpty else { return }
+        guard !changes.isEmpty else { return nil }
         // Were the look-alike clues right about the places being applied?
         var stat = lookalikeStat
         for change in changes {
@@ -632,43 +616,43 @@ final class PlacesState {
         lookalikeStat = stat
         isApplying = true
         applyProgress = (0, changes.count)
-        Task {
-            var batch = await PlaceWriter.apply(changes) { done, total in
-                await MainActor.run { self.applyProgress = (done, total) }
-            }
-            for i in batch.entries.indices { batch.entries[i].taken = self.date(batch.entries[i].assetID) }
-            if !batch.entries.isEmpty { self.journal.insert(batch, at: 0) }
-            var copy = self.decisions
-            for entry in batch.entries { copy[entry.assetID]?.selected = false }
-            self.decisions = copy
-            // Photos that turned out to have a location aren't missing one: take them off the list.
-            let located = batch.failures.filter { $0.value == PlaceWriter.changedElsewhere }.keys
-            if !located.isEmpty {
-                var scan = self.scan
-                for id in located { scan.missing.removeValue(forKey: id) }
-                self.scan = scan
-                self.store.save(scan, to: "placesScan")
-            }
-            self.isApplying = false
-            self.applyProgress = nil
-            self.refreshOrder()
-            self.recompute()
-            let skipped = batch.failures.values.filter { $0 == PlaceWriter.changedElsewhere }.count
-            let failed = batch.failures.count - skipped
-            self.app?.banner = "Set the location of \(batch.entries.count.formatted()) photos in Photos."
-                + (skipped == 0 ? "" : " Skipped \(skipped) that got a location in Photos since the last scan.")
-                + (failed == 0 ? "" : " \(failed) couldn’t be changed.")
+        var batch = await PlaceWriter.apply(changes) { done, total in
+            await MainActor.run { self.applyProgress = (done, total) }
         }
+        for i in batch.entries.indices { batch.entries[i].taken = date(batch.entries[i].assetID) }
+        if !batch.entries.isEmpty { journal.insert(batch, at: 0) }
+        var copy = decisions
+        for entry in batch.entries { copy[entry.assetID]?.selected = false }
+        decisions = copy
+        // Photos that turned out to have a location aren't missing one: take them off the list.
+        let located = batch.failures.filter { $0.value == PlaceWriter.changedElsewhere }.keys
+        if !located.isEmpty {
+            var scan = self.scan
+            for id in located { scan.missing.removeValue(forKey: id) }
+            self.scan = scan
+            store.save(scan, to: "placesScan")
+        }
+        isApplying = false
+        applyProgress = nil
+        refreshOrder()
+        recompute()
+        let skipped = batch.failures.values.filter { $0 == PlaceWriter.changedElsewhere }.count
+        let failed = batch.failures.count - skipped
+        let message = "Set the location of \(batch.entries.count.formatted()) photos in Photos."
+            + (skipped == 0 ? "" : " Skipped \(skipped) that got a location in Photos since the last scan.")
+            + (failed == 0 ? "" : " \(failed) couldn’t be changed.")
+        app?.banner = message
+        return message
     }
 
-    /// Gives any photos (picked in Keeper's albums) one location in Photos, replacing any they
-    /// have. Undoable from History, which puts their previous locations back. Returns what
-    /// happened, to show.
-    func setLocationInPhotos(_ ids: [String], _ choice: PlaceChoice) async -> String {
-        guard !ids.isEmpty else { return "No photos to change." }
-        guard !isApplying else { return "Wait for the change already going on in Photos to finish." }
-        let name = choice.name.isEmpty ? nil : choice.name
-        let changes = ids.map { PlaceWriter.Change(assetID: $0, point: choice.point, name: name, requireNoLocation: false) }
+    /// Writes these places to Photos, replacing any location the photos have (To Apply's places set
+    /// from a right-click menu). Undoable from History. Returns the photos written and what happened.
+    func writeLocations(_ places: [String: PlaceChoice]) async -> (written: [String], tried: [String], message: String)? {
+        guard !places.isEmpty, !isApplying else { return nil }
+        let changes = places.map { id, choice in
+            PlaceWriter.Change(assetID: id, point: choice.point, name: choice.name.isEmpty ? nil : choice.name,
+                               requireNoLocation: false)
+        }
         isApplying = true
         applyProgress = (0, changes.count)
         var batch = await PlaceWriter.apply(changes) { done, total in
@@ -684,8 +668,9 @@ final class PlacesState {
         refreshOrder()
         recompute()
         let failed = batch.failures.count
-        return "Set the location of \(batch.entries.count.formatted()) photos in Photos."
+        let message = "Set the location of \(batch.entries.count.formatted()) photos in Photos."
             + (failed == 0 ? "" : " \(failed) couldn’t be changed.")
+        return (batch.entries.map(\.assetID), Array(places.keys), message)
     }
 
     func undo(_ batch: PlaceBatch) {

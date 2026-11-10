@@ -67,6 +67,8 @@ final class ThumbnailLoader {
     func load(_ assetID: String, side: CGFloat, force: Bool = false) {
         guard force || loadedID != assetID else { return }
         cancel()
+        // A cached asset still has the old rating and Favorite.
+        if force { PhotoLibraryService.shared.forget(assetID) }
         loadedID = assetID
         if !force { image = nil }   // a reload keeps the old image until the new one arrives
         guard let asset = PhotoLibraryService.shared.asset(for: assetID) else { return }
@@ -134,6 +136,7 @@ struct AssetThumbnail: View {
             .onDisappear { loader.cancel() }
             .onChange(of: assetID) { _, new in loader.load(new, side: requestSide) }
             .onChange(of: ImageRevisions.shared.revision(assetID)) { loader.load(assetID, side: requestSide, force: true) }
+            .onChange(of: ImageRevisions.shared.generation) { loader.load(assetID, side: requestSide, force: true) }
     }
 }
 

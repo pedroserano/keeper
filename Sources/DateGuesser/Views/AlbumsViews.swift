@@ -222,7 +222,7 @@ struct AlbumAdditionsView: View {
                     AdditionRow(addition: a, add: { confirming = a })
                 }
             } footer: {
-                Text("Photos that aren’t in any album, taken between an album’s first and last photo and within \(Int(AlbumAdditions.areaKm)) km of where its photos were taken at the time. Only albums covering \(Int(AlbumAdditions.maxSpanDays)) days or less are used. Photos without a location count when Places is sure where they were taken. Untick a photo that doesn’t belong; Not in Album keeps it from being suggested again.")
+                Text("Photos that aren’t in any album, taken between an album’s first and last photo and within \(Int(AlbumAdditions.areaKm)) km of where its photos were taken at the time. Only albums covering \(Int(AlbumAdditions.maxSpanDays)) days or less are used. Photos without a location count when Places is sure where they were taken. Deselect a photo that doesn’t belong; Not in Album keeps it from being suggested again.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

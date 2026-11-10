@@ -75,6 +75,20 @@ final class PhotoLibraryService: @unchecked Sendable {
         return asset
     }
 
+    /// Like `assets(for:)`, but also hidden photos and every frame of a burst, freshly fetched (to edit them).
+    func assetsIncludingHidden(for ids: [String]) -> [String: PHAsset] {
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        options.includeAllBurstAssets = true
+        var out: [String: PHAsset] = [:]
+        for chunk in ids.chunked(into: 500) {
+            PHAsset.fetchAssets(withLocalIdentifiers: chunk, options: options).enumerateObjects { asset, _, _ in
+                out[asset.localIdentifier] = asset
+            }
+        }
+        return out
+    }
+
     func assets(for ids: [String]) -> [String: PHAsset] {
         var out: [String: PHAsset] = [:]
         for chunk in ids.chunked(into: 500) {

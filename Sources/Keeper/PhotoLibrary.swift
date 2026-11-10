@@ -2,6 +2,7 @@
 
 import AppKit
 import Photos
+import DateGuesser
 import KeeperCore
 import KeeperKit
 
@@ -415,7 +416,10 @@ final class ImageRefresh: ObservableObject {
         pending?.cancel()
         pending = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            if !Task.isCancelled { self?.generation += 1 }
+            if !Task.isCancelled {
+                self?.generation += 1
+                DatesModel.libraryChanged()
+            }
         }
     }
 }

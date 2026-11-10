@@ -110,6 +110,12 @@ final class CullingSession: ObservableObject {
         Task { [weak self, libraryURL] in
             let model = await DatesModel.load(libraryURL: libraryURL, dataDirectory: folder)
             DatesModel.isRaw = { [weak self] id in self?.fileInfo(forID: id)?.isRaw == true }
+            // Rotations on the Dates screens go into Keeper's undo list, so ⌘Z turns them back there.
+            DatesModel.rotate = { [weak self] ids in
+                self?.rotate(ids: ids)
+                self?.datesModel?.say((ids.count == 1 ? "Rotating in Photos." : "Rotating \(ids.count.formatted()) photos in Photos.")
+                                      + " ⌘Z turns them back.")
+            }
             DatesModel.hasLocation = { [weak self] id in self?.hasLocation(id) == true }
             DatesModel.pixelSize = { [weak self] id in
                 guard let info = self?.fileInfo(forID: id), let w = info.width, let h = info.height else { return nil }
@@ -217,6 +223,26 @@ final class CullingSession: ObservableObject {
     /// The photos a right-click acts on: every selected photo if it's one of them, else just it.
     func photosForMenu(_ asset: PHAsset) -> [String] {
         selectedPhotos.contains(asset.localIdentifier) ? Array(selectedPhotos) : [asset.localIdentifier]
+    }
+
+    /// Right-click › Select or Deselect.
+    func setPhotoSelected(_ id: String, _ on: Bool) {
+        guard selectsPhotos else { return }
+        if on { selectedPhotos.insert(id) } else { selectedPhotos.remove(id) }
+    }
+
+    /// Right-click › Rotate: the photos the menu acts on, asking first above `rotateWithoutAsking`.
+    func rotateFromMenu(_ asset: PHAsset) {
+        let ids = photosForMenu(asset)
+        if ids.count > Self.rotateWithoutAsking { rotateRequest = ids } else { rotate(ids: ids) }
+    }
+
+    /// Right-click › Hide or Unhide in Photos, for this photo (H does the current one).
+    func toggleHidden(_ asset: PHAsset) {
+        let before = decision(asset)
+        var after = before.applying(.toggleHidden, currentFavorite: asset.isFavorite)
+        after.seenAt = after.seenAt ?? Date()
+        commit(Change(label: before.hidden ? "Unhide" : "Hide", before: [before], after: [after]))
     }
 
     func requestPhotoInfo(_ kind: SetPhotoInfoSheet.Kind, for asset: PHAsset) {
@@ -1500,7 +1526,6 @@ final class CullingSession: ObservableObject {
 
     private func modeChanged(from old: Mode) {
         zoomed = false
-        openedWithSpace = false // spacePressed sets it again after opening
         if mode == .compare { rebuildCompareGroup() }
         if mode != .grid { markSeen(current) }
     }
@@ -1556,8 +1581,10 @@ final class CullingSession: ObservableObject {
 
     // MARK: Decisions
 
-    func perform(_ action: Action) {
-        guard let asset = target else { return }
+    /// A decision for the current photo, or for `asset` (a Dates screen's photo, where the list
+    /// doesn't move on afterwards).
+    func perform(_ action: Action, on other: PHAsset? = nil) {
+        guard let asset = other ?? target else { return }
         let label = switch action {
         case .rate(let n): n == 0 ? "Clear Rating" : "Rate \(n) Stars"
         case .reject: "Reject"
@@ -1572,7 +1599,7 @@ final class CullingSession: ObservableObject {
         // Auto-advance, except in compare (you keep working the group), after hiding (the photo
         // leaves the list, so the next one is already under the cursor), and after favoriting
         // (often followed by a rating for the same photo).
-        if mode != .compare, action != .toggleHidden, action != .toggleFavorite { move(by: 1) }
+        if other == nil, mode != .compare, action != .toggleHidden, action != .toggleFavorite { move(by: 1) }
     }
 
     /// Compare view: keep the focused frame (clearing a reject on it), reject the rest of the group.
@@ -1588,8 +1615,12 @@ final class CullingSession: ObservableObject {
         commit(Change(label: "Keep One, Reject \(compareGroup.count - 1)", before: before, after: after))
     }
 
+    /// What the last ⌘Z took back ("Rotate", "Rate 3 Stars"), for the Dates screens' message.
+    private(set) var lastUndoLabel: String?
+
     func undo() {
         guard let change = history.undo() else { return }
+        lastUndoLabel = change.label
         commit(change, record: false)
         show("Undo \(change.label)")
         afterUndoOrRedo(change)
@@ -1694,6 +1725,8 @@ final class CullingSession: ObservableObject {
                 }
                 try await self.rotate(change.rotations)
                 self.sidewaysRotatedBack(rotatedBack)
+                // The Dates screens' thumbnails show the new stars, ♥ or turn.
+                for id in Set(photosIDs).union(change.rotations.keys) { DatesModel.photoChanged(id) }
             } catch let error as PhotoRotator.RotateError {
                 if record { self.history.discardLast() }
                 self.show("Couldn't rotate: \(error.localizedDescription)")
@@ -1714,10 +1747,30 @@ final class CullingSession: ObservableObject {
         }
     }
 
-    /// R: turn the photo 90° clockwise, as an edit in Photos (the original is kept). ⌘Z turns it back.
+    /// More than this many photos to rotate at once asks first, as on the Dates screens.
+    static let rotateWithoutAsking = 10
+
+    /// Photos R is waiting to rotate until you confirm (more than `rotateWithoutAsking`).
+    @Published var rotateRequest: [String]?
+
+    /// R: turn the selected photos (or else the current one) 90° clockwise, as an edit in Photos
+    /// (the original is kept). ⌘Z turns them back.
     func rotateTarget() {
-        guard let asset = target else { return }
-        commit(Change(label: "Rotate", before: [], after: [], rotations: [asset.localIdentifier: 90]))
+        let ids: [String]
+        if mode == .grid, selectsPhotos, !selectedPhotos.isEmpty {
+            ids = Array(selectedPhotos)
+        } else if let asset = target {
+            ids = [asset.localIdentifier]
+        } else {
+            return
+        }
+        if ids.count > Self.rotateWithoutAsking { rotateRequest = ids } else { rotate(ids: ids) }
+    }
+
+    func rotate(ids: [String]) {
+        guard !ids.isEmpty else { return }
+        commit(Change(label: ids.count == 1 ? "Rotate" : "Rotate \(ids.count.formatted()) Photos", before: [], after: [],
+                      rotations: Dictionary(ids.map { ($0, 90) }, uniquingKeysWith: { a, _ in a })))
     }
 
     private func rotate(_ rotations: [String: Int]) async throws {
@@ -1770,29 +1823,23 @@ final class CullingSession: ObservableObject {
 
     // MARK: Zoom
 
-    /// Space opened this photo from the grid, so Space again goes back to the grid.
-    private var openedWithSpace = false
-
-    /// Space, like Quick Look: from the grid it shows the photo filling the window, and the next
-    /// press goes back to the grid. In a photo opened with Return, it switches 100% zoom on and off.
+    /// Space, like Quick Look and the Dates screens: from the grid it shows the photo filling the
+    /// window, and the next press goes back. Zoomed in, it zooms out first; in compare it zooms.
     func spacePressed() {
-        if mode == .grid {
-            mode = .single
-            openedWithSpace = true
-        } else if zoomed {
+        if zoomed {
             zoomed = false
-        } else if openedWithSpace && mode == .single {
-            openedWithSpace = false
+        } else if mode == .grid {
+            mode = .single
+        } else if mode == .single {
             mode = .grid
         } else {
             toggleZoom(onFace: false)
         }
     }
 
-    /// Return: between the grid and the photo; a photo opened this way zooms with Space.
+    /// Return (and ⌘I): the photo's details, as on every screen.
     func openWithReturn() {
-        openedWithSpace = false
-        mode = mode == .grid ? .single : .grid
+        infoAsset = target
     }
 
     func toggleZoom(onFace: Bool) {

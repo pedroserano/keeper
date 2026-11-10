@@ -7,7 +7,7 @@ import KeeperUI
 
 /// A row of Keeper's Dates section.
 public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
-    case review, events, people, cameras, places, outings, placeHistory, history, albumSuggestions, albumAdditions, albumDuplicates
+    case toApply, review, events, people, cameras, places, outings, placeHistory, history, albumSuggestions, albumAdditions, albumDuplicates
 
     public var id: String { rawValue }
     var item: SidebarItem { SidebarItem(rawValue: rawValue)! }
@@ -16,7 +16,10 @@ public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Se
     public static let albumItems: [DatesItem] = [.albumSuggestions, .albumAdditions, .albumDuplicates]
     public var isAlbumItem: Bool { Self.albumItems.contains(self) }
     /// The rows of the Places section.
-    public static let placeItems: [DatesItem] = [.places, .outings, .placeHistory]
+    public static let placeItems: [DatesItem] = [.places, .outings]
+    /// The rows at the top of the sidebar: everything waiting to be applied, and everything applied.
+    public static let changeItems: [DatesItem] = [.toApply, .history]
+    public var isChangeItem: Bool { Self.changeItems.contains(self) || self == .placeHistory }
     public var isPlaceItem: Bool { Self.placeItems.contains(self) }
     public var systemImage: String { item.icon }
 }
@@ -33,6 +36,24 @@ public final class DatesModel {
     /// A photo's size, as Keeper read it from the library's records (nil if it doesn't know), so
     /// the Dates screens needn't ask PhotoKit for it.
     public static var pixelSize: (String) -> (width: Int, height: Int)? = { _ in nil }
+
+    /// The current photo of the Dates grid showing now (nil when none is).
+    static var gridCurrent: String?
+
+    /// The photo Keeper's rating keys (0–5, F) act on while a Dates screen shows: the one filling
+    /// the window, else the grid's current photo, else the one under the pointer.
+    public static var photoForKeys: String? {
+        PhotoZoom.shared.request?.id ?? gridCurrent ?? PhotoZoom.shared.hovered?.id
+    }
+
+    /// Keeper changed this photo in Photos (a rating, say): its thumbnails load again.
+    public static func photoChanged(_ id: String) { ImageRevisions.shared.bump(id) }
+
+    /// Photos reported changes (Keeper's writes have settled): the thumbnails showing load again.
+    public static func libraryChanged() { ImageRevisions.shared.bumpAll() }
+
+    /// Shows a message at the top of the Dates screens.
+    public func say(_ text: String) { state.banner = text }
 
     /// Given a location from Keeper (in Places or with Set Location) since the library was read.
     public func wasPlacedHere(_ id: String) -> Bool { state.places.placed[id] != nil }
@@ -65,13 +86,27 @@ public final class DatesModel {
         })
     }
 
-    /// Right-click › Set Date in Keeper's albums: one date for these photos in Photos.
-    public func setDate(_ ids: [String], to day: Date) async -> String {
-        await state.setDatesInPhotos(ids, day: day)
+    /// Right-click › Set Date…: one date for these photos, waiting in To Apply.
+    public func setDate(_ ids: [String], to day: Date) -> String {
+        state.queueDate(ids, day: day)
     }
 
     /// Saves now, for example before switching to another library.
     public func save() { state.saveEverything() }
+
+    /// When the change ⌘Z on this screen would take back was made (nil: nothing to undo).
+    public func undoTime(on item: DatesItem) -> Date? {
+        item.isPlaceItem ? state.places.decisionHistory.undoTime : state.decisionHistory.undoTime
+    }
+
+    /// When the change ⇧⌘Z on this screen would redo was made (nil: nothing to redo).
+    public func redoTime(on item: DatesItem) -> Date? {
+        item.isPlaceItem ? state.places.decisionHistory.redoTime : state.decisionHistory.redoTime
+    }
+
+    /// Keeper rotates the Dates screens' photos itself, so ⌘Z turns them back right there. Set by
+    /// Keeper; nil leaves rotating to the Dates screens.
+    public static var rotate: (([String]) -> Void)?
 
     /// ⌘Z on a Dates screen: takes back the last selection, hide or changed guess there (applied
     /// dates and places are undone from History).
@@ -90,6 +125,7 @@ public final class DatesModel {
     /// The sidebar count for a row (read inside a view body, so the row updates as it changes).
     public func badge(for item: DatesItem) -> Int {
         switch item.item {
+        case .toApply: state.waitingCount
         case .review: state.undatedSorted.count
         case .places: state.places.confidentCount
         case .events: state.eventSuggestions.count
@@ -182,6 +218,7 @@ public struct DatesScreen: View {
         .overlay(alignment: .top) { BannerView() }
         .photoZoomHost()
         .sheet(isPresented: $showShortcuts) { ShortcutsView(screen: item.title).environment(state) }
+        .photoInfoSheet(state)
         .onHelpKey {
             guard NSApp.keyWindow?.sheetParent == nil, NSApp.keyWindow?.attachedSheet == nil else { return false }
             showShortcuts = true
@@ -192,11 +229,11 @@ public struct DatesScreen: View {
 
     @ViewBuilder private var screen: some View {
         switch item.item {
+        case .toApply: ToApplyView()
         case .review: ReviewView(goToPeople: { select(.people) })
         case .places: PlacesView()
         case .outings: OutingsScreen()
-        case .placeHistory: HistoryView(kind: .places)
-        case .history: HistoryView(kind: .dates)
+        case .placeHistory, .history: HistoryView()
         case .events: EventsView()
         case .people: PeopleView()
         case .cameras: CamerasView()

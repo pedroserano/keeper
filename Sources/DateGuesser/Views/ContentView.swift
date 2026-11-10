@@ -4,12 +4,13 @@ import KeeperUI
 import DateGuessCore
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case review, places, outings, placeHistory, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
+    case toApply, review, places, outings, placeHistory, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .toApply: return "To Apply"
         case .review: return "Undated Photos"
         case .places: return "Places"
         case .outings: return "Outings"
@@ -26,6 +27,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
+        case .toApply: return "tray.and.arrow.up"
         case .review: return "photo.on.rectangle"
         case .places: return "mappin.and.ellipse"
         case .outings: return "figure.walk"
@@ -40,7 +42,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         }
     }
 
-    static let library: [SidebarItem] = [.review, .places, .outings, .placeHistory, .history]
+    static let library: [SidebarItem] = [.toApply, .history, .review, .places, .outings]
     static let clues: [SidebarItem] = [.events, .people, .cameras]
 }
 
@@ -116,6 +118,7 @@ struct ContentView: View {
 
     private func badge(for item: SidebarItem) -> Int {
         switch item {
+        case .toApply: return state.waitingCount
         case .review: return state.undatedSorted.count
         case .places: return state.places.confidentCount
         case .events: return state.eventSuggestions.count
@@ -134,11 +137,11 @@ struct ContentView: View {
         let item = selection ?? .review
         Group {
             switch item {
+            case .toApply: ToApplyView()
             case .review: ReviewView(goToPeople: { selection = .people })
             case .places: PlacesView()
             case .outings: OutingsScreen()
-            case .placeHistory: HistoryView(kind: .places)
-            case .history: HistoryView(kind: .dates)
+            case .placeHistory, .history: HistoryView()
             case .events: EventsView()
             case .people: PeopleView()
             case .cameras: CamerasView()
@@ -148,6 +151,7 @@ struct ContentView: View {
             }
         }
         .navigationTitle(item.title)
+        .photoInfoSheet(state)
     }
 }
 

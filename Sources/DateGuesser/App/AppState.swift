@@ -119,6 +119,7 @@ final class AppState {
         appliedEntries = Self.liveEntriesByPhoto(savedJournal)
         appliedIDs = Set(appliedEntries.keys)
         keptShifts = store.load(Set<String>.self, from: "keptShifts") ?? []
+        pending = store.load([String: PendingChange].self, from: "pending") ?? [:]
         // Last launch's events, so they show right away while they're worked out again.
         allEventClusters = store.load([[String]].self, from: "eventClusters") ?? []
         authorization = PhotoLibraryService.shared.authorizationStatus
@@ -472,6 +473,10 @@ final class AppState {
     private func eventPlacesAndTimes(_ order: [String]) -> ([String: GeoPoint], [String: Double]) {
         var knownPlaces: [String: GeoPoint] = [:]
         for (id, entry) in places.placed where scan.undated[id] != nil { knownPlaces[id] = entry.new }
+        // Places set with right-click › Set Location…, still waiting in To Apply, count too.
+        for (id, change) in pending where scan.undated[id] != nil {
+            if let place = change.place { knownPlaces[id] = place.point }
+        }
         var times: [String: Double] = [:]
         for id in order {
             if let p = places.decision(id).override?.point { knownPlaces[id] = p }
@@ -919,21 +924,27 @@ final class AppState {
     // MARK: Apply & undo
 
     func applySelected() {
-        guard !isApplying else { return }
+        Task { await applySelectedNow() }
+    }
+
+    /// Writes the dates of the photos selected in Undated Photos. Returns what happened (nil if
+    /// there was nothing to write).
+    @discardableResult
+    func applySelectedNow() async -> String? {
+        guard !isApplying else { return nil }
         let changes: [DateWriter.Change] = selectedForApply.compactMap { id in
             guard let date = effectiveEstimate(id)?.date() else { return nil }
             return DateWriter.Change(assetID: id, date: date, requireUnchanged: true,
                                      expectedCurrentDate: scan.undated[id]?.libraryDate)
         }
-        guard !changes.isEmpty else { return }
+        guard !changes.isEmpty else { return nil }
         isApplying = true
         applyProgress = (0, changes.count)
-        Task {
-            let batch = await DateWriter.apply(changes) { done, total in
-                await MainActor.run { self.applyProgress = (done, total) }
-            }
-            self.finishWrite(batch, verb: "Updated")
+        let batch = await DateWriter.apply(changes) { done, total in
+            await MainActor.run { self.applyProgress = (done, total) }
         }
+        finishWrite(batch, verb: "Updated")
+        return banner
     }
 
     func undo(_ batch: ApplyBatch) {
@@ -1033,25 +1044,24 @@ final class AppState {
         calendar.date(from: DateComponents(year: year, month: max(1, min(12, month)), day: 1, hour: 12))
     }
 
-    /// Gives an event's photos that are already dated in Photos (by this app or otherwise) a new date
-    /// there, undoable from History. A photo whose date changed in Photos since this app last saw it is
-    /// left alone. Every photo gets the same date: without a month or a season, the event's month.
-    func changeAppliedDates(_ groupID: UUID, year: Int, month: Int?, season: Season?) {
-        guard !isApplying, let group = groups.first(where: { $0.id == groupID }) else { return }
+    /// A new date for an event's photos that are already dated in Photos: it waits in To Apply.
+    /// Each skips Apply if its date changes in Photos before then.
+    func changeAppliedDates(_ groupID: UUID, year: Int, month: Int?, season: Season?) -> String? {
+        guard let group = groups.first(where: { $0.id == groupID }) else { return nil }
         let sharedMonth = month ?? season?.representativeMonth ?? eventShownMonth(group) ?? 1
-        let changes: [DateWriter.Change] = datesInPhotos(group).sorted { $0.key < $1.key }.compactMap { id, current in
-            guard let date = Self.appliedDate(year: year, month: sharedMonth) else { return nil }
-            return DateWriter.Change(assetID: id, date: date, requireUnchanged: true, expectedCurrentDate: current)
+        guard let date = Self.appliedDate(year: year, month: sharedMonth) else { return nil }
+        let current = datesInPhotos(group)
+        guard !current.isEmpty else { return nil }
+        var copy = pending
+        for (id, now) in current {
+            var change = copy[id] ?? PendingChange()
+            change.date = date
+            change.keepsTime = false
+            change.expected = now
+            copy[id] = change
         }
-        guard !changes.isEmpty else { return }
-        isApplying = true
-        applyProgress = (0, changes.count)
-        Task {
-            let batch = await DateWriter.apply(changes) { done, total in
-                await MainActor.run { self.applyProgress = (done, total) }
-            }
-            self.finishWrite(batch, verb: "Changed")
-        }
+        pending = copy
+        return "\(Self.photos(current.count)) will get \(date.formatted(.dateTime.month(.wide).year())) when you apply them in To Apply."
     }
 
     /// Puts back the dates an event's photos had before this app changed them, and marks those changes
@@ -1096,7 +1106,7 @@ final class AppState {
         }
     }
 
-    private func finishWrite(_ batch: ApplyBatch, verb: String) {
+    func finishWrite(_ batch: ApplyBatch, verb: String) {
         libraryDates = [:]
         if !batch.entries.isEmpty { journal.insert(batch, at: 0) }
         var copy = decisions
@@ -1141,6 +1151,10 @@ final class AppState {
     var isCheckingShifts = false
     /// Shifts the user chose to keep, so they aren't listed again.
     var keptShifts: Set<String> = [] { didSet { store.save(keptShifts, to: "keptShifts") } }
+    /// Dates and places set from a right-click menu or History, waiting for Apply in To Apply.
+    var pending: [String: PendingChange] = [:] { didSet { store.save(pending, to: "pending") } }
+    /// Right-click › Set Date… or Set Location…, waiting for its sheet.
+    var photoInfoRequest: PhotoInfoRequest?
 
     /// The date this app last set for each photo it dated (and hasn't undone).
     nonisolated static func appliedDates(_ journal: [ApplyBatch]) -> [String: Date] {
@@ -1186,54 +1200,6 @@ final class AppState {
         dateShifts.removeAll { gone.contains($0.assetID) }
     }
 
-    /// Gives these photos one exact date in Photos: the 1st of `month` at noon. Skips any changed again
-    /// since the check; undoable from History.
-    func setDateInPhotos(_ shifts: [DateShift], year: Int, month: Int) {
-        guard !isApplying, !shifts.isEmpty, let date = Self.appliedDate(year: year, month: month) else { return }
-        let changes = shifts.map {
-            DateWriter.Change(assetID: $0.assetID, date: date, requireUnchanged: true, expectedCurrentDate: $0.current)
-        }
-        isApplying = true
-        applyProgress = (0, changes.count)
-        Task {
-            let batch = await DateWriter.apply(changes) { done, total in
-                await MainActor.run { self.applyProgress = (done, total) }
-            }
-            self.finishWrite(batch, verb: "Set the date of")
-            self.checkShiftedDates()
-        }
-    }
-
-    /// Gives any photos (picked in Keeper's albums) the date `day` in Photos. Each keeps its own time
-    /// of day (noon if it had no date). Undoable from History. Returns what happened, to show.
-    func setDatesInPhotos(_ ids: [String], day: Date) async -> String {
-        guard !ids.isEmpty else { return "No photos to change." }
-        guard !isApplying else { return "Wait for the change already going on in Photos to finish." }
-        isApplying = true
-        applyProgress = (0, ids.count)
-        let current = await Task.detached(priority: .userInitiated) {
-            PhotoLibraryService.shared.assets(for: ids).mapValues(\.creationDate)
-        }.value
-        let calendar = Calendar.current
-        let changes = ids.map { id in
-            var parts = calendar.dateComponents([.year, .month, .day], from: day)
-            if let old = current[id] ?? nil {
-                let time = calendar.dateComponents([.hour, .minute, .second], from: old)
-                parts.hour = time.hour
-                parts.minute = time.minute
-                parts.second = time.second
-            } else {
-                parts.hour = 12
-            }
-            return DateWriter.Change(assetID: id, date: calendar.date(from: parts) ?? day)
-        }
-        let batch = await DateWriter.apply(changes) { done, total in
-            await MainActor.run { self.applyProgress = (done, total) }
-        }
-        finishWrite(batch, verb: "Set the date of")
-        return banner ?? "Done."
-    }
-
     // MARK: Rotation
 
     var isRotating = false
@@ -1242,14 +1208,17 @@ final class AppState {
     /// original back). Dates, places, people and albums stay as they are.
     func rotate(_ ids: [String]) {
         guard !ids.isEmpty, !isRotating, isAuthorized else { return }
+        // In Keeper, its own rotation: one undo list, so ⌘Z turns them back here.
+        if let keeper = DatesModel.rotate { keeper(ids); return }
         isRotating = true
         banner = ids.count == 1 ? "Rotating…" : "Rotating \(ids.count.formatted()) photos…"
         Task {
             var done = 0
             var lastError: String?
+            // Hidden photos and burst frames too: a plain fetch by ID leaves them out.
+            let found = PhotoLibraryService.shared.assetsIncludingHidden(for: ids)
             for id in ids {
-                PhotoLibraryService.shared.forget(id)
-                guard let asset = PhotoLibraryService.shared.asset(for: id) else { lastError = "It’s no longer in Photos."; continue }
+                guard let asset = found[id] else { lastError = "Photos didn’t find it."; continue }
                 do {
                     try await PhotoRotator.rotate(asset, by: .clockwise90)
                     PhotoLibraryService.shared.forget(id)
