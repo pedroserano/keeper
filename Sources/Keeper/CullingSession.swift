@@ -110,6 +110,7 @@ final class CullingSession: ObservableObject {
         Task { [weak self, libraryURL] in
             let model = await DatesModel.load(libraryURL: libraryURL, dataDirectory: folder)
             DatesModel.isRaw = { [weak self] id in self?.fileInfo(forID: id)?.isRaw == true }
+            DatesModel.hasLocation = { [weak self] id in self?.hasLocation(id) == true }
             log.notice("dates: loaded in \(started.duration(to: .now), privacy: .public)")
             self?.datesModel = model
         }
@@ -199,6 +200,25 @@ final class CullingSession: ObservableObject {
     }
     /// Get Info (⌘I) is showing this photo.
     @Published var infoAsset: PHAsset?
+
+    /// Right-click › Set Date or Set Location: the photos and which one.
+    struct PhotoInfoRequest: Identifiable {
+        let id = UUID()
+        var ids: [String]
+        var kind: SetPhotoInfoSheet.Kind
+        var startDate: Date?
+    }
+    @Published var photoInfoRequest: PhotoInfoRequest?
+
+    /// The photos a right-click acts on: every selected photo if it's one of them, else just it.
+    func photosForMenu(_ asset: PHAsset) -> [String] {
+        selectedPhotos.contains(asset.localIdentifier) ? Array(selectedPhotos) : [asset.localIdentifier]
+    }
+
+    func requestPhotoInfo(_ kind: SetPhotoInfoSheet.Kind, for asset: PHAsset) {
+        loadDates()
+        photoInfoRequest = PhotoInfoRequest(ids: photosForMenu(asset), kind: kind, startDate: asset.creationDate)
+    }
 
     /// Sideways Photos' own order, surest first unless you choose a date order.
     @Published var sidewaysSort: PhotoSort = PhotoSort(rawValue: UserDefaults.standard.string(forKey: PhotoSort.sidewaysStorageKey) ?? "") ?? .certainty {
@@ -536,6 +556,11 @@ final class CullingSession: ObservableObject {
     }
 
     func fileInfo(_ asset: PHAsset) -> FileInfo? { files[uuidOf(asset)] }
+
+    /// Whether a photo has a location: from the library's records, or given one in Keeper since.
+    func hasLocation(_ id: String) -> Bool {
+        fileInfo(forID: id)?.hasLocation == true || datesModel?.wasPlacedHere(id) == true
+    }
     /// The same, by Photos' local identifier ("UUID/L0/001").
     func fileInfo(forID id: String) -> FileInfo? { files[String(id.prefix { $0 != "/" })] }
 

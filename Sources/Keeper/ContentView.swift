@@ -58,6 +58,13 @@ struct ContentView: View {
         .environmentObject(session.library)
         .sheet(isPresented: $showingDelete) { DeleteQueueSheet().environmentObject(session).environmentObject(session.library) }
         .sheet(item: $session.infoAsset) { InfoSheet(asset: $0, libraryURL: session.libraryURL).environmentObject(session.library) }
+        .sheet(item: $session.photoInfoRequest) { request in
+            SetPhotoInfoSheet(model: session.datesModel, ids: request.ids, kind: request.kind,
+                              startDate: request.startDate) { message in
+                session.photoInfoRequest = nil
+                if let message { session.show(message) }
+            }
+        }
         .sheet(isPresented: $showingShortcuts) { ShortcutsSheet(screen: session.source.title) }
         .onAppear(perform: installKeyMonitor)
         .onDisappear {
@@ -459,6 +466,7 @@ struct PhotoBadges: View {
     let suggestion: Suggestion?
     let isFavorite: Bool
     var isRaw = false
+    var hasLocation = false
     var large = false
     /// Sideways Photos: the proposed turn and how sure it is, and what picking another one from its menu does.
     var turn: OrientationRecord? = nil
@@ -470,6 +478,7 @@ struct PhotoBadges: View {
             HStack(alignment: .top) {
                 FlagIcon(flag: decision.flag)
                 Spacer(minLength: 0)
+                if hasLocation { LocationTag() }
                 if isRaw { RawTag(large: large) }
                 if isFavorite { FavoriteHeart() }
             }

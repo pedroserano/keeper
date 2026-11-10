@@ -1131,6 +1131,36 @@ final class AppState {
         }
     }
 
+    /// Gives any photos (picked in Keeper's albums) the date `day` in Photos. Each keeps its own time
+    /// of day (noon if it had no date). Undoable from History. Returns what happened, to show.
+    func setDatesInPhotos(_ ids: [String], day: Date) async -> String {
+        guard !ids.isEmpty else { return "No photos to change." }
+        guard !isApplying else { return "Wait for the change already going on in Photos to finish." }
+        isApplying = true
+        applyProgress = (0, ids.count)
+        let current = await Task.detached(priority: .userInitiated) {
+            PhotoLibraryService.shared.assets(for: ids).mapValues(\.creationDate)
+        }.value
+        let calendar = Calendar.current
+        let changes = ids.map { id in
+            var parts = calendar.dateComponents([.year, .month, .day], from: day)
+            if let old = current[id] ?? nil {
+                let time = calendar.dateComponents([.hour, .minute, .second], from: old)
+                parts.hour = time.hour
+                parts.minute = time.minute
+                parts.second = time.second
+            } else {
+                parts.hour = 12
+            }
+            return DateWriter.Change(assetID: id, date: calendar.date(from: parts) ?? day)
+        }
+        let batch = await DateWriter.apply(changes) { done, total in
+            await MainActor.run { self.applyProgress = (done, total) }
+        }
+        finishWrite(batch, verb: "Set the date of")
+        return banner ?? "Done."
+    }
+
     // MARK: Rotation
 
     var isRotating = false

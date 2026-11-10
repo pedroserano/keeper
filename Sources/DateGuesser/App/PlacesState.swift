@@ -13,7 +13,14 @@ final class PlacesState {
     var decisions: [String: PlaceDecision] { didSet { scheduleDecisionSave(); countLikely() } }
     /// ⌘Z for the decisions above.
     @ObservationIgnored var decisionHistory = DecisionHistory<PlaceDecision>()
-    var journal: [PlaceBatch] { didSet { store.save(journal, to: "placesJournal") } }
+    var journal: [PlaceBatch] {
+        didSet {
+            store.save(journal, to: "placesJournal")
+            placedIDs = Set(placed.keys)
+        }
+    }
+    /// Photos given a location here (not undone), for the location mark on every photo.
+    private(set) var placedIDs: Set<String> = []
     /// Guesses for photos still without a location.
     var guesses: [String: PlaceGuessResult] = [:] { didSet { countLikely() } }
     /// The sidebar count: the photos Likely shows (not hidden, and given a place or guessed
@@ -76,6 +83,7 @@ final class PlacesState {
         journal = store.load([PlaceBatch].self, from: "placesJournal") ?? []
         lookalikeStat = store.load(ClueCalibration.Stat.self, from: "placeCalibration") ?? ClueCalibration.Stat()
         notOutings = store.load(Set<String>.self, from: "notOutings") ?? []
+        placedIDs = Set(placed.keys)
         rememberWhenTaken()
         refreshOrder()
     }
@@ -631,6 +639,33 @@ final class PlacesState {
                 + (skipped == 0 ? "" : " Skipped \(skipped) that got a location in Photos since the last scan.")
                 + (failed == 0 ? "" : " \(failed) couldn’t be changed.")
         }
+    }
+
+    /// Gives any photos (picked in Keeper's albums) one location in Photos, replacing any they
+    /// have. Undoable from History, which puts their previous locations back. Returns what
+    /// happened, to show.
+    func setLocationInPhotos(_ ids: [String], _ choice: PlaceChoice) async -> String {
+        guard !ids.isEmpty else { return "No photos to change." }
+        guard !isApplying else { return "Wait for the change already going on in Photos to finish." }
+        let name = choice.name.isEmpty ? nil : choice.name
+        let changes = ids.map { PlaceWriter.Change(assetID: $0, point: choice.point, name: name, requireNoLocation: false) }
+        isApplying = true
+        applyProgress = (0, changes.count)
+        var batch = await PlaceWriter.apply(changes) { done, total in
+            await MainActor.run { self.applyProgress = (done, total) }
+        }
+        for i in batch.entries.indices { batch.entries[i].taken = date(batch.entries[i].assetID) }
+        if !batch.entries.isEmpty { journal.insert(batch, at: 0) }
+        var copy = decisions
+        for entry in batch.entries { copy[entry.assetID]?.selected = false }
+        decisions = copy
+        isApplying = false
+        applyProgress = nil
+        refreshOrder()
+        recompute()
+        let failed = batch.failures.count
+        return "Set the location of \(batch.entries.count.formatted()) photos in Photos."
+            + (failed == 0 ? "" : " \(failed) couldn’t be changed.")
     }
 
     func undo(_ batch: PlaceBatch) {

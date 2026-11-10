@@ -88,6 +88,18 @@ public struct FavoriteHeart: View {
     }
 }
 
+/// The photo has a location in Photos.
+public struct LocationTag: View {
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: "location.fill")
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.7), radius: 1.5)
+            .help("Has a location")
+    }
+}
+
 /// The photo's star rating, in yellow.
 public struct StarsTag: View {
     var stars: Int
@@ -107,12 +119,14 @@ public struct PhotoMarks: View {
     var isFavorite: Bool
     var stars: Int
     var isRaw: Bool
+    var hasLocation: Bool
     var large: Bool
 
-    public init(isFavorite: Bool, stars: Int, isRaw: Bool, large: Bool = false) {
+    public init(isFavorite: Bool, stars: Int, isRaw: Bool, hasLocation: Bool = false, large: Bool = false) {
         self.isFavorite = isFavorite
         self.stars = stars
         self.isRaw = isRaw
+        self.hasLocation = hasLocation
         self.large = large
     }
 
@@ -120,6 +134,7 @@ public struct PhotoMarks: View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 4) {
                 Spacer(minLength: 0)
+                if hasLocation { LocationTag() }
                 if isRaw { RawTag(large: large) }
                 if isFavorite { FavoriteHeart() }
             }
@@ -131,7 +146,7 @@ public struct PhotoMarks: View {
         }
         .font(large ? .title3 : .caption)
         .padding(large ? 8 : 5)
-        .allowsHitTesting(isRaw || isFavorite || stars > 0)
+        .allowsHitTesting(isRaw || isFavorite || hasLocation || stars > 0)
     }
 }
 

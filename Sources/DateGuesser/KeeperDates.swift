@@ -28,6 +28,11 @@ public final class DatesModel {
     let state: AppState
     /// Whether a photo's original is a RAW file (Keeper knows from the library's own records).
     public static var isRaw: (String) -> Bool = { _ in false }
+    /// Whether a photo has a location in Photos (Keeper knows from the library's own records).
+    public static var hasLocation: (String) -> Bool = { _ in false }
+
+    /// Given a location from Keeper (in Places or with Set Location) since the library was read.
+    public func wasPlacedHere(_ id: String) -> Bool { state.places.placedIDs.contains(id) }
     private var observers: [NSObjectProtocol] = []
 
     /// Copies and decodes the saved data in the background, then makes the state on the main thread.
@@ -55,6 +60,11 @@ public final class DatesModel {
                                             queue: .main) { [state] _ in
             MainActor.assumeIsolated { state.appBecameActive() }
         })
+    }
+
+    /// Right-click › Set Date in Keeper's albums: one date for these photos in Photos.
+    public func setDate(_ ids: [String], to day: Date) async -> String {
+        await state.setDatesInPhotos(ids, day: day)
     }
 
     /// Saves now, for example before switching to another library.

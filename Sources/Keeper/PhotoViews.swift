@@ -384,6 +384,7 @@ extension GridView {
                         selecting: !session.selectedPhotos.isEmpty,
                         toggleChecked: { session.togglePhoto(at: i) },
                         isRaw: session.fileInfo(asset)?.isRaw == true,
+                        hasLocation: session.hasLocation(asset.localIdentifier),
                         turn: session.source == .sideways ? session.proposedRotation(asset) : nil,
                         wholePhoto: wholePhotos,
                         rotate: session.source == .sideways ? { session.rotateSideways([asset]) } : nil,
@@ -537,6 +538,7 @@ struct GridCell: View {
     var selecting = false
     var toggleChecked: (() -> Void)? = nil
     var isRaw = false
+    var hasLocation = false
     var turn: OrientationRecord? = nil
     /// The whole photo at its own shape, instead of filling a square.
     var wholePhoto = false
@@ -594,7 +596,8 @@ struct GridCell: View {
             .background(wholePhoto ? AnyShapeStyle(.clear) : AnyShapeStyle(.quaternary))
             .clipShape(RoundedRectangle(cornerRadius: PhotoStyle.cornerRadius))
             .opacity(decision.flag == .reject ? 0.35 : 1)
-            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite, isRaw: isRaw, turn: turn,
+            .overlay { PhotoBadges(decision: decision, suggestion: suggestion, isFavorite: isFavorite, isRaw: isRaw,
+                                   hasLocation: hasLocation, turn: turn,
                                    changeTurn: changeTurn, leave: leave) }
             .selectedTint(checked == true)
             // The selection circle, top left as in Photos: filled when picked, empty while picking or
@@ -902,7 +905,8 @@ struct CompareView: View {
         .opacity(session.decision(asset).flag == .reject ? 0.45 : 1)
         .overlay { PhotoBadges(decision: session.decision(asset), suggestion: session.suggestion(asset),
                                  isFavorite: session.isFavorite(asset),
-                                 isRaw: session.fileInfo(asset)?.isRaw == true, large: true,
+                                 isRaw: session.fileInfo(asset)?.isRaw == true,
+                                 hasLocation: session.hasLocation(asset.localIdentifier), large: true,
                                  turn: session.source == .sideways ? session.proposedRotation(asset) : nil,
                                  changeTurn: session.source == .sideways ? { session.changeSidewaysTurn(asset, to: $0) } : nil,
                                  leave: session.source == .sideways ? { session.dismissSideways([asset]) } : nil) }

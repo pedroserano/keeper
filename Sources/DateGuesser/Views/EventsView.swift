@@ -173,7 +173,7 @@ struct Thumbnails: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(ids.prefix(limit), id: \.self) { id in
-                AssetThumbnail(assetID: id, side: side, wholePhoto: wholePhotos)
+                AssetThumbnail(assetID: id, side: side, showMarks: true, wholePhoto: wholePhotos)
                     .zoomable(id, in: ids)
             }
             if ids.count > limit {

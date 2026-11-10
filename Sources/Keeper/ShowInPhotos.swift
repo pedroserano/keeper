@@ -7,6 +7,7 @@
 import AppKit
 import Photos
 import SwiftUI
+import DateGuesser
 
 enum ShowInPhotos {
     static func url(for asset: PHAsset) -> URL? {
@@ -38,6 +39,11 @@ extension View {
             Button("Show in Photos") {
                 Task { if let problem = await ShowInPhotos.open(asset) { session.show(problem) } }
             }
+            Divider()
+            let count = session.photosForMenu(asset).count
+            let photos = count == 1 ? "" : " of \(count.formatted()) Photos"
+            Button("Set Date\(photos)…") { session.requestPhotoInfo(.date, for: asset) }
+            Button("Set Location\(photos)…") { session.requestPhotoInfo(.location, for: asset) }
         }
     }
 }

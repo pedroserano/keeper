@@ -125,7 +125,8 @@ struct AssetThumbnail: View {
             .clipShape(shape)
             .overlay {
                 if showMarks {
-                    PhotoMarks(isFavorite: loader.isFavorite, stars: loader.stars, isRaw: DatesModel.isRaw(assetID))
+                    PhotoMarks(isFavorite: loader.isFavorite, stars: loader.stars, isRaw: DatesModel.isRaw(assetID),
+                               hasLocation: DatesModel.hasLocation(assetID))
                 }
             }
             .contentShape(shape)
