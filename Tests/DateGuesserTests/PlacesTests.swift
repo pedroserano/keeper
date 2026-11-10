@@ -64,6 +64,26 @@ final class PlacesTests: XCTestCase {
         XCTAssertTrue(places.order.contains("camera"))
     }
 
+    /// Any photo can be selected: one with no guess (to give many one place) or a hidden one (to
+    /// show many again). Apply only takes the ones with a place that aren't hidden.
+    func testSelectingPhotosWithNoGuessOrHidden() {
+        let places = PlacesState()
+        places.scan = sampleScan()
+        places.refreshOrder()
+        places.setIgnored("later", true)
+        places.select(["scan", "later"], true)
+        XCTAssertTrue(places.decision("scan").selected, "no guess, still selectable")
+        XCTAssertTrue(places.decision("later").selected, "hidden, still selectable")
+        XCTAssertTrue(places.checkedForApply.isEmpty, "nothing to write yet")
+
+        places.setPlace(["scan"], PlaceChoice(name: "Paris", point: paris))
+        XCTAssertEqual(places.checkedForApply, ["scan"])
+
+        places.setIgnored(["later"], false)
+        XCTAssertFalse(places.decision("later").ignored)
+        XCTAssertFalse(places.decision("later").selected, "shown again, but not applied unseen")
+    }
+
     func testFingerprintQueueSpreadsOverPlaces() {
         let places = PlacesState()
         var scan = PlacesScan(lastScan: Date())

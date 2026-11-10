@@ -20,8 +20,9 @@ struct PlacesView: View {
 
     enum Filter: String, CaseIterable, Identifiable {
         case likely = "Likely"
-        case possible = "Possible"
         case unguessed = "No Guess"
+        /// Photos you gave a place here (one by one, with Set Place or with their outing), waiting for Apply.
+        case setByYou = "Set by You"
         case checked = "Selected"
         case hidden = "Hidden"
         var id: String { rawValue }
@@ -39,9 +40,9 @@ struct PlacesView: View {
             let d = places.decision(id)
             switch filter {
             case .likely: return places.isLikely(id)
-            case .possible: return !d.ignored && d.override == nil && places.guesses[id]?.level == .medium
             case .unguessed: return !d.ignored && places.guesses[id] == nil && d.override == nil
-            case .checked: return !d.ignored && d.selected
+            case .checked: return d.selected
+            case .setByYou: return !d.ignored && d.override != nil
             case .hidden: return d.ignored
             }
         }
@@ -88,14 +89,16 @@ struct PlacesView: View {
         .overlay { emptyState(ids) }
         .safeAreaInset(edge: .top, spacing: 0) {
             if !ids.isEmpty {
-                KeeperActionBar(checked > 0
-                                ? "\(checked.formatted()) selected to place · Esc to deselect"
-                                : "Select the photos whose place is right (A accepts the current one, G or ⌘-click selects), then Apply.",
-                                systemImage: "mappin.and.ellipse") {
+                KeeperActionBar(actionText(ids, checked), systemImage: "mappin.and.ellipse") {
                     // Here rather than in the toolbar: with the six filters, a toolbar Select menu
                     // pushed the filters into the » overflow menu.
                     checkMenu(ids)
-                    SetPlaceButton(places: places, ids: ids.filter { places.decision($0).selected })
+                    let hiddenSelected = ids.filter { places.decision($0).selected && places.decision($0).ignored }
+                    if !hiddenSelected.isEmpty {
+                        Button("Show \(hiddenSelected.count.formatted()) Again") { places.setIgnored(hiddenSelected, false) }
+                            .help("Bring the selected hidden photos back (N)")
+                    }
+                    SetPlaceButton(places: places, ids: ids.filter { places.decision($0).selected && !places.decision($0).ignored })
                     Button(checked == 0 ? "Apply" : "Apply \(checked.formatted())") { confirmApply = true }
                         .buttonStyle(.borderedProminent)
                         .disabled(checked == 0 || places.isApplying)
@@ -133,14 +136,35 @@ struct PlacesView: View {
         let places = places, state = state
         return GridActions(
             isSelected: { places.decision($0).selected },
-            canSelect: { !places.decision($0).ignored && places.effectivePoint($0) != nil },
-            select: { places.select($0.filter { places.effectivePoint($0) != nil }, $1) },
+            select: { places.select($0, $1) },
             accept: { if places.effectivePoint($0) != nil { places.select([$0], true) } },
-            decline: { places.setIgnored($0, !places.decision($0).ignored) },
+            // N on a selected photo hides (or shows again) every selected photo like it.
+            decline: { id in
+                let d = places.decision(id)
+                let group = d.selected ? places.allSelected.filter { places.decision($0).ignored == d.ignored } : [id]
+                places.setIgnored(group, !d.ignored)
+                if group.count > 1 {
+                    state.banner = "\(d.ignored ? "Showed" : "Hid") \(group.count.formatted()) photos. ⌘Z undoes it."
+                }
+            },
             rotate: { rotate($0) },
             open: { detailID = $0 },
             message: { state.banner = $0 },
             allSelected: { places.allSelected })
+    }
+
+    private func actionText(_ ids: [String], _ checked: Int) -> String {
+        let selected = ids.filter { places.decision($0).selected }
+        let unplaced = selected.filter { !places.decision($0).ignored && places.effectivePoint($0) == nil }.count
+        if filter == .hidden {
+            return selected.isEmpty ? "Select photos to show them again (⌘A selects all, Shift-click a range)."
+                : "\(selected.count.formatted()) selected · Show Again or N brings them back"
+        }
+        if unplaced > 0 {
+            return "\(selected.count.formatted()) selected · \(unplaced.formatted()) need a place: Set Place (⌘L) gives them one"
+        }
+        return checked > 0 ? "\(checked.formatted()) selected to place · Esc to deselect"
+            : "Select the photos whose place is right (A accepts the current one, G or ⌘-click selects), then Apply."
     }
 
     private func rotate(_ ids: [String]) {
@@ -273,11 +297,13 @@ struct PlaceCard: View {
                 .currentPhotoBorder(isCurrent)
                 .overlay(alignment: .topLeading) {
                     SelectionCircle(selected: decision.selected,
-                                    help: decision.selected ? "Selected: this location will be set. Click to deselect."
+                                    help: decision.ignored ? "Select to show it again with others (N). Shift-click selects a range."
+                                        : places.effectivePoint(assetID) == nil
+                                        ? (decision.selected ? "Selected: Set Place (⌘L) gives it a location. Click to deselect."
+                                           : "Select, then Set Place (⌘L) gives it a location. Shift-click selects a range.")
+                                        : decision.selected ? "Selected: this location will be set. Click to deselect."
                                         : "Select to set this location (G or A). Shift-click selects a range.",
                                     action: onToggle)
-                        .disabled(decision.ignored || places.effectivePoint(assetID) == nil)
-                        .opacity(decision.ignored ? 0.3 : 1)
                 }
                 .overlay(alignment: .bottomTrailing) {
                     Button(action: onOpen) {
@@ -347,7 +373,6 @@ struct PlaceCard: View {
         .opacity(decision.ignored ? 0.5 : 1)
         .contextMenu {
             Button(decision.selected ? "Deselect" : "Select") { places.setSelected(assetID, !decision.selected) }
-                .disabled(decision.ignored || places.effectivePoint(assetID) == nil)
             Button("Show on a Map…") { onOpen() }
             Button("Show in Photos") { Task { await state.showInPhotos(assetID) } }
             Button(decision.selected ? "Rotate Selected Clockwise  R" : "Rotate Clockwise  R") { onRotate() }

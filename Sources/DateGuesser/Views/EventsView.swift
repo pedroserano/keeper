@@ -549,9 +549,8 @@ struct PhotoGrid: View {
     @Environment(AppState.self) private var state
     var ids: [String]
     @Binding var selected: Set<String>
-    /// The last photo clicked, and whether that click selected it: Shift-click takes every photo
-    /// from there the same way (or deselects them if they're all selected already).
-    @State private var anchor: (id: String, on: Bool)?
+    /// The last photo clicked: Shift-click takes every photo from there the way the clicked one goes.
+    @State private var anchor: String?
 
     var body: some View {
         let applied = state.appliedIDs
@@ -573,16 +572,13 @@ struct PhotoGrid: View {
     }
 
     private func click(_ id: String) {
-        if NSEvent.modifierFlags.contains(.shift), let anchor,
-           let range = GridCursor.range(from: anchor.id, to: id, in: ids) {
-            let on = range.allSatisfy(selected.contains) ? false : anchor.on
+        let on = !selected.contains(id)
+        if NSEvent.modifierFlags.contains(.shift), let range = GridCursor.range(from: anchor, to: id, in: ids) {
             if on { selected.formUnion(range) } else { selected.subtract(range) }
-            self.anchor = (id, on)
         } else {
-            let on = !selected.contains(id)
             if on { selected.insert(id) } else { selected.remove(id) }
-            anchor = (id, on)
         }
+        anchor = id
     }
 }
 

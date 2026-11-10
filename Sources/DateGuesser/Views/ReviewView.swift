@@ -57,7 +57,7 @@ struct ReviewView: View {
             let level = state.effectiveEstimate(photo.id)?.confidenceLevel
             switch filter {
             case .toReview: return !d.ignored
-            case .selected: return d.selected && !d.ignored
+            case .selected: return d.selected
             case .low: return !d.ignored && level == .low
             case .ignored: return d.ignored
             }
@@ -182,12 +182,20 @@ struct ReviewView: View {
 
     /// Under the toolbar: what's selected, Set Date and Apply.
     private func actionBar(_ ids: [String], _ selectedCount: Int) -> some View {
-        KeeperActionBar(selectedCount > 0
+        let hiddenSelected = ids.filter { state.decision($0).selected && state.decision($0).ignored }
+        return KeeperActionBar(filter == .ignored
+                        ? (hiddenSelected.isEmpty ? "Select photos to show them again (⌘A selects all, Shift-click a range)."
+                           : "\(hiddenSelected.count.formatted()) selected · Show Again or N brings them back")
+                        : selectedCount > 0
                         ? "\(selectedCount.formatted()) selected to date · Esc to deselect"
                         : "Select the photos whose guess is right (A accepts the current one, G or ⌘-click selects), then Apply.",
                         systemImage: "calendar") {
             checkMenu(ids)
-            SetDateButton(state: state, ids: ids.filter { state.decision($0).selected })
+            if !hiddenSelected.isEmpty {
+                Button("Show \(hiddenSelected.count.formatted()) Again") { state.setIgnored(hiddenSelected, false) }
+                    .help("Bring the selected hidden photos back (N)")
+            }
+            SetDateButton(state: state, ids: ids.filter { state.decision($0).selected && !state.decision($0).ignored })
             Button(selectedCount == 0 ? "Apply" : "Apply \(selectedCount.formatted())") { confirmApply = true }
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedCount == 0 || state.isApplying)
@@ -199,10 +207,18 @@ struct ReviewView: View {
         let state = state
         return GridActions(
             isSelected: { state.decision($0).selected },
-            canSelect: { !state.decision($0).ignored },
             select: { state.select($0, $1) },
             accept: { state.select([$0], true) },
-            decline: { state.setIgnored($0, !state.decision($0).ignored) },
+            // N on a selected photo hides (or shows again) every selected photo like it.
+            decline: { id in
+                let d = state.decision(id)
+                let group = d.selected
+                    ? state.decisions.filter { $0.value.selected && $0.value.ignored == d.ignored }.map(\.key) : [id]
+                state.setIgnored(group, !d.ignored)
+                if group.count > 1 {
+                    state.banner = "\(d.ignored ? "Showed" : "Hid") \(group.count.formatted()) photos. ⌘Z undoes it."
+                }
+            },
             rotate: { rotate($0) },
             open: { detailID = $0 },
             message: { state.banner = $0 })
@@ -283,8 +299,6 @@ struct ReviewCard: View {
                                         help: decision.selected ? "Selected: this date will be applied. Click to deselect."
                                             : "Select to apply this date (G or A). Shift-click selects a range.",
                                         action: onToggle)
-                            .disabled(decision.ignored)
-                            .opacity(decision.ignored ? 0.3 : 1)
                     }
                     .overlay(alignment: .bottomTrailing) {
                         Button(action: onOpen) {

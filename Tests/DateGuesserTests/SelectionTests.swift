@@ -67,7 +67,7 @@ final class SelectionTests: XCTestCase {
         XCTAssertEqual(selected, ["d"])
     }
 
-    func testShiftClickDeselectsARange() {
+    func testShiftClickGoesTheWayOfThePhotoClicked() {
         let ids = ["a", "b", "c", "d", "e"]
         var selected: Set<String> = Set(ids)
         let actions = GridActions(
@@ -78,18 +78,17 @@ final class SelectionTests: XCTestCase {
 
         cursor.click("a", in: ids, modifiers: [], actions)
         cursor.click("b", in: ids, modifiers: .shift, actions)
-        XCTAssertEqual(selected, ["c", "d", "e"], "Shift-click over photos all selected deselects them")
+        XCTAssertEqual(selected, ["c", "d", "e"], "Shift-clicking a selected photo deselects the range")
 
         cursor.click("e", in: ids, modifiers: .command, actions)
         XCTAssertEqual(selected, ["c", "d"])
-        cursor.click("c", in: ids, modifiers: .shift, actions)
-        XCTAssertTrue(selected.isEmpty, "after a ⌘-click deselects, Shift-click deselects the range")
+        cursor.click("a", in: ids, modifiers: .shift, actions)
+        XCTAssertEqual(selected, Set(ids), "after a ⌘-click deselects, Shift-clicking one not selected still selects")
 
-        cursor.toggle("a", in: ids, extend: false, actions)
-        cursor.toggle("c", in: ids, extend: true, actions)
-        XCTAssertEqual(selected, ["a", "b", "c"], "after a circle selects, Shift-circle selects the range")
         cursor.toggle("b", in: ids, extend: false, actions)
-        cursor.toggle("a", in: ids, extend: true, actions)
-        XCTAssertEqual(selected, ["c"], "after a circle deselects, Shift-circle deselects the range")
+        cursor.toggle("d", in: ids, extend: true, actions)
+        XCTAssertEqual(selected, ["a", "e"], "Shift-circle on a selected photo deselects the range")
+        cursor.toggle("c", in: ids, extend: true, actions)
+        XCTAssertEqual(selected, ["a", "e", "c", "d"], "and on one not selected, selects it")
     }
 }

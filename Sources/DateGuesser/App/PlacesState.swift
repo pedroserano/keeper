@@ -357,8 +357,8 @@ final class PlacesState {
                     unchecked += 1
                 }
                 let result = PlaceGuessResult(estimate: estimate, evidence: evidence.sorted { $0.weight > $1.weight })
-                // Too weak to be worth showing as a place.
-                if result.level != .low { out[id] = result }
+                // Only likely guesses are shown: the weaker ones were wrong too often to be worth it.
+                if result.level == .high { out[id] = result }
             }
         }
         return out
@@ -423,14 +423,27 @@ final class PlacesState {
     func select(_ ids: [String], _ selected: Bool) {
         decisionHistory.record(ids, from: decisions)
         var copy = decisions
-        for id in ids where copy[id]?.ignored != true { copy[id, default: PlaceDecision()].selected = selected }
+        // Any photo, with a place or not, hidden or not: Apply only takes those with a place.
+        for id in ids { copy[id, default: PlaceDecision()].selected = selected }
         decisions = copy
     }
 
     func setIgnored(_ id: String, _ ignored: Bool) {
         decisionHistory.record([id], from: decisions)
         decisions[id, default: PlaceDecision()].ignored = ignored
-        if ignored { decisions[id]?.selected = false }
+        // Hiding or showing again also deselects, so a photo brought back isn't applied unseen.
+        decisions[id]?.selected = false
+    }
+
+    /// Hides many photos, or shows them again (deselected either way).
+    func setIgnored(_ ids: [String], _ ignored: Bool) {
+        decisionHistory.record(ids, from: decisions)
+        var copy = decisions
+        for id in ids {
+            copy[id, default: PlaceDecision()].ignored = ignored
+            copy[id]?.selected = false
+        }
+        decisions = copy
     }
 
     /// The user's place for one photo (nil goes back to the guess). Checks it, ready to apply.

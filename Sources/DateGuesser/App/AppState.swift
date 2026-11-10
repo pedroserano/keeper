@@ -781,8 +781,22 @@ final class AppState {
         decisionHistory.record([id], from: decisions)
         var d = decision(id)
         d.ignored = ignored
-        if ignored { d.selected = false }
+        // Hiding or showing again also deselects, so a photo brought back isn't applied unseen.
+        d.selected = false
         decisions[id] = d
+    }
+
+    /// Hides many photos, or shows them again (deselected either way).
+    func setIgnored(_ ids: [String], _ ignored: Bool) {
+        decisionHistory.record(ids, from: decisions)
+        var copy = decisions
+        for id in ids {
+            var d = copy[id] ?? ReviewDecision()
+            d.ignored = ignored
+            d.selected = false
+            copy[id] = d
+        }
+        decisions = copy
     }
 
     /// The same date for many photos at once. A nil season keeps each photo's own guessed season;
@@ -807,7 +821,8 @@ final class AppState {
         var copy = decisions
         for id in ids {
             var d = copy[id] ?? ReviewDecision()
-            d.selected = selected && !d.ignored
+            // Hidden photos can be selected too, to show many again at once; Apply skips them.
+            d.selected = selected
             copy[id] = d
         }
         decisions = copy
