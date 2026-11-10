@@ -56,3 +56,20 @@ final class ToApplyTests: XCTestCase {
         XCTAssertEqual(calendar.component(.hour, from: AppState.day(day, keepingTimeOf: nil, calendar: calendar)), 12)
     }
 }
+
+/// A place you give an undated scan in Keeper dates it straight away, from the trip photos there.
+@MainActor
+final class PlacedHereDateTests: XCTestCase {
+    func testAPlaceSetInKeeperIsADateClue() {
+        let rome = GeoPoint(lat: 41.9, lon: 12.5)
+        var located = LocatedPhotos()
+        let july2010 = Date(timeIntervalSince1970: 1_279_000_000)
+        for i in 0..<10 { located.append("trip\(i)", july2010.addingTimeInterval(Double(i) * 3600), rome) }
+        let undated = ["scan": UndatedPhoto(id: "scan", reason: .noCaptureDateInFile, libraryDate: nil, format: FormatInfo(), albums: [])]
+        XCTAssertNil(AppState.placeDateClues(located: located, undated: undated, notReferences: ["scan"])["scan"],
+                     "no location, no clue")
+        let clue = AppState.placeDateClues(located: located, undated: undated, notReferences: ["scan"],
+                                           placedHere: ["scan": rome])["scan"]
+        XCTAssertEqual(clue?.peakYear, 2010)
+    }
+}

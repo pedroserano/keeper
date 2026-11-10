@@ -611,10 +611,12 @@ final class AppState {
         let faceCorrection = self.faceAgeCorrection()
         let located = places.scan.located
         let notReferences = Set(undated.keys).union(appliedIDs)
+        let placedHere = placesSetHere(undated)
         Timing.note("estimates #\(generation) prep on main", since: prepStarted)
         Task.detached(priority: .userInitiated) {
             let started = ContinuousClock.now
-            let placeClues = AppState.placeDateClues(located: located, undated: undated, notReferences: notReferences)
+            let placeClues = AppState.placeDateClues(located: located, undated: undated, notReferences: notReferences,
+                                                     placedHere: placedHere)
             let result = AppState.computeEstimates(undated: undated, analyses: analyses, groups: groups,
                                                    people: people, photoPeople: photoPeople, links: links,
                                                    referenceClues: referenceClues, lookalikeClues: lookalikeClues,
@@ -688,9 +690,22 @@ final class AppState {
 
     /// Undated photos that have a location, dated by the dated photos taken near them (a trip).
     /// Photos dated here don't count as dated: they'd only echo a guess.
+    /// Undated photos you gave a place in Keeper: applied, chosen in Places, or waiting in To Apply.
+    /// Only places you chose count; guesses never do, so a guessed place can't make a date that
+    /// then makes the place more certain.
+    func placesSetHere(_ undated: [String: UndatedPhoto]) -> [String: GeoPoint] {
+        var out: [String: GeoPoint] = [:]
+        for (id, entry) in places.placed where undated[id] != nil { out[id] = entry.new }
+        for (id, d) in places.decisions where undated[id] != nil { if let p = d.override?.point { out[id] = p } }
+        for (id, change) in pending where undated[id] != nil { if let p = change.place?.point { out[id] = p } }
+        return out
+    }
+
     nonisolated static func placeDateClues(located: LocatedPhotos, undated: [String: UndatedPhoto],
-                                           notReferences: Set<String>) -> [String: DateEvidence] {
-        var targets: [String: GeoPoint] = [:]
+                                           notReferences: Set<String>,
+                                           placedHere: [String: GeoPoint] = [:]) -> [String: DateEvidence] {
+        // Places set in Keeper count straight away, before the next Places scan sees them.
+        var targets: [String: GeoPoint] = placedHere
         var references: [PlaceDateClues.Reference] = []
         references.reserveCapacity(located.count)
         for i in 0..<located.count {

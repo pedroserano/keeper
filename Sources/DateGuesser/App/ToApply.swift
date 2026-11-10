@@ -105,6 +105,7 @@ extension AppState {
         }
         pending = copy
         deselectInLists(ids, dates: false)
+        places.placesChosen(ids)
         let name = place.name.isEmpty ? "this place" : place.name
         return "\(Self.photos(ids.count)) will get \(name) when you apply them in To Apply."
     }

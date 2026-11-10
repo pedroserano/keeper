@@ -479,6 +479,13 @@ final class PlacesState {
         decisionHistory.record([id], from: decisions)
         decisions[id, default: PlaceDecision()].override = choice
         if choice != nil { decisions[id]?.selected = true }
+        placesChosen([id])
+    }
+
+    /// A place chosen for an undated photo is a clue to its date: work the guesses out again.
+    func placesChosen(_ ids: [String]) {
+        guard let app, ids.contains(where: { app.scan.undated[$0] != nil }) else { return }
+        app.scheduleRecompute(delay: 1)
     }
 
     /// One place for many photos at once.
@@ -490,6 +497,7 @@ final class PlacesState {
             copy[id]?.selected = true
         }
         decisions = copy
+        placesChosen(ids)
     }
 
     /// Takes back a place set for these photos (not yet applied): back to their guesses, deselected.
@@ -501,6 +509,7 @@ final class PlacesState {
             copy[id]?.selected = false
         }
         decisions = copy
+        placesChosen(ids)
     }
 
     // MARK: Confirmed outings
