@@ -10,24 +10,31 @@ final class PlacesState {
     @ObservationIgnored private let store = JSONStore.shared
 
     var scan: PlacesScan
-    var decisions: [String: PlaceDecision] { didSet { scheduleDecisionSave(); countLikely() } }
+    var decisions: [String: PlaceDecision] { didSet { scheduleDecisionSave(); refreshCounts() } }
     /// ⌘Z for the decisions above.
     @ObservationIgnored var decisionHistory = DecisionHistory<PlaceDecision>()
     var journal: [PlaceBatch] {
         didSet {
             store.save(journal, to: "placesJournal")
-            placedIDs = Set(placed.keys)
+            placed = Self.placed(in: journal)
         }
     }
-    /// Photos given a location here (not undone), for the location mark on every photo.
-    private(set) var placedIDs: Set<String> = []
+    /// Photos placed in this app (and not undone), with where. Kept up to date with the journal:
+    /// it's read in sorts and view bodies, too often to rebuild each time.
+    private(set) var placed: [String: PlaceJournalEntry] = [:]
     /// Guesses for photos still without a location.
-    var guesses: [String: PlaceGuessResult] = [:] { didSet { countLikely() } }
+    var guesses: [String: PlaceGuessResult] = [:] { didSet { refreshCounts() } }
     /// The sidebar count: the photos Likely shows (not hidden, and given a place or guessed
     /// confidently), kept here so redrawing the sidebar is free.
     private(set) var confidentCount = 0
+    /// Selected photos still without a location, and how many of them Apply would write (not
+    /// hidden, with a place). Kept here so the Places screen doesn't walk every photo per redraw.
+    private(set) var selectedIDs: Set<String> = []
+    private(set) var checkedCount = 0
+    /// Outings with a photo still waiting for a place (the Outings sidebar count).
+    private(set) var outingsToPlaceCount = 0
     /// Photos still without a location, oldest first (the order Photos shows them).
-    var order: [String] = [] { didSet { countLikely() } }
+    var order: [String] = [] { didSet { refreshCounts() } }
 
     /// The same test as Places' Likely filter, so the sidebar and the window agree.
     func isLikely(_ id: String) -> Bool {
@@ -35,15 +42,29 @@ final class PlacesState {
         return !d.ignored && (d.override != nil || guesses[id]?.level == .high)
     }
 
-    private func countLikely() {
-        let n = order.reduce(0) { $0 + (isLikely($1) ? 1 : 0) }
-        if n != confidentCount { confidentCount = n }
+    /// One pass over the photos for every count the screens and sidebar show.
+    private func refreshCounts() {
+        var likely = 0, checked = 0
+        var selected = Set<String>()
+        for id in order {
+            let d = decisions[id] ?? PlaceDecision()
+            if !d.ignored && (d.override != nil || guesses[id]?.level == .high) { likely += 1 }
+            if d.selected {
+                selected.insert(id)
+                if !d.ignored && (d.override != nil || guesses[id] != nil) { checked += 1 }
+            }
+        }
+        if likely != confidentCount { confidentCount = likely }
+        if selected != selectedIDs { selectedIDs = selected }
+        if checked != checkedCount { checkedCount = checked }
+        let outingsLeft = outingsToPlace.count
+        if outingsLeft != outingsToPlaceCount { outingsToPlaceCount = outingsLeft }
     }
     /// Photos with a real date grouped by camera and time, biggest first.
-    var outings: [[String]] = []
+    var outings: [[String]] = [] { didSet { refreshCounts() } }
     /// Photos from outings you said aren't one outing (Not One Outing). Kept, so they don't come back;
     /// an outing that gains a photo you haven't seen in one shows again.
-    var notOutings: Set<String> { didSet { store.save(notOutings, to: "notOutings") } }
+    var notOutings: Set<String> { didSet { store.save(notOutings, to: "notOutings"); refreshCounts() } }
     /// Outings minus the ones you said aren't one.
     var openOutings: [[String]] { outings.filter { !$0.allSatisfy(notOutings.contains) } }
     func notOneOuting(_ members: [String]) { notOutings.formUnion(members) }
@@ -83,15 +104,14 @@ final class PlacesState {
         journal = store.load([PlaceBatch].self, from: "placesJournal") ?? []
         lookalikeStat = store.load(ClueCalibration.Stat.self, from: "placeCalibration") ?? ClueCalibration.Stat()
         notOutings = store.load(Set<String>.self, from: "notOutings") ?? []
-        placedIDs = Set(placed.keys)
+        placed = Self.placed(in: journal)
         rememberWhenTaken()
         refreshOrder()
     }
 
     // MARK: Derived
 
-    /// Photos placed in this app (and not undone), with where.
-    var placed: [String: PlaceJournalEntry] {
+    nonisolated static func placed(in journal: [PlaceBatch]) -> [String: PlaceJournalEntry] {
         var out: [String: PlaceJournalEntry] = [:]
         for batch in journal.reversed() where !batch.undone {
             for entry in batch.entries { out[entry.assetID] = entry }
@@ -130,7 +150,7 @@ final class PlacesState {
         isScanning = true
         scanProgress = (0, 0)
         scanTask = Task {
-            let result = await LocationScanner.run { done, total in
+            let result = await LocationScanner.run(library: AppState.keeperLibrary) { done, total in
                 await MainActor.run { self.scanProgress = (done, total) }
             }
             self.isScanning = false
@@ -421,7 +441,7 @@ final class PlacesState {
     // MARK: Decisions
 
     /// Every selected photo still without a location, whatever the filter shows (Esc clears them all).
-    var allSelected: [String] { order.filter { decisions[$0]?.selected == true } }
+    var allSelected: [String] { order.filter(selectedIDs.contains) }
 
     func setSelected(_ id: String, _ selected: Bool) {
         decisionHistory.record([id], from: decisions)

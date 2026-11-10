@@ -57,10 +57,11 @@ struct PlacesView: View {
     }
 
     var body: some View {
-        // Worked out once per redraw: both walk every photo missing a place.
-        let checked = places.checkedForApply.count
+        // The counts are kept by PlacesState; only the shown list is worked out per redraw.
+        let checked = places.checkedCount
         let ids = visibleIDs
-        photoGrid(ids, checked: checked)
+        let selectedShown = places.selectedIDs.isEmpty ? [] : ids.filter(places.selectedIDs.contains)
+        photoGrid(ids, selectedShown, checked: checked)
         .navigationSubtitle(checked > 0 ? "\(checked.formatted()) selected" : "\(ids.count.formatted()) photos")
         .toolbar { toolbarItems(ids, checked) }
         .alert("Look for photos without a location again?", isPresented: $confirmRescan) {
@@ -77,7 +78,7 @@ struct PlacesView: View {
         }
     }
 
-    private func photoGrid(_ ids: [String], checked: Int) -> some View {
+    private func photoGrid(_ ids: [String], _ selectedShown: [String], checked: Int) -> some View {
         let actions = gridActions
         return SelectableGrid(ids: ids, cursor: $cursor, actions: actions) { id, isCurrent in
             PlaceCard(assetID: id, isCurrent: isCurrent,
@@ -89,16 +90,16 @@ struct PlacesView: View {
         .overlay { emptyState(ids) }
         .safeAreaInset(edge: .top, spacing: 0) {
             if !ids.isEmpty {
-                KeeperActionBar(actionText(ids, checked), systemImage: "mappin.and.ellipse") {
+                KeeperActionBar(actionText(selectedShown, checked), systemImage: "mappin.and.ellipse") {
                     // Here rather than in the toolbar: with the six filters, a toolbar Select menu
                     // pushed the filters into the » overflow menu.
                     checkMenu(ids)
-                    let hiddenSelected = ids.filter { places.decision($0).selected && places.decision($0).ignored }
+                    let hiddenSelected = selectedShown.filter { places.decision($0).ignored }
                     if !hiddenSelected.isEmpty {
                         Button("Show \(hiddenSelected.count.formatted()) Again") { places.setIgnored(hiddenSelected, false) }
                             .help("Bring the selected hidden photos back (N)")
                     }
-                    SetPlaceButton(places: places, ids: ids.filter { places.decision($0).selected && !places.decision($0).ignored })
+                    SetPlaceButton(places: places, ids: selectedShown.filter { !places.decision($0).ignored })
                     Button(checked == 0 ? "Apply" : "Apply \(checked.formatted())") { confirmApply = true }
                         .buttonStyle(.borderedProminent)
                         .disabled(checked == 0 || places.isApplying)
@@ -153,8 +154,7 @@ struct PlacesView: View {
             allSelected: { places.allSelected })
     }
 
-    private func actionText(_ ids: [String], _ checked: Int) -> String {
-        let selected = ids.filter { places.decision($0).selected }
+    private func actionText(_ selected: [String], _ checked: Int) -> String {
         let unplaced = selected.filter { !places.decision($0).ignored && places.effectivePoint($0) == nil }.count
         if filter == .hidden {
             return selected.isEmpty ? "Select photos to show them again (⌘A selects all, Shift-click a range)."
@@ -600,7 +600,7 @@ struct OutingsScreen: View {
 
     var body: some View {
         OutingsList()
-            .navigationSubtitle("\(state.places.outingsToPlace.count.formatted()) to place")
+            .navigationSubtitle("\(state.places.outingsToPlaceCount.formatted()) to place")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { ShortcutsToolbarButton(action: showShortcuts) }
             }

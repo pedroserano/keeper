@@ -133,6 +133,7 @@ final class AlbumsState {
                     let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: title)
                     request.addAssets(ordered as NSArray)
                 }
+                PhotoLibraryService.shared.forgetAlbums()
                 self.app?.banner = "Made the album “\(title)” in Photos with \(ordered.count.formatted()) photos."
                 self.dismissed.insert(s.id)
             } catch {
@@ -227,6 +228,7 @@ final class AlbumsState {
                 try await PHPhotoLibrary.shared().performChanges {
                     PHAssetCollectionChangeRequest(for: collection)?.addAssets(ordered as NSArray)
                 }
+                PhotoLibraryService.shared.forgetAlbums()
                 self.app?.banner = "Added \(ordered.count.formatted()) photos to “\(a.title)”."
                 if let i = self.additions.firstIndex(where: { $0.albumID == a.albumID }) {
                     self.additions[i].ids.removeAll { ids.contains($0) }
@@ -311,6 +313,7 @@ final class AlbumsState {
                 // Removing from an album; PHAssetChangeRequest.deleteAssets is never called here.
                 PHAssetCollectionChangeRequest(for: collection, assets: contents)?.removeAssets(extras as NSArray)
             }
+            PhotoLibraryService.shared.forgetAlbums()
             return .success(extras.map(\.localIdentifier))
         } catch {
             return .failure(error)
@@ -329,6 +332,7 @@ final class AlbumsState {
                 try await PHPhotoLibrary.shared().performChanges {
                     PHAssetCollectionChangeRequest(for: collection)?.addAssets(Array(assets.values) as NSArray)
                 }
+                PhotoLibraryService.shared.forgetAlbums()
                 self.app?.banner = "Put \(assets.count.formatted()) back in “\(removal.title)”."
                 self.lastRemoval = nil
             } catch {

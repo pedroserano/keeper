@@ -2,19 +2,37 @@ import CoreLocation
 import DateGuessCore
 import Foundation
 import Photos
+import KeeperCore
 
 /// Finds which photos have a location: one quick pass over the library.
 enum LocationScanner {
+    /// PhotoKit says which photos count (your library's photos, not hidden); the library's
+    /// database gives each one's date and location in one query, which is much faster than asking
+    /// PhotoKit for 200,000 locations. Without the database, PhotoKit answers everything.
     @concurrent
-    static func run(progress: @escaping @Sendable (Int, Int) async -> Void) async -> PlacesScan {
+    static func run(library: URL? = nil, progress: @escaping @Sendable (Int, Int) async -> Void) async -> PlacesScan {
+        let started = ContinuousClock.now
         var scan = PlacesScan(lastScan: Date())
+        let rows = library.flatMap { try? PhotosDatabase.readPlaces(inLibrary: $0) } ?? [:]
         let all = PhotoLibraryService.shared.fetchAllPhotos()
         let total = all.count
-        var index = 0
+        var index = 0, fromDatabase = 0
         while index < total {
             if Task.isCancelled { break }
             let end = min(index + 2000, total)
             for asset in all.objects(at: IndexSet(integersIn: index..<end)) {
+                let id = asset.localIdentifier
+                if let row = rows[String(id.prefix { $0 != "/" })] {
+                    fromDatabase += 1
+                    if row.isScreenshot { continue }
+                    let date = row.date.map(Date.init(timeIntervalSinceReferenceDate:))
+                    if let lat = row.lat, let lon = row.lon {
+                        if let date { scan.located.append(id, date, GeoPoint(lat: lat, lon: lon)) }
+                    } else {
+                        scan.missing[id] = .some(date)
+                    }
+                    continue
+                }
                 if asset.mediaSubtypes.contains(.photoScreenshot) { continue }
                 if let point = realPoint(asset.location) {
                     if let date = asset.creationDate {
@@ -27,13 +45,15 @@ enum LocationScanner {
             index = end
             await progress(index, total)
         }
+        Timing.note("location scan of \(total) photos (\(fromDatabase) from the database)", since: started)
         return scan
     }
 
     /// A photo's location, or nil when it has none. Photos can store an empty or invalid one
     /// (0,0 or out of range), which counts as no location both here and when setting one.
     static func realPoint(_ location: CLLocation?) -> GeoPoint? {
-        guard let c = location?.coordinate, CLLocationCoordinate2DIsValid(c), c.latitude != 0 || c.longitude != 0 else { return nil }
+        guard let c = location?.coordinate, CLLocationCoordinate2DIsValid(c),
+              PhotosDatabase.isRealLocation(lat: c.latitude, lon: c.longitude) else { return nil }
         return GeoPoint(lat: c.latitude, lon: c.longitude)
     }
 }

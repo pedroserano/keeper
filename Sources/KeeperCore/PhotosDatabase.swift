@@ -566,7 +566,9 @@ extension PhotosDatabase {
             try ids("SELECT \(q(j.attributes)) FROM \(q(j.table))")
         } ?? []
         note("keywords")
-        let location = a.contains("ZLATITUDE") ? "(a.ZLATITUDE IS NOT NULL AND a.ZLATITUDE != -180)" : "0"
+        // The same test as `isRealLocation`: -180 means none, 0,0 isn't a real place.
+        let location = a.contains("ZLATITUDE") && a.contains("ZLONGITUDE")
+            ? "(a.ZLATITUDE BETWEEN -90 AND 90 AND a.ZLATITUDE != -180 AND NOT (a.ZLATITUDE = 0 AND a.ZLONGITUDE = 0))" : "0"
         let camera = e.isEmpty ? "0" : "(\(has("e", e, "ZCAMERAMAKE")) OR \(has("e", e, "ZCAMERAMODEL")))"
 
         // Original dimensions where recorded (an edit can change the current ones), else current.
@@ -583,7 +585,9 @@ extension PhotosDatabase {
                    \(pick("a", a, "ZDATECREATED")), \(pick("a", a, "ZADDEDDATE")), \(pick("a", a, "ZMODIFICATIONDATE")),
                    a.Z_PK, \(xx.isEmpty ? "NULL" : "x.Z_PK")
             FROM \(q(assetTable)) a\(joins)
-            \(a.contains("ZKIND") ? "WHERE a.ZKIND = 0" : "")
+            WHERE \(a.contains("ZKIND") ? "a.ZKIND = 0" : "1")
+            \(a.contains("ZTRASHEDSTATE") ? "AND COALESCE(a.ZTRASHEDSTATE, 0) = 0" : "")
+            \(a.contains("ZHIDDEN") ? "AND COALESCE(a.ZHIDDEN, 0) = 0" : "")
             """
         var out: [String: FileInfo] = [:]
         try db.forEachRow(sql) { stmt in
@@ -657,6 +661,103 @@ extension PhotosDatabase {
         try db.forEachRow("SELECT ZUUID, ZADDEDDATE FROM \(q(assetTable)) WHERE ZADDEDDATE IS NOT NULL") { stmt in
             guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
             out[uuid] = sqlite3_column_double(stmt, 1)
+        }
+        return out
+    }
+
+    /// Whether a stored latitude and longitude are a real location. Photos stores -180 for none, and
+    /// some apps write 0,0; neither counts, here or anywhere else in Keeper.
+    public static func isRealLocation(lat: Double, lon: Double) -> Bool {
+        (-90...90).contains(lat) && (-180...180).contains(lon) && lat != -180 && !(lat == 0 && lon == 0)
+    }
+
+    /// How many photos (not videos, hidden or deleted ones) each of your albums holds, keyed by the
+    /// album's UUID (its PhotoKit id is "<UUID>/L0/040"). One query, well under a second, where
+    /// asking PhotoKit album by album took about 34 s for 200 albums.
+    public static func readAlbumCounts(inLibrary library: URL) throws -> [String: Int] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Keeper can't read this library's database.")
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains), tables.contains("ZGENERICALBUM") else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema, message: "This library's database has no album table Keeper recognises.")
+        }
+        func columns(_ table: String) throws -> Set<String> {
+            Set(try db.rows("PRAGMA table_info(\(q(table)))").compactMap { $0[1] })
+        }
+        // The album↔photo join table is numbered by entity, and the numbers change between macOS versions.
+        var join: (table: String, album: String, asset: String)?
+        for t in tables.sorted() where t.hasPrefix("Z_") && t.hasSuffix("ASSETS") {
+            let cols = try columns(t)
+            if let album = cols.first(where: { $0.hasSuffix("ALBUMS") && !$0.hasPrefix("Z_FOK") }),
+               let asset = cols.first(where: { $0.hasSuffix("ASSETS") && !$0.hasPrefix("Z_FOK") }) {
+                join = (t, album, asset)
+                break
+            }
+        }
+        let a = try columns(assetTable), g = try columns("ZGENERICALBUM")
+        guard let join, g.isSuperset(of: ["ZUUID", "ZKIND"]) else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema, message: "This library's database stores albums differently.")
+        }
+        var photo = "a.Z_PK = j.\(q(join.asset))"
+        if a.contains("ZKIND") { photo += " AND a.ZKIND = 0" }
+        if a.contains("ZTRASHEDSTATE") { photo += " AND COALESCE(a.ZTRASHEDSTATE, 0) = 0" }
+        if a.contains("ZHIDDEN") { photo += " AND COALESCE(a.ZHIDDEN, 0) = 0" }
+        let sql = """
+            SELECT g.ZUUID, COUNT(a.Z_PK)
+            FROM ZGENERICALBUM g
+            LEFT JOIN \(q(join.table)) j ON j.\(q(join.album)) = g.Z_PK
+            LEFT JOIN \(q(assetTable)) a ON \(photo)
+            WHERE g.ZKIND = 2
+            GROUP BY g.Z_PK
+            """
+        var out: [String: Int] = [:]
+        try db.forEachRow(sql) { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            out[uuid] = Int(sqlite3_column_int64(stmt, 1))
+        }
+        return out
+    }
+
+    /// One photo's date and location, as Photos stores them.
+    public struct PlaceRow: Sendable {
+        /// Seconds since 2001.
+        public var date: Double?
+        public var lat: Double?
+        public var lon: Double?
+        public var isScreenshot: Bool
+    }
+
+    /// Every photo's date and location (if real), by UUID: one query, about a second for 200,000
+    /// photos, instead of asking PhotoKit for each photo's location.
+    public static func readPlaces(inLibrary library: URL) throws -> [String: PlaceRow] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Keeper can't read this library's database.")
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains) else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema,
+                                      message: "This library's database has no asset table Keeper recognises.")
+        }
+        let a = Set(try db.rows("PRAGMA table_info(\(q(assetTable)))").compactMap { $0[1] })
+        guard a.isSuperset(of: ["ZUUID", "ZDATECREATED", "ZLATITUDE", "ZLONGITUDE"]) else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema, message: "This library's database stores locations differently.")
+        }
+        let subtype = a.contains("ZKINDSUBTYPE") ? "ZKINDSUBTYPE" : "0"
+        var out: [String: PlaceRow] = [:]
+        try db.forEachRow("SELECT ZUUID, ZDATECREATED, ZLATITUDE, ZLONGITUDE, \(subtype) FROM \(q(assetTable))") { stmt in
+            guard let uuid = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            func f(_ c: Int32) -> Double? { sqlite3_column_type(stmt, c) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, c) }
+            var row = PlaceRow(date: f(1), lat: nil, lon: nil, isScreenshot: sqlite3_column_int64(stmt, 4) == 10)
+            if let lat = f(2), let lon = f(3), isRealLocation(lat: lat, lon: lon) {
+                row.lat = lat
+                row.lon = lon
+            }
+            out[uuid] = row
         }
         return out
     }

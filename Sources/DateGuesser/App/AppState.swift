@@ -73,7 +73,7 @@ final class AppState {
     /// ⌘Z for the decisions above.
     @ObservationIgnored var decisionHistory = DecisionHistory<ReviewDecision>()
     var journal: [ApplyBatch] {
-        didSet { appliedIDs = Self.applied(in: journal); store.save(journal, to: "journal"); scheduleRecompute() }
+        didSet { indexJournal(); store.save(journal, to: "journal"); scheduleRecompute() }
     }
 
     // MARK: Session state
@@ -116,7 +116,8 @@ final class AppState {
         decisions = store.load([String: ReviewDecision].self, from: "decisions") ?? [:]
         let savedJournal = store.load([ApplyBatch].self, from: "journal") ?? []
         journal = savedJournal
-        appliedIDs = Self.applied(in: savedJournal)
+        appliedEntries = Self.liveEntriesByPhoto(savedJournal)
+        appliedIDs = Set(appliedEntries.keys)
         keptShifts = store.load(Set<String>.self, from: "keptShifts") ?? []
         // Last launch's events, so they show right away while they're worked out again.
         allEventClusters = store.load([[String]].self, from: "eventClusters") ?? []
@@ -193,11 +194,26 @@ final class AppState {
     /// Photos dated here and not undone. Kept up to date with `journal`, since the toolbar and
     /// several screens read it on every redraw.
     private(set) var appliedIDs: Set<String> = []
+    /// Each dated photo's changes still in effect, oldest first. Kept with `journal`, so looking
+    /// one photo up doesn't walk the whole journal.
+    @ObservationIgnored private(set) var appliedEntries: [String: [JournalEntry]] = [:]
+
+    private func indexJournal() {
+        appliedEntries = Self.liveEntriesByPhoto(journal)
+        appliedIDs = Set(appliedEntries.keys)
+    }
 
     nonisolated static func applied(in journal: [ApplyBatch]) -> Set<String> {
-        var ids = Set<String>()
-        for batch in journal { ids.formUnion(batch.liveEntries.map(\.assetID)) }
-        return ids
+        Set(liveEntriesByPhoto(journal).keys)
+    }
+
+    /// Newest batches come first in the journal; each photo's list is oldest first.
+    nonisolated static func liveEntriesByPhoto(_ journal: [ApplyBatch]) -> [String: [JournalEntry]] {
+        var out: [String: [JournalEntry]] = [:]
+        for batch in journal.reversed() {
+            for entry in batch.liveEntries { out[entry.assetID, default: []].append(entry) }
+        }
+        return out
     }
 
     var ignoredIDs: Set<String> { Set(decisions.filter { $0.value.ignored }.map(\.key)) }
@@ -397,17 +413,7 @@ final class AppState {
         }
         let limits = photoLimits
         limitsUsedForEvents = limits
-        // Where and roughly when, for events: a place given in Places (set or applied) or the
-        // photo's location in Photos (looked up below), and the current date guess.
-        var knownPlaces: [String: GeoPoint] = [:]
-        for (id, entry) in places.placed where scan.undated[id] != nil { knownPlaces[id] = entry.new }
-        var times: [String: Double] = [:]
-        for id in order {
-            if let p = places.decision(id).override?.point { knownPlaces[id] = p }
-            if let e = effectiveEstimate(id) {
-                times[id] = Double(e.year) + ((1...12).contains(e.month) ? Double(e.month - 1) / 12 : 0.5)
-            }
-        }
+        let (knownPlaces, times) = eventPlacesAndTimes(order)
         let located = places.scan.located
         isFindingEvents = !packed.isEmpty
         Timing.note("links #\(run) prep on main", since: prepStarted)
@@ -417,6 +423,7 @@ final class AppState {
             func stage(_ name: String) { Timing.note("links #\(run) \(name)", since: lap); lap = .now }
             let prints = packed.mapValues(EventLinks.unpack)
             stage("unpack")
+            await MainActor.run { self.linkCache = LinkCache(order: order, prints: prints, who: who) }
             let links = EventLinks.find(order: order, prints: prints, people: who)
             stage("links")
             guard !Task.isCancelled else { return }
@@ -430,11 +437,7 @@ final class AppState {
             let lookalikes = probe.evidence(for: prints, maxWeight: AppState.lookalikeWeight)
             stage("look-alikes (\(probePacked.count))")
             guard !Task.isCancelled else { return }
-            // A location in Photos, from the Places scan (asking PhotoKit for each photo's location
-            // makes it fetch them on the main thread).
-            var photoPlaces = knownPlaces
-            let wanted = Set(order.filter { photoPlaces[$0] == nil && times[$0] != nil })
-            for (i, id) in located.ids.enumerated() where wanted.contains(id) { photoPlaces[id] = located.point(i) }
+            let photoPlaces = AppState.withLocations(knownPlaces, order: order, times: times, located: located)
             stage("places (\(photoPlaces.count) located)")
             guard !Task.isCancelled else { return }
             let events = EventClusters.find(order: order, prints: prints, people: who, limits: limits,
@@ -449,6 +452,68 @@ final class AppState {
                 self.allEventClusters = events
                 self.store.save(events, to: "eventClusters")
                 self.isFindingEvents = false
+                self.refreshEventSuggestions()
+                self.recomputeEstimates()
+            }
+        }
+    }
+
+    /// What the last full run worked out that doesn't depend on year limits, so a change of
+    /// limits only regroups events (about a second) instead of comparing every photo again.
+    struct LinkCache {
+        var order: [String]
+        var prints: [String: [Float]]
+        var who: [String: Set<String>]
+    }
+    @ObservationIgnored private var linkCache: LinkCache?
+
+    /// Where and roughly when, for events: a place given in Places (set or applied), and the
+    /// current date guess. Locations in Photos are added off the main thread (`withLocations`).
+    private func eventPlacesAndTimes(_ order: [String]) -> ([String: GeoPoint], [String: Double]) {
+        var knownPlaces: [String: GeoPoint] = [:]
+        for (id, entry) in places.placed where scan.undated[id] != nil { knownPlaces[id] = entry.new }
+        var times: [String: Double] = [:]
+        for id in order {
+            if let p = places.decision(id).override?.point { knownPlaces[id] = p }
+            if let e = effectiveEstimate(id) {
+                times[id] = Double(e.year) + ((1...12).contains(e.month) ? Double(e.month - 1) / 12 : 0.5)
+            }
+        }
+        return (knownPlaces, times)
+    }
+
+    /// Adds each photo's location in Photos, from the Places scan (asking PhotoKit for each photo's
+    /// location makes it fetch them on the main thread).
+    nonisolated static func withLocations(_ known: [String: GeoPoint], order: [String], times: [String: Double],
+                                          located: LocatedPhotos) -> [String: GeoPoint] {
+        var out = known
+        let wanted = Set(order.filter { out[$0] == nil && times[$0] != nil })
+        for (i, id) in located.ids.enumerated() where wanted.contains(id) { out[id] = located.point(i) }
+        return out
+    }
+
+    /// The year limits changed: regroup events with the last run's links (or do a full run if
+    /// the photos changed since).
+    private func regroupEvents() {
+        let order = undatedSorted.map(\.id)
+        guard let cache = linkCache, cache.order == order else { recomputeLinks(); return }
+        linksTask?.cancel()
+        linksRuns += 1
+        let run = linksRuns
+        let limits = photoLimits
+        limitsUsedForEvents = limits
+        let (knownPlaces, times) = eventPlacesAndTimes(order)
+        let located = places.scan.located
+        linksTask = Task.detached(priority: .utility) {
+            let started = ContinuousClock.now
+            let photoPlaces = AppState.withLocations(knownPlaces, order: order, times: times, located: located)
+            let events = EventClusters.find(order: order, prints: cache.prints, people: cache.who, limits: limits,
+                                            places: photoPlaces, times: times)
+            Timing.note("links #\(run) regrouped events only\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.allEventClusters = events
+                self.store.save(events, to: "eventClusters")
                 self.refreshEventSuggestions()
                 self.recomputeEstimates()
             }
@@ -562,7 +627,7 @@ final class AppState {
                 self.eventEstimates = result.events
                 self.photoLimits = result.limits
                 // Event suggestions depend on these limits; regroup once if they changed.
-                if result.limits != self.limitsUsedForEvents { self.recomputeLinks() }
+                if result.limits != self.limitsUsedForEvents { self.regroupEvents() }
             }
         }
     }
@@ -591,7 +656,15 @@ final class AppState {
     @ObservationIgnored private var formatCache: [String: FormatInfo] = [:]
 
     private func appliedFormats(_ ids: [String], undated: [String: UndatedPhoto]) -> [String: FormatInfo] {
-        let missing = ids.filter { undated[$0] == nil && formatCache[$0] == nil }
+        var missing: [String] = []
+        for id in ids where undated[id] == nil && formatCache[id] == nil {
+            // Keeper already read the size from the library's records: no PhotoKit fetch.
+            if let size = DatesModel.pixelSize(id) {
+                formatCache[id] = FormatInfo(pixelWidth: size.width, pixelHeight: size.height)
+            } else {
+                missing.append(id)
+            }
+        }
         if !missing.isEmpty && isAuthorized {
             for (id, asset) in PhotoLibraryService.shared.assets(for: missing) {
                 formatCache[id] = FormatInfo(pixelWidth: asset.pixelWidth, pixelHeight: asset.pixelHeight)
@@ -888,7 +961,7 @@ final class AppState {
 
     /// This photo's changes by this app still in effect, oldest first.
     func liveEntries(_ id: String) -> [JournalEntry] {
-        journal.reversed().flatMap { $0.liveEntries.filter { $0.assetID == id } }
+        appliedEntries[id] ?? []
     }
 
     /// The photos of a saved event that this app has already dated in Photos.
@@ -1092,7 +1165,7 @@ final class AppState {
     func checkShiftedDates() {
         guard !isCheckingShifts, isAuthorized else { return }
         isCheckingShifts = true
-        let applied = Self.appliedDates(journal)
+        let applied = appliedEntries.compactMapValues { $0.last?.newDate }
         let kept = keptShifts
         Task.detached(priority: .userInitiated) {
             var current: [String: Date] = [:]
@@ -1372,9 +1445,11 @@ final class AppState {
             let started = ContinuousClock.now
             let scoped = libraryURL.startAccessingSecurityScopedResource()
             defer { if scoped { libraryURL.stopAccessingSecurityScopedResource() } }
-            let result = Result { try PhotosPeopleReader.read(libraryURL: libraryURL, facesFor: faceIDs, undated: notReferences) }
-            let cameras = (try? PhotosPeopleReader.readCameras(libraryURL: libraryURL)) ?? [:]
-            let peopleInPhotos = (try? PhotosPeopleReader.readNamedPeopleInPhotos(libraryURL: libraryURL)) ?? [:]
+            // One connection for people, faces, cameras and who is in each photo.
+            let all = Result { try PhotosPeopleReader.readAll(libraryURL: libraryURL, facesFor: faceIDs, undated: notReferences) }
+            let result = all.map { (people: $0.people, faces: $0.faces, references: $0.references) }
+            let cameras = (try? all.get().cameras) ?? [:]
+            let peopleInPhotos = (try? all.get().peopleInPhotos) ?? [:]
             Timing.note("read people and faces from Photos", since: started)
             await MainActor.run {
                 let applyStarted = ContinuousClock.now

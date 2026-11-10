@@ -30,9 +30,12 @@ public final class DatesModel {
     public static var isRaw: (String) -> Bool = { _ in false }
     /// Whether a photo has a location in Photos (Keeper knows from the library's own records).
     public static var hasLocation: (String) -> Bool = { _ in false }
+    /// A photo's size, as Keeper read it from the library's records (nil if it doesn't know), so
+    /// the Dates screens needn't ask PhotoKit for it.
+    public static var pixelSize: (String) -> (width: Int, height: Int)? = { _ in nil }
 
     /// Given a location from Keeper (in Places or with Set Location) since the library was read.
-    public func wasPlacedHere(_ id: String) -> Bool { state.places.placedIDs.contains(id) }
+    public func wasPlacedHere(_ id: String) -> Bool { state.places.placed[id] != nil }
     private var observers: [NSObjectProtocol] = []
 
     /// Copies and decodes the saved data in the background, then makes the state on the main thread.
@@ -90,7 +93,7 @@ public final class DatesModel {
         case .review: state.undatedSorted.count
         case .places: state.places.confidentCount
         case .events: state.eventSuggestions.count
-        case .outings: state.places.outingsToPlace.count
+        case .outings: state.places.outingsToPlaceCount
         case .people: state.people.count
         case .albumSuggestions: state.albumTools.shownSuggestions.count
         case .albumAdditions: state.albumTools.additions.count

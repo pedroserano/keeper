@@ -123,7 +123,7 @@ struct ContentView: View {
         case .albumSuggestions: return state.albumTools.shownSuggestions.count
         case .albumAdditions: return state.albumTools.additions.count
         case .albumDuplicates: return state.albumTools.duplicates.count
-        case .outings: return state.places.outingsToPlace.count
+        case .outings: return state.places.outingsToPlaceCount
         case .history, .placeHistory, .cameras: return 0
         }
     }

@@ -111,6 +111,10 @@ final class CullingSession: ObservableObject {
             let model = await DatesModel.load(libraryURL: libraryURL, dataDirectory: folder)
             DatesModel.isRaw = { [weak self] id in self?.fileInfo(forID: id)?.isRaw == true }
             DatesModel.hasLocation = { [weak self] id in self?.hasLocation(id) == true }
+            DatesModel.pixelSize = { [weak self] id in
+                guard let info = self?.fileInfo(forID: id), let w = info.width, let h = info.height else { return nil }
+                return (w, h)
+            }
             log.notice("dates: loaded in \(started.duration(to: .now), privacy: .public)")
             self?.datesModel = model
         }
@@ -1349,15 +1353,27 @@ final class CullingSession: ObservableObject {
         }
         let sidewaysDates = sideways.filter { $0.value.confidence >= sidewaysMinConfidence }.mapValues(\.modDate)
         let haveGroups = !groups.isEmpty || { if case .ready = similarity { return true } else { return false } }()
+        // Which photos are still in the library, from the file info already read: asking PhotoKit
+        // to fetch ~180,000 seen photos just to count them took most of the counting time.
+        let files = files
+        let libraryURL = libraryURL
         Task { [weak self] in
             let started = ContinuousClock.now
             let out = await Task.detached(priority: .utility) { () -> [Source: Int] in
+                var clock = StageClock("counts")
                 var out: [Source: Int] = [:]
                 let all = library.count(.allPhotos)
                 out[.allPhotos] = all
+                func present(_ ids: [String]) -> Int {
+                    ids.reduce(0) { $0 + (files[String($1.prefix { $0 != "/" })] != nil ? 1 : 0) }
+                }
                 // Only seen photos still in the library count, so deleted ones can't hold it above 0.
-                out[.unreviewed] = max(all - library.assets(withIDs: seenIDs).count, 0)
-                out[.rejected] = library.assets(withIDs: rejectedIDs).count
+                // Until the file info is read these wait: counts run again as soon as it is.
+                if !files.isEmpty {
+                    out[.unreviewed] = max(all - present(seenIDs), 0)
+                    out[.rejected] = present(rejectedIDs)
+                    clock.lap("seen and rejected")
+                }
                 if let recommender, recommender.hasScores {
                     let c = recommender.counts()
                     out[.suggestedRejects] = c.rejects
@@ -1370,10 +1386,22 @@ final class CullingSession: ObservableObject {
                 }
                 // Sideways Photos: proposals still matching the photo as it is now.
                 // Still in the library (a moved modification date is checked again, not dropped).
-                out[.sideways] = library.assets(withIDs: Array(sidewaysDates.keys)).count
-                for s in [Source.favorites, .dateRange, .screenshots, .bursts] + albums {
+                if !files.isEmpty { out[.sideways] = present(Array(sidewaysDates.keys)) }
+                clock.lap("suggestions and sideways")
+                for s in [Source.favorites, .dateRange, .screenshots, .bursts] {
                     out[s] = library.count(s, range: range)
                 }
+                clock.lap("smart lists")
+                // Every album in one database query; PhotoKit only for any it doesn't know.
+                let albumCounts = albums.isEmpty ? [:] : ((try? PhotosDatabase.readAlbumCounts(inLibrary: libraryURL)) ?? [:])
+                for s in albums {
+                    if case .album(let id, _) = s, let n = albumCounts[String(id.prefix { $0 != "/" })] {
+                        out[s] = n
+                    } else {
+                        out[s] = library.count(s, range: range)
+                    }
+                }
+                clock.lap("\(albums.count) albums")
                 return out
             }.value
             guard let self else { return }

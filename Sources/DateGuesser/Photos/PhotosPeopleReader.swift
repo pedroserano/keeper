@@ -88,6 +88,26 @@ enum PhotosPeopleReader {
         -> (people: [TaggedPerson], faces: [String: [DetectedFace]], references: [String: ReferenceCandidate]) {
         let handle = try open(libraryURL)
         defer { sqlite3_close(handle) }
+        return try read(handle, facesFor: assetIDs, undated: undated, referencesPerGroup: referencesPerGroup)
+    }
+
+    /// Everything the Dates and Places screens read about people, faces and cameras, on one
+    /// connection: people, faces and their dated references, each photo's camera, and the named
+    /// people in each photo.
+    static func readAll(libraryURL: URL, facesFor assetIDs: Set<String>, undated: Set<String>) throws
+        -> (people: [TaggedPerson], faces: [String: [DetectedFace]], references: [String: ReferenceCandidate],
+            cameras: [String: String], peopleInPhotos: [String: [String]]) {
+        let handle = try open(libraryURL)
+        defer { sqlite3_close(handle) }
+        let read = try read(handle, facesFor: assetIDs, undated: undated, referencesPerGroup: 300)
+        let cameras = (try? readCameras(handle)) ?? [:]
+        let peopleInPhotos = (try? readNamedPeopleInPhotos(handle)) ?? [:]
+        return (read.people, read.faces, read.references, cameras, peopleInPhotos)
+    }
+
+    private static func read(_ handle: OpaquePointer, facesFor assetIDs: Set<String>, undated: Set<String>?,
+                             referencesPerGroup: Int) throws
+        -> (people: [TaggedPerson], faces: [String: [DetectedFace]], references: [String: ReferenceCandidate]) {
         let people = try readPeople(handle)
         let faces = assetIDs.isEmpty ? [:] : try readFaces(handle, for: assetIDs)
         let clusters = Set(faces.values.flatMap { $0.compactMap(\.clusterID) })
@@ -98,9 +118,7 @@ enum PhotosPeopleReader {
 
     /// The named people tagged in every photo (Photos' person ids), for checking place guesses
     /// against where those people's own geotagged photos put them.
-    static func readNamedPeopleInPhotos(libraryURL: URL) throws -> [String: [String]] {
-        let handle = try open(libraryURL)
-        defer { sqlite3_close(handle) }
+    private static func readNamedPeopleInPhotos(_ handle: OpaquePointer) throws -> [String: [String]] {
         let faceColumns = columns(of: "ZDETECTEDFACE", in: handle)
         guard let personColumn = ["ZPERSONFORFACE", "ZPERSON"].first(where: faceColumns.contains),
               let assetColumn = ["ZASSETFORFACE", "ZASSET"].first(where: faceColumns.contains) else { return [:] }
@@ -132,9 +150,7 @@ enum PhotosPeopleReader {
     }
 
     /// The camera (make and model) of every photo that records one, for learning each camera's clock.
-    static func readCameras(libraryURL: URL) throws -> [String: String] {
-        let handle = try open(libraryURL)
-        defer { sqlite3_close(handle) }
+    private static func readCameras(_ handle: OpaquePointer) throws -> [String: String] {
         let extended = columns(of: "ZEXTENDEDATTRIBUTES", in: handle)
         guard extended.contains("ZASSET"), extended.contains("ZCAMERAMODEL") else { return [:] }
         let make = extended.contains("ZCAMERAMAKE") ? "coalesce(e.ZCAMERAMAKE, '')" : "''"
@@ -178,15 +194,19 @@ enum PhotosPeopleReader {
               assetColumns.contains("ZDATECREATED") else { throw ReadError.unexpectedFormat("no photo dates") }
         let uuid = columns(of: "ZPERSON", in: handle).contains("ZPERSONUUID") ? "p.ZPERSONUUID" : "CAST(p.Z_PK AS TEXT)"
         let size = faceColumns.contains("ZSIZE") ? "coalesce(f.ZSIZE, 0)" : "0"
-        let gps = assetColumns.contains("ZLATITUDE")
-            ? "(a.ZLATITUDE BETWEEN -90 AND 90 AND a.ZLATITUDE <> 0 AND a.ZLONGITUDE <> -180)" : "0"
+        // The same test as PhotosDatabase.isRealLocation: -180 means none, 0,0 isn't a place.
+        let gps = assetColumns.contains("ZLATITUDE") && assetColumns.contains("ZLONGITUDE")
+            ? "(a.ZLATITUDE BETWEEN -90 AND 90 AND a.ZLATITUDE <> -180 AND NOT (a.ZLATITUDE = 0 AND a.ZLONGITUDE = 0))" : "0"
         let trashed = assetColumns.contains("ZTRASHEDSTATE") ? "AND coalesce(a.ZTRASHEDSTATE, 0) = 0" : ""
+        // Only the face groups asked for, in the query itself rather than filtered after reading
+        // every face in the library.
+        let wanted = clusters.sorted().map { "'" + $0.replacingOccurrences(of: "'", with: "''") + "'" }.joined(separator: ",")
         let sql = """
             SELECT \(uuid), a.ZUUID, a.ZDATECREATED, \(size), \(gps)
             FROM ZDETECTEDFACE f
             JOIN ZASSET a ON a.Z_PK = f.\(assetColumn)
             JOIN ZPERSON p ON p.Z_PK = f.\(personColumn)
-            WHERE a.ZDATECREATED IS NOT NULL \(trashed)
+            WHERE a.ZDATECREATED IS NOT NULL \(trashed) AND \(uuid) IN (\(wanted))
             """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {

@@ -95,11 +95,33 @@ final class PhotoLibraryService: @unchecked Sendable {
     }
 
     func userAlbums() -> [AlbumInfo] {
-        userAlbumCollections().map { c in
-            AlbumInfo(id: c.localIdentifier, title: c.localizedTitle ?? "Untitled album",
-                      count: PHAsset.fetchAssets(in: c, options: nil).count)
+        albumMembership().map { AlbumInfo(id: $0.id, title: $0.title, count: $0.ids.count) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Every album of your own and the photos in it, read once and kept for a minute: the
+    /// album screens, the scan and the settings each asked PhotoKit for every album's photos.
+    private let membershipLock = NSLock()
+    private var membershipCache: (read: Date, albums: [(id: String, title: String, ids: Set<String>)])?
+
+    func albumMembership() -> [(id: String, title: String, ids: Set<String>)] {
+        membershipLock.lock()
+        defer { membershipLock.unlock() }
+        if let cache = membershipCache, Date().timeIntervalSince(cache.read) < 60 { return cache.albums }
+        let albums = userAlbumCollections().map { c in
+            var ids = Set<String>()
+            PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { asset, _, _ in ids.insert(asset.localIdentifier) }
+            return (id: c.localIdentifier, title: c.localizedTitle ?? "Untitled album", ids: ids)
         }
-        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        membershipCache = (Date(), albums)
+        return albums
+    }
+
+    /// Forgets the album membership read, after an album changes here.
+    func forgetAlbums() {
+        membershipLock.lock()
+        membershipCache = nil
+        membershipLock.unlock()
     }
 
     /// Every album of your own: its photos, and the ones with a date and a location.
@@ -109,37 +131,24 @@ final class PhotoLibraryService: @unchecked Sendable {
         var index: [String: Int] = [:]
         index.reserveCapacity(all.count)
         for (i, id) in all.ids.enumerated() { index[id] = i }
-        return userAlbumCollections().map { c in
-            var ids = Set<String>()
-            var located: [AlbumSuggestions.Photo] = []
-            PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { asset, _, _ in
-                let id = asset.localIdentifier
-                ids.insert(id)
-                if let i = index[id] { located.append(.init(id: id, time: all.times[i], point: all.point(i))) }
-            }
-            return (c.localIdentifier, c.localizedTitle ?? "Untitled album", ids, located)
+        return albumMembership().map { album in
+            let located = album.ids.compactMap { id in index[id].map { AlbumSuggestions.Photo(id: id, time: all.times[$0], point: all.point($0)) } }
+                .sorted { $0.time < $1.time }
+            return (album.id, album.title, album.ids, located)
         }
     }
 
     /// Every album of your own with the photos in it.
     func userAlbumMembers() -> [(title: String, ids: Set<String>)] {
-        userAlbumCollections().map { c in
-            var ids = Set<String>()
-            PHAsset.fetchAssets(in: c, options: nil).enumerateObjects { asset, _, _ in ids.insert(asset.localIdentifier) }
-            return (c.localizedTitle ?? "Untitled album", ids)
-        }
+        albumMembership().map { ($0.title, $0.ids) }
     }
 
     /// Asset IDs in the given albums.
     func assetIDs(inAlbums albumIDs: [String]) -> Set<String> {
         guard !albumIDs.isEmpty else { return [] }
+        let wanted = Set(albumIDs)
         var ids = Set<String>()
-        let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: albumIDs, options: nil)
-        collections.enumerateObjects { collection, _, _ in
-            PHAsset.fetchAssets(in: collection, options: nil).enumerateObjects { asset, _, _ in
-                ids.insert(asset.localIdentifier)
-            }
-        }
+        for album in albumMembership() where wanted.contains(album.id) { ids.formUnion(album.ids) }
         return ids
     }
 
@@ -147,11 +156,8 @@ final class PhotoLibraryService: @unchecked Sendable {
     func albumTitles(for ids: Set<String>) -> [String: [String]] {
         var out: [String: [String]] = [:]
         guard !ids.isEmpty else { return out }
-        for collection in userAlbumCollections() {
-            let title = collection.localizedTitle ?? "Untitled album"
-            PHAsset.fetchAssets(in: collection, options: nil).enumerateObjects { asset, _, _ in
-                if ids.contains(asset.localIdentifier) { out[asset.localIdentifier, default: []].append(title) }
-            }
+        for album in albumMembership() {
+            for id in album.ids where ids.contains(id) { out[id, default: []].append(album.title) }
         }
         return out
     }
