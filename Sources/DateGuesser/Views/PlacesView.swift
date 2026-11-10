@@ -748,7 +748,7 @@ private struct OutingRow: View {
         let places = state.places
         let open = members.filter { !places.decision($0).ignored }
         let chosen = Set(open.compactMap { places.decision($0).override })
-        let best = open.compactMap { places.guesses[$0] }.max { $0.estimate.confidence < $1.estimate.confidence }
+        let best = PlacesState.outingGuess(open, guesses: places.guesses)
         let guessed = open.filter { places.guesses[$0] != nil }
         let checked = open.filter { places.decision($0).selected }
         VStack(alignment: .leading, spacing: 8) {
@@ -761,7 +761,7 @@ private struct OutingRow: View {
                     Text("\(checked.count.formatted()) selected").font(.caption).foregroundStyle(Theme.accent)
                 }
                 Button("Not One Outing") { places.notOneOuting(members) }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.bordered)
                     .help("These weren’t taken in one place: take this outing off the list. The photos stay in Places, to place one by one.")
             }
             ThumbnailStrip {
@@ -808,7 +808,7 @@ private struct OutingRow: View {
                     .frame(width: 340)
                     .padding(12)
                 }
-                if chosen.isEmpty, let best, best.level == .high {
+                if chosen.isEmpty, let best {
                     Button("Use Guess for All") {
                         let name = PlaceNames.shared.name(for: best.estimate.point) ?? PlaceLabel.coordinates(best.estimate.point)
                         places.setPlace(open, PlaceChoice(name: name, point: best.estimate.point))

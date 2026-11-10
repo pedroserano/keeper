@@ -174,6 +174,69 @@ public struct PlaceTimeline: Sendable {
         return out
     }
 
+    /// How far someone can have gone in `hours`: by road at first, by plane given time to fly,
+    /// plus some slack for a photo's own place and clock.
+    public static func reachKm(hours: Double) -> Double {
+        25 + max(100 * hours, 800 * (hours - 1.5))
+    }
+
+    /// The geotagged photos (from a camera or phone, not placed here) nearest before and after
+    /// `time` put you too far from `point` to have got there in between: the guess can't be right.
+    /// Every side that has a photo within `horizon` must agree, so one stray photo (someone else's,
+    /// in a shared library) can't rule a place out alone.
+    public func rulesOut(_ point: GeoPoint, at time: Date, excluding id: String? = nil,
+                         horizon: TimeInterval = 48 * 3600) -> Bool {
+        let t = time.timeIntervalSinceReferenceDate
+        var lo = 0, hi = times.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if times[mid] < t { lo = mid + 1 } else { hi = mid }
+        }
+        func check(_ index: Int) -> Bool {
+            let ref = references[index]
+            let hours = abs(ref.time.timeIntervalSince(time)) / 3600
+            return ref.point.distanceKm(to: point) > Self.reachKm(hours: hours)
+        }
+        var sides: [Bool] = []
+        var i = lo - 1
+        while i >= 0, t - times[i] <= horizon {
+            if references[i].id != id && !references[i].placedHere { sides.append(check(i)); break }
+            i -= 1
+        }
+        i = lo
+        while i < references.count, times[i] - t <= horizon {
+            if references[i].id != id && !references[i].placedHere { sides.append(check(i)); break }
+            i += 1
+        }
+        return !sides.isEmpty && sides.allSatisfy { $0 }
+    }
+
+    /// For a guess with no clue from the time itself (only look-alikes): the geotagged photos you
+    /// took in the days before and after both put you more than `awayKm` from it. A trip that far
+    /// usually leaves photos with a location of its own, so the guess is unlikely.
+    public func farFromBothSides(_ point: GeoPoint, at time: Date, excluding id: String? = nil,
+                                 horizon: TimeInterval = 7 * 86400, awayKm: Double = 300) -> Bool {
+        let t = time.timeIntervalSinceReferenceDate
+        var lo = 0, hi = times.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if times[mid] < t { lo = mid + 1 } else { hi = mid }
+        }
+        var before: Reference?, after: Reference?
+        var i = lo - 1
+        while i >= 0, t - times[i] <= horizon {
+            if references[i].id != id && !references[i].placedHere { before = references[i]; break }
+            i -= 1
+        }
+        i = lo
+        while i < references.count, times[i] - t <= horizon {
+            if references[i].id != id && !references[i].placedHere { after = references[i]; break }
+            i += 1
+        }
+        guard let before, let after else { return false }
+        return before.point.distanceKm(to: point) > awayKm && after.point.distanceKm(to: point) > awayKm
+    }
+
     static func describe(gap: TimeInterval, placedHere: Bool) -> String {
         let minutes = Int((abs(gap) / 60).rounded())
         let amount: String

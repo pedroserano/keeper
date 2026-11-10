@@ -165,14 +165,17 @@ final class PlacesState {
         let prints = app.featurePrints
         let links = app.eventLinks
         let cameras = self.cameras
+        let people = self.people
         let lookalike = lookalikeStat
         guessTask = Task.detached(priority: .utility) {
             let started = ContinuousClock.now
             let calibration = Self.calibrate(scan: scan, cameras: cameras)
             Timing.note("places #\(run) calibrate", since: started)
             let guesses = Self.guesses(ids: ids, scan: scan, placed: placed, untrusted: untrusted, prints: prints,
-                                       links: links, cameras: cameras, calibration: calibration, lookalike: lookalike)
+                                       links: links, cameras: cameras, people: people,
+                                       calibration: calibration, lookalike: lookalike)
             let outings = Self.outings(ids: ids, scan: scan, untrusted: untrusted, cameras: cameras)
+            if !Task.isCancelled { Self.reportOutings(outings, guesses: guesses, scan: scan) }
             Timing.note("places #\(run) for \(ids.count) photos\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -183,6 +186,59 @@ final class PlacesState {
                 done?()
             }
         }
+    }
+
+    /// The place an outing shows. A guess backed by a photo from around then (with a location, or
+    /// placed here) is used as is. A look-alike guess only when the outing's photos agree on it:
+    /// at least two, and at least half of those with a guess, within one area. One photo's
+    /// look-alike was often somewhere far away.
+    nonisolated static func outingGuess(_ members: [String], guesses: [String: PlaceGuessResult]) -> PlaceGuessResult? {
+        let guessed = members.compactMap { guesses[$0] }
+        func timed(_ g: PlaceGuessResult) -> Bool {
+            g.evidence.contains { ($0.source == .sameTime || $0.source == .placedHere)
+                && $0.point.distanceKm(to: g.estimate.point) < PlaceFusion.areaKm }
+        }
+        if let best = guessed.filter(timed).max(by: { $0.estimate.confidence < $1.estimate.confidence }) { return best }
+        var bestArea: [PlaceGuessResult] = []
+        for g in guessed {
+            let area = guessed.filter { $0.estimate.point.distanceKm(to: g.estimate.point) < PlaceFusion.areaKm }
+            if area.count > bestArea.count { bestArea = area }
+        }
+        guard bestArea.count >= 2, bestArea.count * 2 >= guessed.count else { return nil }
+        return bestArea.max { $0.estimate.confidence < $1.estimate.confidence }
+    }
+
+    /// Counts only, in the log: where the place each outing shows comes from, and how far it is
+    /// from the geotagged photos nearest in time. To see why an outing's place looks wrong.
+    nonisolated static func reportOutings(_ outings: [[String]], guesses: [String: PlaceGuessResult], scan: PlacesScan) {
+        var refs: [PlaceTimeline.Reference] = []
+        for i in 0..<scan.located.count {
+            refs.append(.init(id: scan.located.ids[i], time: scan.located.times[i], point: scan.located.point(i)))
+        }
+        let sorted = refs.sorted { $0.time < $1.time }
+        let times = sorted.map(\.time.timeIntervalSinceReferenceDate)
+        var counts: [String: Int] = [:]
+        var noGuess = 0
+        for members in outings {
+            guard let best = outingGuess(members, guesses: guesses),
+                  let id = members.first(where: { guesses[$0] == best }),
+                  let date = scan.missing[id] ?? nil else { noGuess += 1; continue }
+            let source = best.evidence.first?.source.rawValue ?? "none"
+            let t = date.timeIntervalSinceReferenceDate
+            var lo = 0, hi = times.count
+            while lo < hi { let mid = (lo + hi) / 2; if times[mid] < t { lo = mid + 1 } else { hi = mid } }
+            var sides: [(days: Double, km: Double)] = []
+            for i in [lo - 1, lo] where i >= 0 && i < sorted.count {
+                sides.append((abs(times[i] - t) / 86400, sorted[i].point.distanceKm(to: best.estimate.point)))
+            }
+            let nearest = sides.min { $0.days < $1.days }
+            let when = nearest.map { $0.days < 1 ? "within a day" : $0.days < 7 ? "within a week" : "further" } ?? "none"
+            let km = sides.map(\.km).min() ?? -1
+            let far = km < 0 ? "no photos" : km < 50 ? "under 50 km" : km < 300 ? "50-300 km" : "over 300 km"
+            counts["\(source), nearest geotagged photo \(when), guess \(far) from it", default: 0] += 1
+        }
+        Timing.note("outings: \(outings.count) outings, \(noGuess) with no guess")
+        for (key, n) in counts.sorted(by: { $0.value > $1.value }) { Timing.note("outings: \(n) – \(key)") }
     }
 
     /// How reliable each camera's time clues are, from its own photos that have a location.
@@ -206,6 +262,7 @@ final class PlacesState {
     nonisolated static func guesses(ids: [String], scan: PlacesScan, placed: [String: PlaceJournalEntry],
                                     untrusted: Set<String>, prints: [String: Data],
                                     links: [String: [EventLinks.Link]], cameras: [String: String] = [:],
+                                    people: [String: [String]] = [:],
                                     calibration: PlaceCalibration = PlaceCalibration(),
                                     lookalike: ClueCalibration.Stat = .init()) -> [String: PlaceGuessResult] {
         var references: [PlaceTimeline.Reference] = []
@@ -219,6 +276,18 @@ final class PlacesState {
             }
         }
         let timeline = PlaceTimeline(references)
+        // Each tagged person's own geotagged photos: where they were, whoever took the photo.
+        var byPerson: [String: [PlaceTimeline.Reference]] = [:]
+        if !people.isEmpty {
+            let wanted = Set(ids.flatMap { people[$0] ?? [] })
+            for i in 0..<scan.located.count {
+                for person in people[scan.located.ids[i]] ?? [] where wanted.contains(person) {
+                    byPerson[person, default: []].append(.init(id: scan.located.ids[i], time: scan.located.times[i],
+                                                              point: scan.located.point(i)))
+                }
+            }
+        }
+        let personTimelines = byPerson.mapValues(PlaceTimeline.init)
 
         var examples: [PlaceProbe.Example] = []
         for i in 0..<scan.located.count {
@@ -235,6 +304,12 @@ final class PlacesState {
         let lookalikes = probe.evidence(for: queries, maxWeight: lookalikeWeight * lookalike.factor)
 
         var out: [String: PlaceGuessResult] = [:]
+        var ruledOut = 0, byPeople = 0, unlikely = 0, unchecked = 0, overruled = 0
+        defer {
+            Timing.note("places ruled out \(ruledOut) guesses by when and where other photos were taken (\(byPeople) by the people in them), "
+                        + "\(unlikely) look-alike guesses far from the days around them, \(overruled) look-alike guesses "
+                        + "replaced by a photo from within hours, \(unchecked) with no trusted time to check")
+        }
         for (n, id) in ids.enumerated() {
             if n % 512 == 0, Task.isCancelled { return [:] }
             var evidence: [PlaceEvidence] = []
@@ -247,7 +322,37 @@ final class PlacesState {
                 evidence.append(PlaceEvidence(source: .sameEvent, summary: "Looks like it’s from the same event as a photo you placed",
                                               point: entry.new, weight: min(0.8, link.weight), referenceID: link.assetID))
             }
-            if let estimate = PlaceFusion.estimate(evidence) {
+            // A photo with a location from within hours outranks look-alikes: if the look-alikes
+            // won but point far from it, guess from the time clues alone.
+            let timeClues = evidence.filter { $0.source == .sameTime || $0.source == .placedHere }
+            var fused = PlaceFusion.estimate(evidence)
+            if let f = fused, !timeClues.isEmpty,
+               timeClues.allSatisfy({ $0.point.distanceKm(to: f.point) > 300 }) {
+                evidence = timeClues
+                fused = PlaceFusion.estimate(timeClues)
+                overruled += 1
+            }
+            if let estimate = fused {
+                // Where the photos you took around then (with a location) put you rules this out:
+                // you couldn't have got there in between.
+                // Nor where the people in it were, from their own geotagged photos.
+                if !untrusted.contains(id), let date = scan.missing[id] ?? nil,
+                   calibration.reliability(camera: cameras[id]) >= 0.5 {
+                    if timeline.rulesOut(estimate.point, at: date, excluding: id) { ruledOut += 1; continue }
+                    let who = (people[id] ?? []).compactMap { personTimelines[$0] }
+                    if who.contains(where: { $0.rulesOut(estimate.point, at: date, excluding: id) }) {
+                        ruledOut += 1; byPeople += 1; continue
+                    }
+                    // Only look-alikes (no photo from around then): unlikely if the days before and
+                    // after put you, or the people in it, far away.
+                    if !evidence.contains(where: { $0.source == .sameTime || $0.source == .placedHere }),
+                       timeline.farFromBothSides(estimate.point, at: date, excluding: id)
+                        || who.contains(where: { $0.farFromBothSides(estimate.point, at: date, excluding: id) }) {
+                        unlikely += 1; continue
+                    }
+                } else {
+                    unchecked += 1
+                }
                 let result = PlaceGuessResult(estimate: estimate, evidence: evidence.sorted { $0.weight > $1.weight })
                 // Too weak to be worth showing as a place.
                 if result.level != .low { out[id] = result }
@@ -292,9 +397,13 @@ final class PlacesState {
         return out
     }
 
-    func setCameras(_ cameras: [String: String]) {
-        guard cameras != self.cameras else { return }
+    /// Who's tagged in each photo (named people only), read from the Photos library.
+    @ObservationIgnored var people: [String: [String]] = [:]
+
+    func setClues(cameras: [String: String], people: [String: [String]]) {
+        guard cameras != self.cameras || people != self.people else { return }
         self.cameras = cameras
+        self.people = people
         if scan.lastScan != nil { recompute() }
     }
 

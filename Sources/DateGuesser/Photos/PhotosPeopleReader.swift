@@ -96,6 +96,41 @@ enum PhotosPeopleReader {
         return (people, faces, references)
     }
 
+    /// The named people tagged in every photo (Photos' person ids), for checking place guesses
+    /// against where those people's own geotagged photos put them.
+    static func readNamedPeopleInPhotos(libraryURL: URL) throws -> [String: [String]] {
+        let handle = try open(libraryURL)
+        defer { sqlite3_close(handle) }
+        let faceColumns = columns(of: "ZDETECTEDFACE", in: handle)
+        guard let personColumn = ["ZPERSONFORFACE", "ZPERSON"].first(where: faceColumns.contains),
+              let assetColumn = ["ZASSETFORFACE", "ZASSET"].first(where: faceColumns.contains) else { return [:] }
+        let personColumns = columns(of: "ZPERSON", in: handle)
+        let uuid = personColumns.contains("ZPERSONUUID") ? "ZPERSONUUID" : "CAST(Z_PK AS TEXT)"
+        let target = personColumns.contains("ZMERGETARGETPERSON") ? "LEFT JOIN ZPERSON t ON t.Z_PK = p.ZMERGETARGETPERSON" : ""
+        let pick = { (column: String) in target.isEmpty ? "p.\(column)" : "coalesce(t.\(column), p.\(column))" }
+        let name = "coalesce(nullif(trim(\(pick("ZFULLNAME"))), ''), nullif(trim(\(pick("ZDISPLAYNAME"))), ''))"
+        let hidden = faceColumns.contains("ZHIDDEN") ? "AND coalesce(f.ZHIDDEN, 0) = 0" : ""
+        let sql = """
+            SELECT DISTINCT a.ZUUID, \(pick(uuid))
+            FROM ZDETECTEDFACE f
+            JOIN ZASSET a ON a.Z_PK = f.\(assetColumn)
+            JOIN ZPERSON p ON p.Z_PK = f.\(personColumn)
+            \(target)
+            WHERE \(name) IS NOT NULL \(hidden)
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw ReadError.unexpectedFormat(String(cString: sqlite3_errmsg(handle)))
+        }
+        defer { sqlite3_finalize(statement) }
+        var out: [String: [String]] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let asset = text(statement, 0), let person = text(statement, 1) else { continue }
+            out[asset + "/L0/001", default: []].append(person)
+        }
+        return out
+    }
+
     /// The camera (make and model) of every photo that records one, for learning each camera's clock.
     static func readCameras(libraryURL: URL) throws -> [String: String] {
         let handle = try open(libraryURL)

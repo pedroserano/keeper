@@ -7,17 +7,29 @@ import KeeperUI
 struct GridCursor: Equatable {
     var id: String?
     var anchor: String?
+    /// Whether the last ⌘-click or circle click selected (true) or deselected (false) its photo.
+    /// Shift-click then takes the range the same way. Nil after a plain click.
+    var anchorOn: Bool?
 
     /// Click makes a photo current; ⌘-click also selects or deselects it; Shift-click selects every
-    /// photo from the last one clicked, as in Keeper's lists and Finder.
+    /// photo from the last one clicked, as in Keeper's lists and Finder. It deselects them instead
+    /// when they're all selected already, or when the last ⌘-click deselected a photo.
     mutating func click(_ id: String, in ids: [String], modifiers: NSEvent.ModifierFlags, _ actions: GridActions) {
         if modifiers.contains(.shift), let range = Self.range(from: anchor, to: id, in: ids) {
-            actions.select(range.filter(actions.canSelect), true)
+            let range = range.filter(actions.canSelect)
+            let on = range.allSatisfy(actions.isSelected) ? false : anchorOn ?? true
+            actions.select(range, on)
+            anchorOn = on
         } else if modifiers.contains(.command) {
-            if actions.canSelect(id) { actions.select([id], !actions.isSelected(id)) }
+            if actions.canSelect(id) {
+                let on = !actions.isSelected(id)
+                actions.select([id], on)
+                anchorOn = on
+            }
             anchor = id
         } else {
             anchor = id
+            anchorOn = nil
         }
         self.id = id
     }
@@ -25,11 +37,15 @@ struct GridCursor: Equatable {
     /// The circle on a photo: selects or deselects it; with Shift, every photo from the last one
     /// clicked goes the same way.
     mutating func toggle(_ id: String, in ids: [String], extend: Bool, _ actions: GridActions) {
-        let on = !actions.isSelected(id)
         if extend, let range = Self.range(from: anchor, to: id, in: ids) {
-            actions.select(range.filter(actions.canSelect), on)
-        } else if actions.canSelect(id) {
-            actions.select([id], on)
+            let range = range.filter(actions.canSelect)
+            let on = range.allSatisfy(actions.isSelected) ? false : anchorOn ?? !actions.isSelected(id)
+            actions.select(range, on)
+            anchorOn = on
+        } else {
+            let on = !actions.isSelected(id)
+            if actions.canSelect(id) { actions.select([id], on) }
+            anchorOn = on
         }
         anchor = id
         self.id = id

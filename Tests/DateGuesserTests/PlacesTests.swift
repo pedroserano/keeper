@@ -120,3 +120,35 @@ final class PlacesBacktest: XCTestCase {
         }
     }
 }
+
+/// The place an outing shows: time-backed guesses as they are, look-alikes only when the photos agree.
+final class OutingGuessTests: XCTestCase {
+    let rome = GeoPoint(lat: 41.9, lon: 12.5)
+    let oslo = GeoPoint(lat: 59.9, lon: 10.75)
+    let lima = GeoPoint(lat: -12.05, lon: -77.04)
+
+    func guess(_ p: GeoPoint, _ source: PlaceSource, _ confidence: Double) -> PlaceGuessResult {
+        PlaceGuessResult(estimate: PlaceEstimate(point: p, confidence: confidence, spreadKm: 5),
+                         evidence: [PlaceEvidence(source: source, summary: "", point: p, weight: confidence)])
+    }
+
+    func testOneLookAlikeDoesNotPlaceAnOuting() {
+        let g = ["a": guess(oslo, .lookalike, 0.6)]
+        XCTAssertNil(PlacesState.outingGuess(["a", "b", "c"], guesses: g))
+    }
+
+    func testLookAlikesThatDisagreeDoNotPlaceAnOuting() {
+        let g = ["a": guess(oslo, .lookalike, 0.6), "b": guess(lima, .lookalike, 0.5), "c": guess(rome, .lookalike, 0.5)]
+        XCTAssertNil(PlacesState.outingGuess(["a", "b", "c"], guesses: g))
+    }
+
+    func testLookAlikesThatAgreePlaceAnOuting() {
+        let g = ["a": guess(oslo, .lookalike, 0.6), "b": guess(oslo, .lookalike, 0.5), "c": guess(lima, .lookalike, 0.7)]
+        XCTAssertEqual(PlacesState.outingGuess(["a", "b", "c"], guesses: g)?.estimate.point, oslo)
+    }
+
+    func testAPhotoFromAroundThenWins() {
+        let g = ["a": guess(oslo, .lookalike, 0.9), "b": guess(oslo, .lookalike, 0.8), "c": guess(rome, .sameTime, 0.5)]
+        XCTAssertEqual(PlacesState.outingGuess(["a", "b", "c"], guesses: g)?.estimate.point, rome)
+    }
+}

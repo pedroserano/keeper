@@ -1329,6 +1329,7 @@ final class AppState {
             defer { if scoped { libraryURL.stopAccessingSecurityScopedResource() } }
             let result = Result { try PhotosPeopleReader.read(libraryURL: libraryURL, facesFor: faceIDs, undated: notReferences) }
             let cameras = (try? PhotosPeopleReader.readCameras(libraryURL: libraryURL)) ?? [:]
+            let peopleInPhotos = (try? PhotosPeopleReader.readNamedPeopleInPhotos(libraryURL: libraryURL)) ?? [:]
             Timing.note("read people and faces from Photos", since: started)
             await MainActor.run {
                 let applyStarted = ContinuousClock.now
@@ -1339,7 +1340,7 @@ final class AppState {
                     if !quietly { self.banner = error.localizedDescription }
                 case .success(let read):
                     let before = Set(self.taggedPeople.map { "\($0.id)|\($0.name)|\($0.assetIDs.count)" })
-                    if !cameras.isEmpty { self.places.setCameras(cameras) }
+                    self.places.setClues(cameras: cameras.isEmpty ? self.places.cameras : cameras, people: peopleInPhotos)
                     // Only what changed is replaced: each replacement rewrites its file and works
                     // the estimates out again. A quiet refresh usually finds nothing new.
                     let changed = self.detectedFaces != read.faces || self.referenceCandidates != read.references

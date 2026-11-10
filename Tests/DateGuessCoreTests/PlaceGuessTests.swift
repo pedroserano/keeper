@@ -57,6 +57,64 @@ final class PlaceGuessTests: XCTestCase {
         XCTAssertLessThan(PlaceFusion.estimate(e)!.point.distanceKm(to: dc), 1, "the closer one in time wins")
     }
 
+    /// Photos with a location around the same time rule out places too far to reach in between.
+    func testTimelineRulesOutUnreachablePlaces() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000_000)
+        let hour: TimeInterval = 3600
+        let inDC = PlaceTimeline([
+            .init(id: "before", time: t0.addingTimeInterval(-hour), point: dc),
+            .init(id: "after", time: t0.addingTimeInterval(hour), point: dc),
+        ])
+        XCTAssertTrue(inDC.rulesOut(paris, at: t0), "Paris and back within an hour each way can't be")
+        XCTAssertFalse(inDC.rulesOut(baltimore, at: t0), "an hour's drive away is fine")
+        XCTAssertFalse(inDC.rulesOut(dc, at: t0))
+
+        // Long enough apart to have flown.
+        let days = PlaceTimeline([.init(id: "x", time: t0.addingTimeInterval(-20 * hour), point: dc)])
+        XCTAssertFalse(days.rulesOut(paris, at: t0))
+        // Further apart than the horizon: says nothing.
+        let old = PlaceTimeline([.init(id: "x", time: t0.addingTimeInterval(-72 * hour), point: dc)])
+        XCTAssertFalse(old.rulesOut(paris, at: t0))
+
+        // One stray photo can't rule a place out when the other side agrees with it.
+        let mixed = PlaceTimeline([
+            .init(id: "stray", time: t0.addingTimeInterval(-hour), point: dc),
+            .init(id: "after", time: t0.addingTimeInterval(hour), point: paris),
+        ])
+        XCTAssertFalse(mixed.rulesOut(paris, at: t0))
+
+        // Places set in this app are guesses too: they don't rule anything out.
+        let placed = PlaceTimeline([.init(id: "p", time: t0.addingTimeInterval(-hour), point: dc, placedHere: true)])
+        XCTAssertFalse(placed.rulesOut(paris, at: t0))
+        // Nor does the photo itself.
+        let itself = PlaceTimeline([.init(id: "me", time: t0, point: dc)])
+        XCTAssertFalse(itself.rulesOut(paris, at: t0, excluding: "me"))
+    }
+
+    /// A look-alike guess far from where you were in the days before and after is unlikely.
+    func testFarFromBothSides() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000_000)
+        let day: TimeInterval = 86400
+        let home = PlaceTimeline([
+            .init(id: "before", time: t0.addingTimeInterval(-2 * day), point: dc),
+            .init(id: "after", time: t0.addingTimeInterval(3 * day), point: baltimore),
+        ])
+        XCTAssertTrue(home.farFromBothSides(paris, at: t0))
+        XCTAssertFalse(home.farFromBothSides(baltimore, at: t0), "near where you were")
+        let oneSide = PlaceTimeline([.init(id: "before", time: t0.addingTimeInterval(-2 * day), point: dc)])
+        XCTAssertFalse(oneSide.farFromBothSides(paris, at: t0), "you may have left after the last photo")
+        let trip = PlaceTimeline([
+            .init(id: "before", time: t0.addingTimeInterval(-2 * day), point: dc),
+            .init(id: "after", time: t0.addingTimeInterval(3 * day), point: paris),
+        ])
+        XCTAssertFalse(trip.farFromBothSides(paris, at: t0), "you were there after")
+        let longAgo = PlaceTimeline([
+            .init(id: "before", time: t0.addingTimeInterval(-20 * day), point: dc),
+            .init(id: "after", time: t0.addingTimeInterval(20 * day), point: dc),
+        ])
+        XCTAssertFalse(longAgo.farFromBothSides(paris, at: t0), "weeks without photos: anything goes")
+    }
+
     func testProbeNeedsAgreement() {
         let votes = (0..<10).map { (point: $0 < 8 ? dc : paris, weight: 1.0, id: "\($0)") }
         XCTAssertEqual(PlaceProbe.clue(votes, maxWeight: 0.6)?.point, dc)
