@@ -195,7 +195,7 @@ final class PlacesState {
     nonisolated static func outingGuess(_ members: [String], guesses: [String: PlaceGuessResult]) -> PlaceGuessResult? {
         let guessed = members.compactMap { guesses[$0] }
         func timed(_ g: PlaceGuessResult) -> Bool {
-            g.evidence.contains { ($0.source == .sameTime || $0.source == .placedHere)
+            g.evidence.contains { $0.source.isTimeClue
                 && $0.point.distanceKm(to: g.estimate.point) < PlaceFusion.areaKm }
         }
         if let best = guessed.filter(timed).max(by: { $0.estimate.confidence < $1.estimate.confidence }) { return best }
@@ -304,17 +304,20 @@ final class PlacesState {
         let lookalikes = probe.evidence(for: queries, maxWeight: lookalikeWeight * lookalike.factor)
 
         var out: [String: PlaceGuessResult] = [:]
-        var ruledOut = 0, byPeople = 0, unlikely = 0, unchecked = 0, overruled = 0
+        var ruledOut = 0, byPeople = 0, unlikely = 0, unchecked = 0, overruled = 0, trips = 0
         defer {
             Timing.note("places ruled out \(ruledOut) guesses by when and where other photos were taken (\(byPeople) by the people in them), "
                         + "\(unlikely) look-alike guesses far from the days around them, \(overruled) look-alike guesses "
-                        + "replaced by a photo from within hours, \(unchecked) with no trusted time to check")
+                        + "replaced by a photo from within hours, \(unchecked) with no trusted time to check, "
+                        + "\(trips) with a trip clue")
         }
         for (n, id) in ids.enumerated() {
             if n % 512 == 0, Task.isCancelled { return [:] }
             var evidence: [PlaceEvidence] = []
             if !untrusted.contains(id), let date = scan.missing[id] ?? nil {
-                evidence += timeline.evidence(at: date, excluding: id, reliability: calibration.reliability(camera: cameras[id]))
+                let reliability = calibration.reliability(camera: cameras[id])
+                evidence += timeline.evidence(at: date, excluding: id, reliability: reliability)
+                if let trip = timeline.trip(at: date, excluding: id, reliability: reliability) { evidence.append(trip); trips += 1 }
             }
             if let e = lookalikes[id] { evidence.append(e) }
             for link in links[id] ?? [] {
@@ -324,7 +327,7 @@ final class PlacesState {
             }
             // A photo with a location from within hours outranks look-alikes: if the look-alikes
             // won but point far from it, guess from the time clues alone.
-            let timeClues = evidence.filter { $0.source == .sameTime || $0.source == .placedHere }
+            let timeClues = evidence.filter { $0.source.isTimeClue }
             var fused = PlaceFusion.estimate(evidence)
             if let f = fused, !timeClues.isEmpty,
                timeClues.allSatisfy({ $0.point.distanceKm(to: f.point) > 300 }) {
@@ -345,7 +348,7 @@ final class PlacesState {
                     }
                     // Only look-alikes (no photo from around then): unlikely if the days before and
                     // after put you, or the people in it, far away.
-                    if !evidence.contains(where: { $0.source == .sameTime || $0.source == .placedHere }),
+                    if !evidence.contains(where: { $0.source.isTimeClue }),
                        timeline.farFromBothSides(estimate.point, at: date, excluding: id)
                         || who.contains(where: { $0.farFromBothSides(estimate.point, at: date, excluding: id) }) {
                         unlikely += 1; continue

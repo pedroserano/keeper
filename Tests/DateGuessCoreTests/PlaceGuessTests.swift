@@ -115,6 +115,31 @@ final class PlaceGuessTests: XCTestCase {
         XCTAssertFalse(longAgo.farFromBothSides(paris, at: t0), "weeks without photos: anything goes")
     }
 
+    /// Between photos from one place days apart: a trip (or home), so the photo was there too.
+    func testTripBetweenPhotosFromOnePlace() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000_000)
+        let day: TimeInterval = 86400
+        let near = GeoPoint(lat: paris.lat + 0.01, lon: paris.lon)
+        func refs(_ before: GeoPoint, _ after: GeoPoint) -> [PlaceTimeline.Reference] {
+            (1...3).map { .init(id: "b\($0)", time: t0.addingTimeInterval(-Double($0) * day), point: before) }
+                + (1...3).map { .init(id: "a\($0)", time: t0.addingTimeInterval(Double($0) * day), point: after) }
+        }
+        let stay = PlaceTimeline(refs(paris, near))
+        let clue = stay.trip(at: t0)
+        XCTAssertEqual(clue?.source, .trip)
+        XCTAssertEqual(clue?.weight ?? 0, 0.8, accuracy: 0.001, "all six within 2 km")
+        XCTAssertLessThan(clue!.point.distanceKm(to: paris), 2)
+        XCTAssertNil(PlaceTimeline(refs(dc, paris)).trip(at: t0), "left one place for another")
+        let close = PlaceTimeline(refs(paris, paris) + [.init(id: "now", time: t0.addingTimeInterval(3600), point: paris)])
+        XCTAssertNil(close.trip(at: t0), "a photo from within hours is the clue instead")
+        let oneSide = PlaceTimeline(Array(refs(paris, paris).prefix(3)))
+        XCTAssertNil(oneSide.trip(at: t0), "no photos after: you may have gone anywhere")
+        let monthsApart = PlaceTimeline([.init(id: "b", time: t0.addingTimeInterval(-40 * day), point: paris),
+                                         .init(id: "a", time: t0.addingTimeInterval(2 * day), point: paris)])
+        XCTAssertNil(monthsApart.trip(at: t0), "over 30 days: too long to say")
+        XCTAssertTrue(PlaceSource.trip.isTimeClue)
+    }
+
     func testProbeNeedsAgreement() {
         let votes = (0..<10).map { (point: $0 < 8 ? dc : paris, weight: 1.0, id: "\($0)") }
         XCTAssertEqual(PlaceProbe.clue(votes, maxWeight: 0.6)?.point, dc)
