@@ -193,3 +193,63 @@ final class EventBacktest: XCTestCase {
         }
     }
 }
+
+/// Photos scanned one after another (neighbours in Undated Photos' order, by date in Photos then
+/// filename) usually share a year. Does sharing clues with them make single-photo guesses better?
+/// Skipped unless PDG_BACKTEST_DIR is set. Totals only.
+@MainActor
+final class NeighbourBacktest: XCTestCase {
+    func testNeighboursOnRealData() throws {
+        guard let dir = ProcessInfo.processInfo.environment["PDG_BACKTEST_DIR"] else { throw XCTSkip("no PDG_BACKTEST_DIR") }
+        let store = JSONStore(directory: URL(fileURLWithPath: dir, isDirectory: true))
+        let analyses = try XCTUnwrap(store.load([String: PhotoAnalysis].self, from: "analyses"))
+        let decisions = store.load([String: ReviewDecision].self, from: "decisions") ?? [:]
+        let scan = store.load(ScanSnapshot.self, from: "scan") ?? ScanSnapshot()
+        let options = EvidenceFusion.Options(allowExactMonth: true)
+        let order = scan.undated.values.sorted { a, b in
+            switch (a.libraryDate, b.libraryDate) {
+            case let (x?, y?) where x != y: return x < y
+            default: return a.filename.localizedStandardCompare(b.filename) == .orderedAscending
+            }
+        }
+        func clues(_ id: String) -> [DateEvidence] {
+            let e = analyses[id]?.evidence ?? []
+            return scan.undated[id].map { DigitalPhotoClues.apply(to: e, format: $0.format) } ?? e
+        }
+        var evidence: [String: [DateEvidence]] = [:]
+        for p in order where analyses[p.id] != nil { evidence[p.id] = clues(p.id) }
+
+        for (label, limit, reach) in [("within 10 min, 10 each side", 600.0, 10), ("within 1 h, 10 each side", 3600.0, 10), ("within 10 min, 20 each side", 600.0, 20),
+                                      ("within 10 min, 5 each side", 600.0, 5)] {
+            var links: [String: [EventLinks.Link]] = [:]
+            for (i, p) in order.enumerated() {
+                guard let t = p.libraryDate else { continue }
+                for j in max(0, i - reach)...min(order.count - 1, i + reach) where j != i {
+                    guard let u = order[j].libraryDate else { continue }
+                    let gap = abs(u.timeIntervalSince(t))
+                    guard gap < limit else { continue }
+                    let w = gap < 1 ? 0.8 : gap < 60 ? 0.6 : 0.5
+                    links[p.id, default: []].append(EventLinks.Link(assetID: order[j].id, distance: 0, weight: w))
+                }
+            }
+            let pulls = EventLinks.pulls(evidence: evidence, links: links, options: options)
+            var n = 0, a0 = 0, a1 = 0, b0 = 0, b1 = 0, withNeighbours = 0
+            for (id, d) in decisions {
+                guard let year = d.overrideYear, !d.ignored, let own = evidence[id] else { continue }
+                n += 1
+                let a = EvidenceFusion.estimate(from: own, options: options)
+                let b: DateEstimate
+                if let p = pulls[id] {
+                    withNeighbours += 1
+                    b = EvidenceFusion.estimate(from: own, extraLogLikelihood: p.logLikelihood, extraSeasonVotes: p.seasonVotes,
+                                                extraExactDateCandidates: p.exactDates, options: options)
+                } else { b = a }
+                if a.year == year { a0 += 1 }; if abs(a.year - year) <= 1 { a1 += 1 }
+                if b.year == year { b0 += 1 }; if abs(b.year - year) <= 1 { b1 += 1 }
+            }
+            func pct(_ x: Int) -> Int { 100 * x / max(1, n) }
+            print("NEIGHBOURS \(label): \(n) photos with a year you typed, \(withNeighbours) with neighbours; " +
+                  "own clues: right year \(pct(a0))%, within 1 \(pct(a1))%; with neighbours: right year \(pct(b0))%, within 1 \(pct(b1))%")
+        }
+    }
+}

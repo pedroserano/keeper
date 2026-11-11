@@ -4,7 +4,7 @@ import KeeperUI
 import DateGuessCore
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case toApply, review, places, outings, placeHistory, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
+    case toApply, review, keyPhotos, places, outings, placeHistory, history, events, people, cameras, albumSuggestions, albumAdditions, albumDuplicates
 
     var id: String { rawValue }
 
@@ -12,6 +12,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .toApply: return "To Apply"
         case .review: return "Undated Photos"
+        case .keyPhotos: return "Key Photos"
         case .places: return "Places"
         case .outings: return "Outings"
         case .placeHistory: return "History"
@@ -29,6 +30,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .toApply: return "tray.and.arrow.up"
         case .review: return "photo.on.rectangle"
+        case .keyPhotos: return "key"
         case .places: return "mappin.and.ellipse"
         case .outings: return "figure.walk"
         case .placeHistory: return "clock.arrow.circlepath"
@@ -42,7 +44,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         }
     }
 
-    static let library: [SidebarItem] = [.toApply, .history, .review, .places, .outings]
+    static let library: [SidebarItem] = [.toApply, .history, .review, .keyPhotos, .places, .outings]
     static let clues: [SidebarItem] = [.events, .people, .cameras]
 }
 
@@ -120,6 +122,7 @@ struct ContentView: View {
         switch item {
         case .toApply: return state.waitingCount
         case .review: return state.undatedSorted.count
+        case .keyPhotos: return state.keyPhotos.count
         case .places: return state.places.confidentCount
         case .events: return state.eventSuggestions.count
         case .people: return state.people.count
@@ -139,6 +142,7 @@ struct ContentView: View {
             switch item {
             case .toApply: ToApplyView()
             case .review: ReviewView(goToPeople: { selection = .people })
+            case .keyPhotos: ReviewView(goToPeople: { selection = .people }, keyPhotos: true)
             case .places: PlacesView()
             case .outings: OutingsScreen()
             case .placeHistory, .history: HistoryView()

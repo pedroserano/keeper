@@ -6,6 +6,8 @@ import DateGuessCore
 struct ReviewView: View {
     @Environment(AppState.self) private var state
     var goToPeople: () -> Void = {}
+    /// Key Photos: only the photos whose date would help most, best first.
+    var keyPhotos = false
 
     @Environment(\.showShortcuts) private var showShortcuts
     var _filter = State<Filter>(initialValue: .toReview)
@@ -47,6 +49,12 @@ struct ReviewView: View {
     }
 
     private var visibleIDs: [String] {
+        if keyPhotos {
+            let ids = state.keyPhotos.map(\.id)
+            guard !search.isEmpty else { return ids }
+            let byID = Dictionary(state.undatedSorted.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            return ids.filter { id in byID[id].map { $0.filename.localizedCaseInsensitiveContains(search) || $0.albums.contains { $0.localizedCaseInsensitiveContains(search) } } ?? false }
+        }
         var items = state.undatedSorted.filter { state.estimates[$0.id] != nil }
         if let g = groupFilter, let group = state.groups.first(where: { $0.id == g }) {
             let ids = Set(group.assetIDs)
@@ -109,6 +117,11 @@ struct ReviewView: View {
                     }
                     Divider()
                 }
+                if keyPhotos && !ids.isEmpty {
+                    KeeperActionBar("Each of these is linked to many photos Keeper is unsure of. Set the year of any you know, and Keeper dates the photos like it and the rest of its event. Look Again ranks them afresh.",
+                                    systemImage: "key") { EmptyView() }
+                    Divider()
+                }
                 if !ids.isEmpty { actionBar(ids, selectedCount) }
             }
         }
@@ -165,6 +178,9 @@ struct ReviewView: View {
             } description: {
                 Text(state.isScanning || state.isEstimating ? "The first guesses show up here in a moment." : "No undated photos were found.")
             }
+        } else if ids.isEmpty && keyPhotos {
+            ContentUnavailableView("No Key Photos", systemImage: "key",
+                                   description: Text("Key Photos are undated photos linked to many others Keeper is unsure of. None are left: the photos still unsure aren’t linked to each other."))
         } else if ids.isEmpty {
             if search.isEmpty {
                 ContentUnavailableView("No Photos", systemImage: "line.3.horizontal.decrease.circle",
@@ -178,9 +194,18 @@ struct ReviewView: View {
     @ToolbarContentBuilder
     private func toolbarItems(_ ids: [String], _ selectedCount: Int) -> some ToolbarContent {
         KeeperToolbar(shortcuts: showShortcuts) {
-            ShowMenu(selection: _filter.projectedValue)
+            if !keyPhotos { ShowMenu(selection: _filter.projectedValue) }
         } action: {
-            sortMenu
+            if keyPhotos {
+                Button {
+                    state.refreshKeyPhotos(force: true)
+                } label: {
+                    Label("Look Again", systemImage: "arrow.clockwise")
+                }
+                .help("Rank the photos again, counting the dates you've set since")
+            } else {
+                sortMenu
+            }
         }
     }
 
@@ -326,6 +351,13 @@ struct ReviewCard: View {
                     }
                     Spacer(minLength: 4)
                     ConfidenceBadge(estimate: computed.estimate)
+                }
+                if let helps = state.keyPhotoHelps(assetID), helps > 0 {
+                    Label(helps == 1 ? "Dating it helps 1 more photo" : "Dating it helps \(helps.formatted()) more photos", systemImage: "key")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.tint)
+                        .lineLimit(1)
+                        .help("It looks like, or is in the same suggested event as, photos Keeper is unsure of. A year you set for it counts for them too.")
                 }
                 // On its own line, so the card's other details can't cut it off.
                 if let batch = state.recoveryBatch(assetID) {

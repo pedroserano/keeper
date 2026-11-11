@@ -7,7 +7,7 @@ import KeeperUI
 
 /// A row of Keeper's Dates section.
 public enum DatesItem: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
-    case toApply, review, events, people, cameras, places, outings, placeHistory, history, albumSuggestions, albumAdditions, albumDuplicates
+    case toApply, review, keyPhotos, events, people, cameras, places, outings, placeHistory, history, albumSuggestions, albumAdditions, albumDuplicates
 
     public var id: String { rawValue }
     var item: SidebarItem { SidebarItem(rawValue: rawValue)! }
@@ -127,6 +127,7 @@ public final class DatesModel {
         switch item.item {
         case .toApply: state.waitingCount
         case .review: state.undatedSorted.count
+        case .keyPhotos: state.keyPhotos.count
         case .places: state.places.confidentCount
         case .events: state.eventSuggestions.count
         case .outings: state.places.outingsToPlaceCount
@@ -231,6 +232,7 @@ public struct DatesScreen: View {
         switch item.item {
         case .toApply: ToApplyView()
         case .review: ReviewView(goToPeople: { select(.people) })
+        case .keyPhotos: ReviewView(goToPeople: { select(.people) }, keyPhotos: true)
         case .places: PlacesView()
         case .outings: OutingsScreen()
         case .placeHistory, .history: HistoryView()

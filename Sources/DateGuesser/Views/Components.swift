@@ -362,6 +362,16 @@ struct YearComboBox: NSViewRepresentable {
             }
         }
 
+        /// Return: use the year and leave the box, so the arrow keys and the next photo work again
+        /// (the text stayed selected in the box before).
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)), let box = control as? NSComboBox else { return false }
+            if let y = Int(box.stringValue.filter(\.isNumber)), parent.range.contains(y) { commit(y) }
+            else { box.stringValue = String(parent.year) }
+            box.window?.makeFirstResponder(nil)
+            return true
+        }
+
         private func commit(_ y: Int) {
             if y != parent.year { parent.onChange(y) }
         }

@@ -70,7 +70,18 @@ final class AppState {
     @ObservationIgnored private var linksTask: Task<Void, Never>?
     var isImportingPeople = false
     var analyses: [String: PhotoAnalysis]
-    var decisions: [String: ReviewDecision] { didSet { scheduleDecisionSave() } }
+    var decisions: [String: ReviewDecision] {
+        didSet {
+            scheduleDecisionSave()
+            // A date you set (or took back) is a clue for the photos linked to it.
+            let signature = yourDatesSignature
+            if signature != lastYourDates { lastYourDates = signature; scheduleRecompute(delay: 1) }
+        }
+    }
+    @ObservationIgnored var lastYourDates = 0
+    /// Undated photos worth dating first (the Key Photos screen).
+    var keyPhotos: [KeyPhoto] = []
+    @ObservationIgnored var keyPhotosRun = 0
     /// ⌘Z for the decisions above.
     @ObservationIgnored var decisionHistory = DecisionHistory<ReviewDecision>()
     var journal: [ApplyBatch] {
@@ -126,6 +137,7 @@ final class AppState {
         authorization = PhotoLibraryService.shared.authorizationStatus
         refreshUndatedList()
         refreshEventSuggestions()
+        lastYourDates = yourDatesSignature
         recomputeEstimates()
         loadRecoveryBatches()
         if isAuthorized {
@@ -616,6 +628,8 @@ final class AppState {
         let notReferences = Set(undated.keys).union(appliedIDs)
         let placedHere = placesSetHere(undated)
         let yearAlbums = self.yearAlbums
+        let yourDates = decisions.compactMapValues(AppState.yourDateClue).filter { undated[$0.key] != nil }
+        let neighbours = AppState.scanNeighbours(undatedSorted)
         Timing.note("estimates #\(generation) prep on main", since: prepStarted)
         Task.detached(priority: .userInitiated) {
             let started = ContinuousClock.now
@@ -627,7 +641,9 @@ final class AppState {
                                                    earliestYear: earliest, cameras: cameras, events: events,
                                                    confirmed: confirmed, formats: formats,
                                                    faceReadings: faceReadings, faceCorrection: faceCorrection,
-                                                   placeClues: placeClues, yearAlbums: yearAlbums, allowExactMonth: exact)
+                                                   placeClues: placeClues, yearAlbums: yearAlbums, yourDates: yourDates,
+                                                   neighbours: neighbours,
+                                                   allowExactMonth: exact)
             Timing.note("estimates #\(generation) for \(undated.count) photos", since: started)
             await MainActor.run {
                 guard generation == self.recomputeGeneration else {
@@ -637,6 +653,7 @@ final class AppState {
                 self.estimates = result.estimates
                 self.eventEstimates = result.events
                 self.photoLimits = result.limits
+                self.refreshKeyPhotos()
                 // Event suggestions depend on these limits; regroup once if they changed.
                 if result.limits != self.limitsUsedForEvents { self.regroupEvents() }
             }
@@ -735,6 +752,8 @@ final class AppState {
                                              faceCorrection: FaceAgeClues.Correction = .standard,
                                              placeClues: [String: DateEvidence] = [:],
                                              yearAlbums: [String: YearAlbum] = [:],
+                                             yourDates: [String: DateEvidence] = [:],
+                                             neighbours: [String: [EventLinks.Link]] = [:],
                                              allowExactMonth: Bool) -> EstimateResults {
         // Who's in a photo: birth years, and how old they look (the face-age model when it has read
         // them, otherwise Photos' rough age groups).
@@ -777,6 +796,8 @@ final class AppState {
             if let e = referenceClues[id] { out.append(e) }
             if let e = lookalikeClues[id] { out.append(e) }
             if let e = placeClues[id] { out.append(e) }
+            // A date you set: its strongest clue, shared with its look-alikes and its event.
+            if let e = yourDates[id] { out.append(e) }
             return out
         }
 
@@ -796,10 +817,28 @@ final class AppState {
             let kept = matches.filter { own[$0.assetID] != nil && (mine == nil || groupOf[$0.assetID] != mine) }
             if !kept.isEmpty { usable[id] = kept }
         }
+        // Photos scanned right before or after: their clues count too (once, at the stronger link).
+        var scannedNear: [String: Int] = [:]
+        for (id, near) in neighbours where own[id] != nil {
+            let mine = groupOf[id]
+            let kept = near.filter { own[$0.assetID] != nil && (mine == nil || groupOf[$0.assetID] != mine) }
+            guard !kept.isEmpty else { continue }
+            scannedNear[id] = kept.count
+            var byID = Dictionary((usable[id] ?? []).map { ($0.assetID, $0) }, uniquingKeysWith: { a, _ in a })
+            for l in kept where (byID[l.assetID]?.weight ?? 0) < l.weight { byID[l.assetID] = l }
+            usable[id] = Array(byID.values)
+        }
+        let lookalikeCount = links.mapValues(\.count)
         let pulls = EventLinks.pulls(evidence: own, links: usable, options: options)
         func matchNote(_ id: String) -> [DateEvidence] {
-            guard let n = usable[id]?.count else { return [] }
-            return [DateEvidence(source: .group, summary: "Looks like the same event as \(n) other undated photo\(n == 1 ? "" : "s") (similar scene, clothes or people), so their clues count here too")]
+            var out: [DateEvidence] = []
+            if let n = lookalikeCount[id], n > 0, usable[id] != nil {
+                out.append(DateEvidence(source: .group, summary: "Looks like the same event as \(n) other undated photo\(n == 1 ? "" : "s") (similar scene, clothes or people), so their clues count here too"))
+            }
+            if let n = scannedNear[id] {
+                out.append(DateEvidence(source: .group, summary: "Scanned right before or after \(n) other undated photo\(n == 1 ? "" : "s"), which usually share a year, so their clues count here too"))
+            }
+            return out
         }
 
         for g in groups {
@@ -837,8 +876,13 @@ final class AppState {
         // What each suggested event would be dated if saved as one event now: every photo's clues pooled.
         var eventDates: [String: DateEstimate] = [:]
         for ids in events {
-            let members = ids.compactMap { id in own[id].map { GroupFusion.Member(assetID: id, evidence: $0) } }
-            guard members.count >= 2, let shared = GroupFusion.estimates(members: members, groupEvidence: [], kind: .sameEvent,
+            // A date you set for one of its photos dates the event: counted in full, not shared out.
+            let anchors = ids.compactMap { yourDates[$0] }
+            let mine = Set(anchors.map(\.id))
+            let members = ids.compactMap { id in
+                own[id].map { GroupFusion.Member(assetID: id, evidence: $0.filter { !mine.contains($0.id) }) }
+            }
+            guard members.count >= 2, let shared = GroupFusion.estimates(members: members, groupEvidence: anchors, kind: .sameEvent,
                                                                          options: options)[members[0].assetID] else { continue }
             eventDates[eventKey(ids)] = shared
         }

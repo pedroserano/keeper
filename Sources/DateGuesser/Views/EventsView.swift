@@ -200,6 +200,13 @@ struct EventCard: View {
                 Text(sharedGuess ?? "Event").font(.headline)
                     .help("The date all these photos get if you click Same Event, from all their clues together")
                 Text("\(kept.count) photos").foregroundStyle(.secondary)
+                let dated = ids.filter { AppState.yourDateClue(state.decision($0)) != nil }.count
+                if dated > 0 {
+                    Label(dated == 1 ? "From a photo you dated" : "From \(dated) photos you dated", systemImage: "key")
+                        .font(.callout)
+                        .foregroundStyle(.tint)
+                        .help("You set the date of a photo in this event, so the event takes that date")
+                }
                 Spacer()
                 Button("Not One Event") { state.dismissEvent(ids) }
                     .buttonStyle(.bordered)
