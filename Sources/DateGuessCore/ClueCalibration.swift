@@ -93,7 +93,7 @@ public struct ClueCalibration: Codable, Hashable, Sendable {
         return out
     }
 
-    static let noteSeparator = " — "
+    public static let noteSeparator = " — "
 
     /// The clue with its weight scaled to how well it has done in this library, and a note saying so.
     public func adjusted(_ e: DateEvidence) -> DateEvidence {

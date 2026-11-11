@@ -1,5 +1,6 @@
 import SwiftUI
 import KeeperUI
+import KeeperCore
 import DateGuessCore
 
 struct ReviewView: View {
@@ -30,6 +31,8 @@ struct ReviewView: View {
         case toReview = "All"
         case selected = "Selected"
         case low = "Unsure"
+        /// Photos dated the day they were recovered (data recovery), not when they were taken.
+        case recovered = "Recovered"
         case ignored = "Not Shown"
         var id: String { rawValue }
     }
@@ -59,6 +62,7 @@ struct ReviewView: View {
             case .toReview: return !d.ignored
             case .selected: return d.selected
             case .low: return !d.ignored && level == .low
+            case .recovered: return !d.ignored && state.recoveryBatch(photo.id) != nil
             case .ignored: return d.ignored
             }
         }
@@ -322,6 +326,15 @@ struct ReviewCard: View {
                     }
                     Spacer(minLength: 4)
                     ConfidenceBadge(estimate: computed.estimate)
+                }
+                // On its own line, so the card's other details can't cut it off.
+                if let batch = state.recoveryBatch(assetID) {
+                    Label("Recovered \(batch.label)", systemImage: "arrow.counterclockwise")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help("Its date in Photos is the day it was recovered, along with \((batch.count - 1).formatted()) others, not when it was taken")
                 }
                 HStack(spacing: 6) {
                     if let g = computed.groupName {

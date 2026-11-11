@@ -38,7 +38,7 @@ extension AppState {
         let byID = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var pairs: [(read: Double, real: Double)] = []
         for (asset, ages) in faceAges {
-            guard scan.undated[asset] == nil, let c = referenceCandidates[asset] else { continue }
+            guard scan.undated[asset] == nil, recoveryBatch(asset) == nil, let c = referenceCandidates[asset] else { continue }
             let when = Double(c.year) + (Double(c.month) - 0.5) / 12
             for (cluster, age) in ages where age >= 0 {
                 guard let id = clusters[cluster], let person = byID[id], let born = person.birthYear else { continue }

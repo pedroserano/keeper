@@ -762,6 +762,68 @@ extension PhotosDatabase {
         return out
     }
 
+    /// Albums named for one year ("1998", "Beach 2004"), by title: each one's year, and how many of
+    /// its photos with a camera capture time were taken that year, or within a year of it.
+    /// `yearInTitle` finds the year in a title (nil for none or several).
+    public static func readYearAlbums(inLibrary library: URL, yearInTitle: (String) -> Int?) throws
+        -> [String: (year: Int, dated: Int, sameYear: Int, withinYear: Int)] {
+        let path = library.appendingPathComponent("database/Photos.sqlite").path
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PhotosDatabaseError(kind: .noAccess, message: "Keeper can't read this library's database.")
+        }
+        let db = try Database(liveReadOnly: path)
+        let tables = Set(try db.column("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        guard let assetTable = ["ZASSET", "ZGENERICASSET"].first(where: tables.contains), tables.contains("ZGENERICALBUM"),
+              tables.contains("ZADDITIONALASSETATTRIBUTES") else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema, message: "This library's database has no album table Keeper recognises.")
+        }
+        func columns(_ table: String) throws -> Set<String> {
+            Set(try db.rows("PRAGMA table_info(\(q(table)))").compactMap { $0[1] })
+        }
+        var join: (table: String, album: String, asset: String)?
+        for t in tables.sorted() where t.hasPrefix("Z_") && t.hasSuffix("ASSETS") {
+            let cols = try columns(t)
+            if let album = cols.first(where: { $0.hasSuffix("ALBUMS") && !$0.hasPrefix("Z_FOK") }),
+               let asset = cols.first(where: { $0.hasSuffix("ASSETS") && !$0.hasPrefix("Z_FOK") }) {
+                join = (t, album, asset)
+                break
+            }
+        }
+        let g = try columns("ZGENERICALBUM"), b = try columns("ZADDITIONALASSETATTRIBUTES")
+        guard let join, g.isSuperset(of: ["ZTITLE", "ZKIND"]), b.isSuperset(of: ["ZASSET", "ZEXIFTIMESTAMPSTRING"]) else {
+            throw PhotosDatabaseError(kind: .unrecognisedSchema, message: "This library's database stores albums differently.")
+        }
+        let a = try columns(assetTable)
+        var photo = "a.Z_PK = j.\(q(join.asset))"
+        if a.contains("ZTRASHEDSTATE") { photo += " AND COALESCE(a.ZTRASHEDSTATE, 0) = 0" }
+        let sql = """
+            SELECT g.ZTITLE, a.ZDATECREATED
+            FROM ZGENERICALBUM g
+            JOIN \(q(join.table)) j ON j.\(q(join.album)) = g.Z_PK
+            JOIN \(q(assetTable)) a ON \(photo)
+            JOIN ZADDITIONALASSETATTRIBUTES b ON b.ZASSET = a.Z_PK
+            WHERE g.ZKIND = 2 AND g.ZTITLE IS NOT NULL AND a.ZDATECREATED IS NOT NULL
+              AND b.ZEXIFTIMESTAMPSTRING IS NOT NULL AND b.ZEXIFTIMESTAMPSTRING != ''
+            """
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        var out: [String: (year: Int, dated: Int, sameYear: Int, withinYear: Int)] = [:]
+        var years: [String: Int?] = [:]
+        try db.forEachRow(sql) { stmt in
+            guard let title = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }) else { return }
+            let albumYear: Int?
+            if let known = years[title] { albumYear = known } else { albumYear = yearInTitle(title); years[title] = albumYear }
+            guard let albumYear else { return }
+            let taken = calendar.component(.year, from: Date(timeIntervalSinceReferenceDate: sqlite3_column_double(stmt, 1)))
+            var r = out[title] ?? (albumYear, 0, 0, 0)
+            r.dated += 1
+            if taken == albumYear { r.sameYear += 1 }
+            if abs(taken - albumYear) <= 1 { r.withinYear += 1 }
+            out[title] = r
+        }
+        return out
+    }
+
     /// Keeper's own album of rejected photos, which doesn't count as "added to an album".
     public static let rejectAlbumTitle = "Keeper – Rejected"
     /// What the album was called before the app was renamed (renamed on first launch).

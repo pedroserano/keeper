@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Photos
 import DateGuessCore
+import KeeperCore
 
 /// The app's single source of truth. Long-running work (scan, estimate, apply) runs in background
 /// tasks and reports back here on the main actor.
@@ -126,6 +127,7 @@ final class AppState {
         refreshUndatedList()
         refreshEventSuggestions()
         recomputeEstimates()
+        loadRecoveryBatches()
         if isAuthorized {
             loadAlbums()
             // Picks up where a previous session stopped. On-device only, so it's free.
@@ -378,7 +380,7 @@ final class AppState {
     /// Dated photos whose date can be trusted: a GPS location, or a capture date the scan checked.
     var trustedReferenceIDs: [String] {
         referenceCandidates.compactMap { id, c in
-            (c.hasGPS || scan.checkedDatedIDs.contains(id)) && scan.undated[id] == nil ? id : nil
+            (c.hasGPS || scan.checkedDatedIDs.contains(id)) && scan.undated[id] == nil && recoveryBatch(id) == nil ? id : nil
         }
     }
 
@@ -409,7 +411,8 @@ final class AppState {
         // Every dated photo with a fingerprint teaches the look of its year.
         var probePacked: [(String, Int, Data)] = confirmed.compactMap { c in featurePrints[c.id].map { (c.id, c.year, $0) } }
         let confirmedIDs = Set(confirmed.map(\.id))
-        for (id, c) in referenceCandidates where scan.undated[id] == nil && !confirmedIDs.contains(id) {
+        // Not recovered photos: their date is the day they came back, not when they were taken.
+        for (id, c) in referenceCandidates where scan.undated[id] == nil && !confirmedIDs.contains(id) && recoveryBatch(id) == nil {
             if let p = featurePrints[id] { probePacked.append((id, c.year, p)) }
         }
         let limits = photoLimits
@@ -612,6 +615,7 @@ final class AppState {
         let located = places.scan.located
         let notReferences = Set(undated.keys).union(appliedIDs)
         let placedHere = placesSetHere(undated)
+        let yearAlbums = self.yearAlbums
         Timing.note("estimates #\(generation) prep on main", since: prepStarted)
         Task.detached(priority: .userInitiated) {
             let started = ContinuousClock.now
@@ -623,7 +627,7 @@ final class AppState {
                                                    earliestYear: earliest, cameras: cameras, events: events,
                                                    confirmed: confirmed, formats: formats,
                                                    faceReadings: faceReadings, faceCorrection: faceCorrection,
-                                                   placeClues: placeClues, allowExactMonth: exact)
+                                                   placeClues: placeClues, yearAlbums: yearAlbums, allowExactMonth: exact)
             Timing.note("estimates #\(generation) for \(undated.count) photos", since: started)
             await MainActor.run {
                 guard generation == self.recomputeGeneration else {
@@ -730,6 +734,7 @@ final class AppState {
                                              faceReadings: [String: [FaceAgeClues.Reading]] = [:],
                                              faceCorrection: FaceAgeClues.Correction = .standard,
                                              placeClues: [String: DateEvidence] = [:],
+                                             yearAlbums: [String: YearAlbum] = [:],
                                              allowExactMonth: Bool) -> EstimateResults {
         // Who's in a photo: birth years, and how old they look (the face-age model when it has read
         // them, otherwise Photos' rough age groups).
@@ -744,8 +749,10 @@ final class AppState {
         let options = EvidenceFusion.Options(allowExactMonth: allowExactMonth)
         // A photo's own clues, minus film-print clues when it's plainly a digital photo.
         func photoClues(_ id: String, _ a: PhotoAnalysis) -> [DateEvidence] {
-            guard let format = undated[id]?.format ?? formats[id] else { return a.evidence }
-            return DigitalPhotoClues.apply(to: a.evidence, format: format)
+            // Year albums count as much as their own dated photos say they should.
+            let evidence = yearAlbums.isEmpty ? a.evidence : a.evidence.map { AlbumYears.adjust($0, albums: yearAlbums) }
+            guard let format = undated[id]?.format ?? formats[id] else { return evidence }
+            return DigitalPhotoClues.apply(to: evidence, format: format)
         }
         // How the built-in clues have done on photos the user already dated.
         let calibration = ClueCalibration.build(confirmed.compactMap { c in
@@ -1166,6 +1173,10 @@ final class AppState {
     var isCheckingShifts = false
     /// Shifts the user chose to keep, so they aren't listed again.
     var keptShifts: Set<String> = [] { didSet { store.save(keptShifts, to: "keptShifts") } }
+    /// Recovered photos (by UUID) and the batch each came back in: dated the day of the recovery.
+    var recovered: [String: RecoveryBatches.Batch] = [:]
+    /// Albums named for one year, by title, with how often their dated photos are from that year.
+    @ObservationIgnored var yearAlbums: [String: YearAlbum] = [:]
     /// Dates and places set from a right-click menu or History, waiting for Apply in To Apply.
     var pending: [String: PendingChange] = [:] { didSet { store.save(pending, to: "pending") } }
     /// Right-click › Set Date… or Set Location…, waiting for its sheet.
