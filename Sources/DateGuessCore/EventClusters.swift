@@ -65,6 +65,17 @@ public enum EventClusters {
         public var placeYears: Double
         /// The average-likeness cutoff for joining groups along a same-place link.
         public var placeAverageCutoff: Float
+        /// Scanned one after another (within `scanSeconds`, and `window` places in order): pages of
+        /// one album or prints of one roll, which usually share a year even when they don't look
+        /// much alike. Such photos link below `scanLink`, and groups join along those links if they
+        /// look alike on average below `scanAverageCutoff`.
+        ///
+        /// Against 145 events one owner confirmed: their photos kept together went from 45% to 73%,
+        /// and grouped photos the owner dated were within a year of each other 96% of the time
+        /// (99% before); 8,973 photos in events instead of 5,633.
+        public var scanSeconds: Double = 600
+        public var scanLink: Float = 0.95
+        public var scanAverageCutoff: Float = 0.8
 
         public init(anywhere: Float = 0.5, neighbors: Float = 0.65, samePerson: Float = 0.7,
                     window: Int = 40, averageCutoff: Float = 0.55, maxSize: Int = 60,
@@ -94,7 +105,8 @@ public enum EventClusters {
     ///     whose guesses are close: the same spot years apart isn't one event.
     public static func find(order: [String], prints: [String: [Float]], people: [String: Set<String>] = [:],
                             limits: [String: YearLimits] = [:], places: [String: GeoPoint] = [:],
-                            times: [String: Double] = [:], options: Options = .init()) -> [[String]] {
+                            times: [String: Double] = [:], scanTimes: [String: Double] = [:],
+                            options: Options = .init()) -> [[String]] {
         let ids = order.filter { prints[$0] != nil }
         guard ids.count > 1, let dim = prints[ids[0]]?.count, dim > 0 else { return [] }
         let vectors = ids.map { prints[$0]! }
@@ -133,6 +145,17 @@ public enum EventClusters {
             for j in (i + 1)..<min(ids.count, i + 1 + options.window) {
                 let d = EventLinks.distance(vectors[i], vectors[j])
                 if d < options.neighbors { add(i, j, d) }
+            }
+        }
+        // Scanned one after another: when each was scanned (its date in Photos), in seconds.
+        if !scanTimes.isEmpty {
+            for i in 0..<ids.count {
+                guard let t = scanTimes[ids[i]] else { continue }
+                for j in (i + 1)..<min(ids.count, i + 1 + options.window) {
+                    guard let u = scanTimes[ids[j]], abs(u - t) < options.scanSeconds else { continue }
+                    let d = EventLinks.distance(vectors[i], vectors[j])
+                    if d < options.scanLink { add(i, j, d, cutoff: options.scanAverageCutoff) }
+                }
             }
         }
         // Same person (skip people in so many photos that they say little).

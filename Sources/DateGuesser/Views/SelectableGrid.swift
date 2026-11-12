@@ -146,11 +146,10 @@ struct SelectableGrid<Card: View>: View {
             actions.decline(id)
             cursor.id = next
         } })
+        // R: the current photo, or every selected photo shown when the current one is among them
+        // (the same photos the right-click menu acts on).
         .modifier(KeyCommandModifier(key: "r") {
-            guard free else { return false }
-            let chosen = ids.filter(actions.isSelected)
-            if !chosen.isEmpty { actions.rotate(chosen); return true }
-            return onCurrent { actions.rotate([$0]) }
+            onCurrent { id in actions.rotate(actions.isSelected(id) ? ids.filter(actions.isSelected) : [id]) }
         })
         .modifier(KeyCommandModifier(key: "\u{1b}") {
             guard free else { return false }

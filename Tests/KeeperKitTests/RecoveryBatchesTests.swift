@@ -1,5 +1,6 @@
 import XCTest
 @testable import KeeperCore
+import KeeperKit
 
 /// Recovered photos: dated the day they came back, found by what they lack.
 final class RecoveryBatchesTests: XCTestCase {
@@ -69,5 +70,21 @@ final class YearAlbumsLibraryTests: XCTestCase {
         let tidy = judged.filter { Double($0.sameYear + 1) / Double($0.dated + 2) >= 0.8 }.count
         let mixed = judged.filter { Double($0.withinYear + 1) / Double($0.dated + 2) < 0.5 }.count
         print("YEAR ALBUMS: \(found.count) albums; \(judged.count) with 10+ dated photos: \(tidy) mostly from their year, \(judged.count - tidy - mixed) give or take a year, \(mixed) mixed")
+    }
+}
+
+/// Undo after only part of a batch rotated.
+final class PartialRotationUndoTests: XCTestCase {
+    func testReplacingARecordedChangeKeepsWhatHappened() {
+        var history = History()
+        let all = Change(label: "Rotate 3 Photos", before: [], after: [], rotations: ["a": 90, "b": 90, "c": 90])
+        let later = Change(label: "Reject", before: [], after: [])
+        history.record(all)
+        history.record(later)
+        let done = Change(label: "Rotate 3 Photos", before: [], after: [], rotations: ["a": 90, "c": 90])
+        history.replace(all, with: done)
+        _ = history.undo()                     // Reject
+        XCTAssertEqual(history.undo()?.rotations, ["a": -90, "c": -90], "only the photos that turned turn back")
+        XCTAssertFalse(history.canUndo, "nothing left to undo")
     }
 }

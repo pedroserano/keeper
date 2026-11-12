@@ -40,3 +40,20 @@ final class AlbumYearsTests: XCTestCase {
         XCTAssertEqual(AlbumYears.adjust(e, albums: [:]).weight, e.weight)
     }
 }
+
+/// Photos scanned one after another join one suggested event even when they look only somewhat alike.
+final class ScanLinkTests: XCTestCase {
+    func testPhotosScannedTogetherGroup() {
+        // Three photos about 0.75 apart: too far to group on looks alone.
+        func vector(_ k: Int) -> [Float] {
+            var v = [Float](repeating: 0, count: 8); v[0] = 1; v[k] = 0.62
+            let n = v.reduce(0) { $0 + $1 * $1 }.squareRoot(); return v.map { $0 / n }
+        }
+        let prints = ["a": vector(1), "b": vector(2), "c": vector(3)]
+        XCTAssertTrue(EventClusters.find(order: ["a", "b", "c"], prints: prints).isEmpty)
+        let scanned = ["a": 1000.0, "b": 1003.0, "c": 1010.0]
+        XCTAssertEqual(EventClusters.find(order: ["a", "b", "c"], prints: prints, scanTimes: scanned).first?.count, 3)
+        let apart = ["a": 1000.0, "b": 9000.0, "c": 20000.0]
+        XCTAssertTrue(EventClusters.find(order: ["a", "b", "c"], prints: prints, scanTimes: apart).isEmpty, "scanned hours apart")
+    }
+}

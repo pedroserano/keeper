@@ -1723,13 +1723,27 @@ final class CullingSession: ObservableObject {
                     }
                     if bulk { self.show("Saved \(items.count.formatted()) photos to Photos.") }
                 }
-                try await self.rotate(change.rotations)
+                let failed = await self.rotate(change.rotations)
                 self.sidewaysRotatedBack(rotatedBack)
                 // The Dates screens' thumbnails show the new stars, ♥ or turn.
                 for id in Set(photosIDs).union(change.rotations.keys) { DatesModel.photoChanged(id) }
-            } catch let error as PhotoRotator.RotateError {
-                if record { self.history.discardLast() }
-                self.show("Couldn't rotate: \(error.localizedDescription)")
+                if !failed.isEmpty {
+                    // ⌘Z still turns back the ones that did rotate.
+                    if record {
+                        let turned = change.rotations.filter { failed[$0.key] == nil }
+                        let kept = turned.isEmpty && change.before.isEmpty ? nil
+                            : Change(label: change.label, before: change.before, after: after, rotations: turned,
+                                     sidewaysHidden: change.sidewaysHidden)
+                        self.history.replace(Change(label: change.label, before: change.before, after: after,
+                                                    rotations: change.rotations, sidewaysHidden: change.sidewaysHidden),
+                                             with: kept)
+                    }
+                    let n = failed.count
+                    let text = (n == change.rotations.count ? "Couldn’t rotate \(n == 1 ? "it" : "them")" : "Couldn’t rotate \(n.formatted()) of \(change.rotations.count.formatted())")
+                        + ": \(failed.values.first ?? "")"
+                    self.show(text)
+                    self.datesModel?.say(text)
+                }
             } catch {
                 // Roll back so Keeper never shows a state Photos doesn't have.
                 for id in photosIDs {
@@ -1757,7 +1771,8 @@ final class CullingSession: ObservableObject {
     /// (the original is kept). ⌘Z turns them back.
     func rotateTarget() {
         let ids: [String]
-        if mode == .grid, selectsPhotos, !selectedPhotos.isEmpty {
+        // The selection only when the current photo is in it, as with the right-click menu.
+        if mode == .grid, selectsPhotos, let current = target, selectedPhotos.contains(current.localIdentifier) {
             ids = Array(selectedPhotos)
         } else if let asset = target {
             ids = [asset.localIdentifier]
@@ -1773,20 +1788,24 @@ final class CullingSession: ObservableObject {
                       rotations: Dictionary(ids.map { ($0, 90) }, uniquingKeysWith: { a, _ in a })))
     }
 
-    private func rotate(_ rotations: [String: Int]) async throws {
-        guard !rotations.isEmpty else { return }
+    /// Rotates each photo it can; one that Photos won't let it change doesn't stop the rest.
+    /// Returns the ones that failed, with why.
+    private func rotate(_ rotations: [String: Int]) async -> [String: String] {
+        guard !rotations.isEmpty else { return [:] }
         show("Rotating…")
-        for asset in library.assets(withIDs: Array(rotations.keys)) {
+        var failed: [String: String] = [:]
+        let found = library.assets(withIDs: Array(rotations.keys))
+        for id in Set(rotations.keys).subtracting(found.map(\.localIdentifier)) { failed[id] = "It’s no longer in Photos." }
+        for asset in found {
             let rotation = Rotation(degrees: rotations[asset.localIdentifier] ?? 0)
             do {
                 try await PhotoRotator.rotate(asset, by: rotation)
-            } catch let error as PhotoRotator.RotateError {
-                throw error
             } catch {
-                throw PhotoRotator.RotateError.renderFailed(error.localizedDescription)
+                failed[asset.localIdentifier] = error.localizedDescription
             }
         }
         message = nil
+        return failed
     }
 
     // MARK: Delete queue

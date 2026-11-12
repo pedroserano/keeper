@@ -14,6 +14,12 @@ extension AppState {
     static let neighbourReach = 10
     static let neighbourSeconds = 600.0
 
+    /// When each undated photo was scanned (its date in Photos), for grouping events.
+    nonisolated static func scanTimes(_ order: [UndatedPhoto]) -> [String: Double] {
+        Dictionary(order.compactMap { p in p.libraryDate.map { (p.id, $0.timeIntervalSinceReferenceDate) } },
+                   uniquingKeysWith: { a, _ in a })
+    }
+
     /// Each undated photo's neighbours: up to 10 each side in Undated Photos' order, scanned within
     /// 10 minutes of it. Closer in time counts more.
     nonisolated static func scanNeighbours(_ order: [UndatedPhoto]) -> [String: [EventLinks.Link]] {

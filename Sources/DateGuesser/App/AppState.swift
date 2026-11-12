@@ -404,6 +404,7 @@ final class AppState {
         linksRuns += 1
         let run = linksRuns, prepStarted = ContinuousClock.now
         let order = undatedSorted.map(\.id)
+        let scanTimes = AppState.scanTimes(undatedSorted)
         let packed = featurePrints.filter { scan.undated[$0.key] != nil }
         // Who's in each photo: named people plus Photos' unnamed face groups.
         var who: [String: Set<String>] = [:]
@@ -457,7 +458,7 @@ final class AppState {
             stage("places (\(photoPlaces.count) located)")
             guard !Task.isCancelled else { return }
             let events = EventClusters.find(order: order, prints: prints, people: who, limits: limits,
-                                            places: photoPlaces, times: times)
+                                            places: photoPlaces, times: times, scanTimes: scanTimes)
             stage("events")
             Timing.note("links #\(run) for \(prints.count) photos\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
             guard !Task.isCancelled else { return }
@@ -520,6 +521,7 @@ final class AppState {
         linksTask?.cancel()
         linksRuns += 1
         let run = linksRuns
+        let scanTimes = AppState.scanTimes(undatedSorted)
         let limits = photoLimits
         limitsUsedForEvents = limits
         let (knownPlaces, times) = eventPlacesAndTimes(order)
@@ -528,7 +530,7 @@ final class AppState {
             let started = ContinuousClock.now
             let photoPlaces = AppState.withLocations(knownPlaces, order: order, times: times, located: located)
             let events = EventClusters.find(order: order, prints: cache.prints, people: cache.who, limits: limits,
-                                            places: photoPlaces, times: times)
+                                            places: photoPlaces, times: times, scanTimes: scanTimes)
             Timing.note("links #\(run) regrouped events only\(Task.isCancelled ? " (cancelled, thrown away)" : "")", since: started)
             guard !Task.isCancelled else { return }
             await MainActor.run {

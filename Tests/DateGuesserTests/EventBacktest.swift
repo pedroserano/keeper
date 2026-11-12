@@ -253,3 +253,54 @@ final class NeighbourBacktest: XCTestCase {
         }
     }
 }
+
+/// Event suggestions with and without links between photos scanned one after another, against the
+/// events you confirmed. Skipped unless PDG_BACKTEST_DIR is set. Totals only.
+@MainActor
+final class EventGroupingBacktest: XCTestCase {
+    func testScanLinksOnRealData() throws {
+        guard let dir = ProcessInfo.processInfo.environment["PDG_BACKTEST_DIR"] else { throw XCTSkip("no PDG_BACKTEST_DIR") }
+        let store = JSONStore(directory: URL(fileURLWithPath: dir, isDirectory: true))
+        let scan = store.load(ScanSnapshot.self, from: "scan") ?? ScanSnapshot()
+        let prints = (store.loadBinary([String: Data].self, from: "featurePrints") ?? [:]).filter { scan.undated[$0.key] != nil }.mapValues(EventLinks.unpack)
+        let decisions = store.load([String: ReviewDecision].self, from: "decisions") ?? [:]
+        let groups = store.load([PhotoGroup].self, from: "groups") ?? []
+        let faces = store.load([String: [DetectedFace]].self, from: "detectedFaces") ?? [:]
+        var who: [String: Set<String>] = [:]
+        for (asset, list) in faces where prints[asset] != nil { who[asset] = Set(list.compactMap(\.clusterID)) }
+        let order = scan.undated.values.sorted { a, b in
+            switch (a.libraryDate, b.libraryDate) {
+            case let (x?, y?) where x != y: return x < y
+            default: return a.filename.localizedStandardCompare(b.filename) == .orderedAscending
+            }
+        }
+        let ids = order.map(\.id)
+        let scanTimes = Dictionary(order.compactMap { p in p.libraryDate.map { (p.id, $0.timeIntervalSinceReferenceDate) } }, uniquingKeysWith: { a, _ in a })
+        let truth = groups.filter { $0.kind == .sameEvent }.map { $0.assetIDs.filter { prints[$0] != nil } }.filter { $0.count >= 2 }
+        let truthPairs = truth.reduce(0) { $0 + $1.count * ($1.count - 1) / 2 }
+        let typed = decisions.compactMapValues { $0.ignored ? nil : $0.overrideYear }
+        print("EVENT GROUPING: \(prints.count) undated photos with a fingerprint; \(truth.count) confirmed events (\(truthPairs) pairs)")
+
+        func score(_ label: String, _ clusters: [[String]]) {
+            var cluster: [String: Int] = [:]
+            for (i, c) in clusters.enumerated() { for id in c { cluster[id] = i } }
+            var together = 0
+            for e in truth { for x in 0..<e.count { for y in (x + 1)..<e.count where cluster[e[x]] != nil && cluster[e[x]] == cluster[e[y]] { together += 1 } } }
+            var pairs = 0, sameYear = 0
+            for c in clusters {
+                let dated = c.compactMap { typed[$0] }
+                for x in 0..<dated.count { for y in (x + 1)..<dated.count { pairs += 1; if abs(dated[x] - dated[y]) <= 1 { sameYear += 1 } } }
+            }
+            let covered = clusters.reduce(0) { $0 + $1.count }
+            print("  \(label): \(clusters.count) events, \(covered) photos; your events' pairs kept together \(100 * together / max(1, truthPairs))%; " +
+                  "grouped photos you dated within a year of each other \(100 * sameYear / max(1, pairs))% (\(pairs) pairs)")
+        }
+        score("today", EventClusters.find(order: ids, prints: prints, people: who))
+        for (link, average) in [(Float(0.85), Float(0.75)), (0.95, 0.8), (0.75, 0.65), (1.2, 0.85)] {
+            var o = EventClusters.Options()
+            o.scanLink = link
+            o.scanAverageCutoff = average
+            score("scan links below \(link), average \(average)", EventClusters.find(order: ids, prints: prints, people: who, scanTimes: scanTimes, options: o))
+        }
+    }
+}

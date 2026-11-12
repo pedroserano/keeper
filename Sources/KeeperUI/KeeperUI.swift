@@ -284,7 +284,7 @@ public struct ShortcutSection: Identifiable, Sendable {
         Shortcut(["⇧", "⌘", "A"], "Deselect them all"),
         Shortcut(["A"], "Accept Keeper's suggestion"),
         Shortcut(["N"], "Turn the suggestion down"),
-        Shortcut(["R"], "Rotate 90° clockwise in Photos: the selected photos, or else the current one (asks first above 10)"),
+        Shortcut(["R"], "Rotate 90° clockwise in Photos: the current photo, or all the selected ones when it's one of them (asks first above 10)"),
         Shortcut(["⌘", "Z"], "Undo"),
         Shortcut(["⇧", "⌘", "Z"], "Redo"),
         Shortcut(["?"], "Show or hide this guide"),

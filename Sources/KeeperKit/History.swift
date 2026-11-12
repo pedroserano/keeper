@@ -73,6 +73,16 @@ public struct History: Sendable {
         return change
     }
 
+    /// Swaps a recorded change for what actually happened (nil drops it), e.g. when only some of a
+    /// batch could be rotated. Finds it from the newest back, so later changes don't matter.
+    public mutating func replace(_ old: Change, with new: Change?) {
+        if let i = undoStack.lastIndex(of: old) {
+            if let new { undoStack[i] = new } else { undoStack.remove(at: i); undoTimes.remove(at: i) }
+        } else if let i = redoStack.lastIndex(of: old) {
+            if let new { redoStack[i] = new } else { redoStack.remove(at: i); redoTimes.remove(at: i) }
+        }
+    }
+
     /// Drops the last recorded change without making it redoable, e.g. when it failed to apply.
     public mutating func discardLast() {
         _ = undoStack.popLast()
