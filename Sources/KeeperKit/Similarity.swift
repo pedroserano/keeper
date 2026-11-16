@@ -97,6 +97,22 @@ public enum Similarity {
     public static let duplicateDistance: Float = 0.02
     public static let similarDistance: Float = 0.10
 
+    /// Find Similar Photos: every saved print within this distance of the photo, closest first,
+    /// up to `similarSearchLimit`. In one library a photo has a median of 10 within it.
+    public static let similarSearchDistance: Float = 0.25
+    public static let similarSearchLimit = 200
+    /// When fewer than `similarSearchMinimum` are that close, the nearest up to this fill in.
+    public static let similarSearchFill: Float = 0.35
+    public static let similarSearchMinimum = 12
+
+    /// The matches to show, closest first, from (uuid, distance) pairs within `similarSearchFill`.
+    public static func similarSearchResults(_ found: [(String, Float)]) -> [String] {
+        let sorted = found.sorted { $0.1 < $1.1 }
+        let close = sorted.prefix { $0.1 <= similarSearchDistance }.prefix(similarSearchLimit)
+        let picked = close.count >= similarSearchMinimum ? Array(close) : Array(sorted.prefix(similarSearchMinimum))
+        return picked.map(\.0)
+    }
+
     /// Taken at the same moment, as a copy and its original are: the same time to the hundredth of
     /// a second, or the same second when one of them has no fraction (a copy that lost it on import).
     public static func sameMoment(_ a: Date, _ b: Date) -> Bool {

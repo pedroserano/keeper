@@ -518,7 +518,7 @@ import KeeperCore
     @Test func largestCopyIsKeptEvenIfItScoresLower() {
         let files: [String: FileInfo] = [
             "p10": FileInfo(width: 4032, height: 3024, bytes: 3_400_000),
-            "p90": FileInfo(width: 1024, height: 768, bytes: 300_000),
+            "p90": FileInfo(width: 800, height: 600, bytes: 300_000),
             "p50": FileInfo(width: 4032, height: 3024, bytes: 2_100_000),
         ]
         let r = Recommender(scores: library(), groups: [SimilarGroup(members: ["p90", "p10", "p50"], kind: .duplicate)],
@@ -558,7 +558,7 @@ import KeeperCore
     func score(_ id: String) -> Double { Double(id.dropFirst()) ?? 0 } // "p70" scores 70
 
     @Test func largestDuplicateIsSuggested() {
-        let files = ["p90": FileInfo(width: 1024, height: 768, bytes: 200_000),
+        let files = ["p90": FileInfo(width: 800, height: 600, bytes: 200_000),
                      "p10": FileInfo(width: 4032, height: 3024, bytes: 3_000_000)]
         let g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p10"], kind: .duplicate)], score: score, files: files)[0]
         #expect(g.keeper == "p10")
@@ -567,7 +567,7 @@ import KeeperCore
 
     @Test func biggerSimilarShotWinsUnlessItLooksMuchWorse() {
         let big = FileInfo(width: 4032, height: 3024, bytes: 3_000_000)
-        let small = FileInfo(width: 1024, height: 768, bytes: 200_000)
+        let small = FileInfo(width: 800, height: 600, bytes: 200_000)
         // The biggest file looks second best of three: it's kept over the best-looking small one.
         var g = LookAlikes.build(groups: [SimilarGroup(members: ["p90", "p50", "p10"], kind: .similar)], score: score,
                                  files: ["p90": small, "p50": big, "p10": small])[0]
@@ -649,7 +649,7 @@ import KeeperCore
 @Suite struct FaceTests {
     func score(_ id: String) -> Double { Double(id.dropFirst()) ?? 0 }
     let big = FileInfo(width: 4032, height: 3024, bytes: 3_000_000)
-    let small = FileInfo(width: 1024, height: 768, bytes: 200_000)
+    let small = FileInfo(width: 800, height: 600, bytes: 200_000)
 
     @Test func blinkIsNotSuggestedWhenAnotherTakeHasEyesOpen() {
         // p90 is the biggest and best-looking, but someone blinked.
@@ -1061,4 +1061,27 @@ import KeeperCore
         let e = NeighbourCue.evidence(prints: close, neighbours: [scene])
         #expect((e?.score(for: .clockwise90) ?? 0) < 0.5)
     }
+}
+
+/// Tiny Thumbnails: thumbnail-sized photos, shrunk camera photos too, most pixelated first.
+@Test func tinyThumbnails() {
+    let sharp = AppleScores(blurriness: 0.95)
+    func rank(_ w: Int, _ h: Int, screenshot: Bool = false) -> Double? {
+        LowQuality.rank(width: w, height: h, scores: sharp, isScreenshot: screenshot)
+    }
+    #expect(rank(360, 240) != nil)
+    #expect(rank(360, 240, screenshot: true) == nil)
+    #expect(rank(640, 480) == nil, "bigger than a thumbnail")
+    #expect(rank(160, 120)! < rank(360, 240)!, "most pixelated first")
+}
+
+/// Find Similar Photos: close matches closest first; the nearest few when none are close.
+@Test func similarSearchResults() {
+    let close = (0..<20).map { ("c\($0)", Float($0) * 0.01) }
+    #expect(Similarity.similarSearchResults(close.reversed()).first == "c0")
+    #expect(Similarity.similarSearchResults(close).count == 20)
+    let far = [("a", Float(0.3)), ("b", 0.1), ("c", 0.34)]
+    #expect(Similarity.similarSearchResults(far) == ["b", "a", "c"], "fewer than the minimum close: the nearest fill in")
+    let many = (0..<300).map { ("m\($0)", Float(0.2)) }
+    #expect(Similarity.similarSearchResults(many).count == Similarity.similarSearchLimit)
 }

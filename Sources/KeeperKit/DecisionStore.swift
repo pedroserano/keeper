@@ -142,6 +142,21 @@ public final class DecisionStore: Sendable {
         }
     }
 
+    /// Photos that look like `query`, closest first, from every saved print (Find Similar Photos).
+    public func photos(like query: FeatureVector, excluding uuid: String) throws -> [String] {
+        try dbQueue.read { db in
+            var found: [(String, Float)] = []
+            let rows = try Row.fetchCursor(db, sql: "SELECT uuid, vector FROM featurePrint")
+            while let row = try rows.next() {
+                let other: String = row["uuid"]
+                guard other != uuid, let v = FeatureVector(quantized: row["vector"]) else { continue }
+                let d = query.distance(to: v)
+                if d <= Similarity.similarSearchFill { found.append((other, d)) }
+            }
+            return Similarity.similarSearchResults(found)
+        }
+    }
+
     // MARK: Orientation (Sideways Photos)
 
     /// Photos already checked by the current engine (or dismissed, which a newer engine doesn't undo),

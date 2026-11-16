@@ -46,6 +46,7 @@ extension View {
                 select: { session.setPhotoSelected(id, $0) },
                 getInfo: { session.infoAsset = asset },
                 showInPhotos: { Task { if let problem = await ShowInPhotos.open(asset) { session.show(problem) } } },
+                findSimilar: { session.findSimilar(id) },
                 setDate: { session.requestPhotoInfo(.date, for: asset) },
                 setLocation: { session.requestPhotoInfo(.location, for: asset) },
                 rotate: { session.rotateFromMenu(asset) },

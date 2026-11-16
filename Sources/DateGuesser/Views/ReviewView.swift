@@ -439,6 +439,7 @@ struct ReviewCard: View {
                     isSelected: decision.selected, select: { state.setSelected(assetID, $0) },
                     getInfo: onOpen, infoTitle: "Details & Who’s in It…",
                     showInPhotos: { Task { await state.showInPhotos(assetID) } },
+                    findSimilar: DatesModel.findSimilar.map { find in { find(assetID) } },
                     setDate: { state.photoInfoRequest = PhotoInfoRequest(ids: ids, kind: .date, startDate: state.effectiveEstimate(assetID)?.date()) },
                     setLocation: { state.photoInfoRequest = PhotoInfoRequest(ids: ids, kind: .location) },
                     rotate: onRotate, rotateDisabled: state.isRotating,

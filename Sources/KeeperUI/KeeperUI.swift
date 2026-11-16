@@ -526,6 +526,7 @@ public struct PhotoMenu: View {
     var getInfo: (() -> Void)?
     var infoTitle: String
     var showInPhotos: (() -> Void)?
+    var findSimilar: (() -> Void)?
     var setDate: (() -> Void)?
     var setLocation: (() -> Void)?
     var rotate: (() -> Void)?
@@ -534,7 +535,7 @@ public struct PhotoMenu: View {
 
     public init(count: Int = 1, isSelected: Bool? = nil, select: ((Bool) -> Void)? = nil,
                 getInfo: (() -> Void)? = nil, infoTitle: String = "Get Info",
-                showInPhotos: (() -> Void)? = nil,
+                showInPhotos: (() -> Void)? = nil, findSimilar: (() -> Void)? = nil,
                 setDate: (() -> Void)? = nil, setLocation: (() -> Void)? = nil,
                 rotate: (() -> Void)? = nil, rotateDisabled: Bool = false,
                 hide: Item? = nil) {
@@ -544,6 +545,7 @@ public struct PhotoMenu: View {
         self.getInfo = getInfo
         self.infoTitle = infoTitle
         self.showInPhotos = showInPhotos
+        self.findSimilar = findSimilar
         self.setDate = setDate
         self.setLocation = setLocation
         self.rotate = rotate
@@ -560,6 +562,7 @@ public struct PhotoMenu: View {
         }
         if let getInfo { Button("\(infoTitle)  ⌘I", action: getInfo) }
         if let showInPhotos { Button("Show in Photos", action: showInPhotos) }
+        if let findSimilar { Button("Find Similar Photos", action: findSimilar) }
         if setDate != nil || setLocation != nil || rotate != nil { Divider() }
         if let setDate { Button("Set Date\(photos)…", action: setDate) }
         if let setLocation { Button("Set Location\(photos)…", action: setLocation) }

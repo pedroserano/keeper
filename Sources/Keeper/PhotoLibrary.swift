@@ -17,10 +17,13 @@ enum Source: Hashable, Codable {
     case bursts
     case suggestedRejects
     case bestShots
+    case lowQuality
     case calibrate
     case duplicates
     case similarShots
     case sideways
+    /// Find Similar Photos: the photo you right-clicked and the ones that look like it.
+    case findSimilar
     case album(id: String, title: String)
 
     var title: String {
@@ -34,10 +37,12 @@ enum Source: Hashable, Codable {
         case .bursts: "Bursts"
         case .suggestedRejects: "Suggested Rejects"
         case .bestShots: "Best Shots"
+        case .lowQuality: "Tiny Thumbnails"
         case .calibrate: "Rate to Calibrate"
         case .duplicates: "Duplicates"
         case .similarShots: "Similar Shots"
         case .sideways: "Sideways Photos"
+        case .findSimilar: "Similar Photos"
         case .album(_, let title): title
         }
     }
@@ -53,21 +58,23 @@ enum Source: Hashable, Codable {
         case .bursts: "square.stack.3d.down.right"
         case .suggestedRejects: "wand.and.rays"
         case .bestShots: "star"
+        case .lowQuality: "photo.badge.exclamationmark"
         case .calibrate: "slider.horizontal.3"
         case .duplicates: "plus.square.on.square"
         case .similarShots: "square.on.square"
         case .sideways: "rotate.right"
+        case .findSimilar: "sparkle.magnifyingglass"
         case .album: "rectangle.stack"
         }
     }
 
     /// Sources built from Apple's scores, in their own order instead of by date.
     var isSuggestion: Bool {
-        [.suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots].contains(self)
+        [.suggestedRejects, .bestShots, .lowQuality, .calibrate, .duplicates, .similarShots].contains(self)
     }
 
     /// Lists Sort can change (suggestions keep Apple's order; Sideways Photos has its own choices).
-    var sorts: Bool { !isSuggestion }
+    var sorts: Bool { !isSuggestion && self != .findSimilar }
 
     /// Duplicates and similar shots, shown group by group.
     var isGroups: Bool { groupKind != nil }
@@ -154,7 +161,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed, .rejected, .dateRange, .suggestedRejects, .bestShots, .calibrate, .duplicates, .similarShots, .sideways:
+        case .allPhotos, .unreviewed, .rejected, .dateRange, .suggestedRejects, .bestShots, .lowQuality, .calibrate, .duplicates, .similarShots, .sideways, .findSimilar:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)

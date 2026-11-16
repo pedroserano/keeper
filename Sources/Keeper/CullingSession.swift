@@ -116,6 +116,7 @@ final class CullingSession: ObservableObject {
                 self?.datesModel?.say((ids.count == 1 ? "Rotating in Photos." : "Rotating \(ids.count.formatted()) photos in Photos.")
                                       + " ⌘Z turns them back.")
             }
+            DatesModel.findSimilar = { [weak self] id in self?.findSimilar(id) }
             DatesModel.hasLocation = { [weak self] id in self?.hasLocation(id) == true }
             DatesModel.pixelSize = { [weak self] id in
                 guard let info = self?.fileInfo(forID: id), let w = info.width, let h = info.height else { return nil }
@@ -235,6 +236,39 @@ final class CullingSession: ObservableObject {
     func rotateFromMenu(_ asset: PHAsset) {
         let ids = photosForMenu(asset)
         if ids.count > Self.rotateWithoutAsking { rotateRequest = ids } else { rotate(ids: ids) }
+    }
+
+    /// Similar Photos: the photo you right-clicked, then the ones that look like it, closest first.
+    @Published private(set) var similarPhotos: [String] = []
+    @Published private(set) var findingSimilar = false
+
+    /// Right-click › Find Similar Photos: searches the fingerprints the look-alikes scan saved (the
+    /// same ones Duplicates and Similar Shots use), fingerprinting this photo first if it has none.
+    func findSimilar(_ localID: String) {
+        guard !findingSimilar, let asset = library.assets(withIDs: [localID]).first else { return }
+        findingSimilar = true
+        show("Finding photos like this one…")
+        let store = store, library = library
+        let uuid = String(localID.prefix { $0 != "/" })
+        Task { [weak self] in
+            let found = await Task.detached(priority: .userInitiated) { () -> [String]? in
+                var query = ((try? store.featurePrints(for: [uuid])) ?? [:])[uuid]
+                if query == nil, let made = await SimilarityIndexer.featurePrint(asset, library: library) {
+                    try? store.saveFeaturePrints([uuid: made])
+                    query = made
+                }
+                guard let query else { return nil }
+                return (try? store.photos(like: query, excluding: uuid)) ?? []
+            }.value
+            guard let self else { return }
+            self.findingSimilar = false
+            guard let found else { self.show("Keeper couldn't read this photo to compare it."); return }
+            self.similarPhotos = [localID] + found.map { $0 + "/L0/001" }
+            self.counts[.findSimilar] = self.similarPhotos.count
+            self.dates = nil
+            self.select(.findSimilar)
+            self.show(found.isEmpty ? "No photos look like this one." : "\(found.count.formatted()) photos look like this one, closest first.")
+        }
     }
 
     /// Right-click › Hide or Unhide in Photos, for this photo (H does the current one).
@@ -1161,17 +1195,21 @@ final class CullingSession: ObservableObject {
     // MARK: Sources and filters
 
     func select(_ newSource: Source) {
-        guard newSource != source else { return }
+        guard newSource != source else {
+            if newSource == .findSimilar { reload(restoreFrom: similarPhotos.first) }
+            return
+        }
         if source == .calibrate { learnFromRatings() }
         saveCursor()
         selectedPhotos = []
         photoAnchor = nil
         source = newSource
-        if let data = try? JSONEncoder().encode(newSource) {
+        // Similar Photos lasts until you quit: it opens to All Photos next time.
+        if newSource != .findSimilar, let data = try? JSONEncoder().encode(newSource) {
             try? store.setSetting("source", to: String(decoding: data, as: UTF8.self))
         }
         zoomed = false
-        reload(restoreFrom: (try? store.setting("cursor.\(newSource.key)")) ?? nil)
+        reload(restoreFrom: newSource == .findSimilar ? similarPhotos.first : (try? store.setting("cursor.\(newSource.key)")) ?? nil)
     }
 
     /// Fetches the source (lazy, fast) and applies the filter. Decisions don't call this, so the
@@ -1182,8 +1220,8 @@ final class CullingSession: ObservableObject {
     private func reload(restoreFrom id: String? = nil, quietly: Bool = false) {
         let keepID = id ?? current?.localIdentifier
         let started = ContinuousClock.now
-        let result = source == .sideways
-            ? library.assets(fetching: Array(sideways.keys))
+        let result = source == .sideways ? library.assets(fetching: Array(sideways.keys))
+            : source == .findSimilar ? library.assets(fetching: similarPhotos)
             : library.fetch(source, newestFirst: sort == .newest, range: dateRange)
         log.notice("open: fetched \(result.count) photos for \(self.source.title) in \(started.duration(to: .now), privacy: .public)")
         var keepOrder: [String: Int] = [:]
@@ -1200,7 +1238,8 @@ final class CullingSession: ObservableObject {
 
         // The common case needs no scan: every photo in the source, straight from PhotoKit.
         let byAdded = sort == .recentlyAdded && source.sorts && source != .sideways
-        if filter == .all && source != .unreviewed && source != .rejected && source != .sideways && !source.isSuggestion && !byAdded {
+        if filter == .all && source != .unreviewed && source != .rejected && source != .sideways && source != .findSimilar
+            && !source.isSuggestion && !byAdded {
             loading = false
             sections = nil
             sectionGroups = []
@@ -1222,6 +1261,7 @@ final class CullingSession: ObservableObject {
         let source = source
         let recommender = recommender
         let sideways = sideways, minConfidence = sidewaysMinConfidence, sidewaysSort = sidewaysSort
+        let similarOrder = Dictionary(similarPhotos.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         let sampleOrder = Dictionary(calibrationSample.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         // Duplicates or Similar Shots: each unresolved group together, in date order, the one to keep first.
         var groupOrder: [String: Double] = [:]
@@ -1253,6 +1293,10 @@ final class CullingSession: ObservableObject {
                     case .unrated: if flag != .none || asset.rating.rawValue != 0 { return } // still to rate
                     case .favorites: if !asset.isFavorite { return }
                     case .rejects: if flag != .reject { return }
+                    }
+                    if source == .findSimilar {
+                        if let order = similarOrder[asset.localIdentifier] { out.append((i, Double(order))) }
+                        return
                     }
                     if source == .sideways {
                         // Surest first; out of date once the photo has changed since it was checked.
@@ -1288,6 +1332,10 @@ final class CullingSession: ObservableObject {
                         if let order = groupOrder[uuid] { out.append((i, order)) }
                         return
                     }
+                    if source == .lowQuality {
+                        if let rank = recommender?.lowQuality[uuid] { out.append((i, rank)) }
+                        return
+                    }
                     guard let s = recommender?.suggestion(forUUID: uuid) else { return }
                     switch source {
                     case .suggestedRejects where s.suggestsReject: out.append((i, s.keep))
@@ -1299,7 +1347,7 @@ final class CullingSession: ObservableObject {
                 switch source {
                 case .suggestedRejects: out.sort { $0.keep < $1.keep }
                 case .bestShots: out.sort { $0.keep > $1.keep }
-                case .calibrate, .duplicates, .similarShots, .sideways: out.sort { $0.keep < $1.keep }
+                case .lowQuality, .calibrate, .duplicates, .similarShots, .sideways, .findSimilar: out.sort { $0.keep < $1.keep }
                 default:
                     guard byAdded else { return (out.map(\.position), true, nil, []) }
                     // Newest additions first; photos added together, newest taken first.
@@ -1405,6 +1453,7 @@ final class CullingSession: ObservableObject {
                     out[.suggestedRejects] = c.rejects
                     out[.bestShots] = c.best
                 }
+                if let recommender, !files.isEmpty { out[.lowQuality] = present(Array(recommender.lowQuality.keys)) }
                 out[.calibrate] = sampleCount
                 if haveGroups {
                     out[.duplicates] = unresolvedPhotos[.duplicate] ?? 0

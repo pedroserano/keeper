@@ -108,6 +108,9 @@ public final class DatesModel {
     /// Keeper; nil leaves rotating to the Dates screens.
     public static var rotate: (([String]) -> Void)?
 
+    /// Right-click › Find Similar Photos: Keeper's own Similar Photos list. Set by Keeper.
+    public static var findSimilar: ((String) -> Void)?
+
     /// ⌘Z on a Dates screen: takes back the last selection, hide or changed guess there (applied
     /// dates and places are undone from History).
     public func undo(on item: DatesItem) {

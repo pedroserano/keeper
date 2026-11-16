@@ -121,6 +121,8 @@ public struct Recommender: Sendable {
     public let lookAlikes: [LookAlikeGroup]
     let duplicateIndex: [String: Int]
     let similarIndex: [String: Int]
+    /// Tiny Thumbnails: each photo's place in the list, lowest first.
+    public let lowQuality: [String: Double]
 
     public init(scores: [String: AppleScores], screenshots: Set<String> = [], model: RatingModel? = nil,
                 groups: [SimilarGroup] = [], files: [String: FileInfo] = [:], faces: [String: FaceInfo] = [:],
@@ -158,6 +160,7 @@ public struct Recommender: Sendable {
         }
         duplicateIndex = duplicates
         similarIndex = similar
+        lowQuality = LowQuality.find(files: files, scores: scores, screenshots: screenshots)
     }
 
     /// The same suggestions with something changed; scores, screenshots, files and faces carry over.

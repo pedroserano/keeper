@@ -317,6 +317,7 @@ struct Sidebar: View {
             Section {
                 row(.suggestedRejects)
                 row(.bestShots)
+                row(.lowQuality)
                 if session.suggestionsStatus == .ready { row(.calibrate) }
             } header: {
                 Text("Suggestions")
@@ -340,6 +341,7 @@ struct Sidebar: View {
             Section {
                 row(.duplicates)
                 row(.similarShots)
+                if !session.similarPhotos.isEmpty { row(.findSimilar) }
             } header: {
                 Text("Look-alikes")
             } footer: {
