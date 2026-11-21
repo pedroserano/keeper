@@ -24,6 +24,10 @@ enum Source: Hashable, Codable {
     case sideways
     /// Find Similar Photos: the photo you right-clicked and the ones that look like it.
     case findSimilar
+    /// Photos of paintings, like the ones on a museum wall.
+    case paintings
+    /// Borderline paintings, to say yes or no to.
+    case maybePaintings
     case album(id: String, title: String)
 
     var title: String {
@@ -43,6 +47,8 @@ enum Source: Hashable, Codable {
         case .similarShots: "Similar Shots"
         case .sideways: "Sideways Photos"
         case .findSimilar: "Similar Photos"
+        case .paintings: "Paintings"
+        case .maybePaintings: "Maybe Paintings"
         case .album(_, let title): title
         }
     }
@@ -64,6 +70,8 @@ enum Source: Hashable, Codable {
         case .similarShots: "square.on.square"
         case .sideways: "rotate.right"
         case .findSimilar: "sparkle.magnifyingglass"
+        case .paintings: "photo.artframe"
+        case .maybePaintings: "questionmark.square.dashed"
         case .album: "rectangle.stack"
         }
     }
@@ -74,7 +82,9 @@ enum Source: Hashable, Codable {
     }
 
     /// Lists Sort can change (suggestions keep Apple's order; Sideways Photos has its own choices).
-    var sorts: Bool { !isSuggestion && self != .findSimilar }
+    var sorts: Bool { !isSuggestion && self != .findSimilar && !isPaintings }
+
+    var isPaintings: Bool { self == .paintings || self == .maybePaintings }
 
     /// Duplicates and similar shots, shown group by group.
     var isGroups: Bool { groupKind != nil }
@@ -161,7 +171,7 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
         }
 
         switch source {
-        case .allPhotos, .unreviewed, .rejected, .dateRange, .suggestedRejects, .bestShots, .lowQuality, .calibrate, .duplicates, .similarShots, .sideways, .findSimilar:
+        case .allPhotos, .unreviewed, .rejected, .dateRange, .suggestedRejects, .bestShots, .lowQuality, .calibrate, .duplicates, .similarShots, .sideways, .findSimilar, .paintings, .maybePaintings:
             return PHAsset.fetchAssets(with: options)
         case .favorites:
             return smartAlbum(.smartAlbumFavorites)
@@ -373,6 +383,81 @@ final class PhotoLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserv
             }
         }
         return out
+    }
+
+    nonisolated static let paintingsAlbumTitle = "Paintings"
+
+    /// The photos among `ids` already in the Paintings album.
+    nonisolated func inPaintingsAlbum(_ ids: [String]) -> Set<String> {
+        guard let album = Self.paintingsAlbum() else { return [] }
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "localIdentifier IN %@", ids)
+        var out = Set<String>()
+        PHAsset.fetchAssets(in: album, options: options).enumerateObjects { a, _, _ in out.insert(a.localIdentifier) }
+        return out
+    }
+
+    /// Adds photos to the Paintings album (true) or takes them out (false), making the album the
+    /// first time. A batch at a time, as with the Rejected album.
+    func setInPaintingsAlbum(_ changes: [String: Bool]) async throws {
+        guard !changes.isEmpty else { return }
+        var album = Self.paintingsAlbum()
+        if album == nil {
+            var placeholderID: String?
+            try await PHPhotoLibrary.shared().performChanges {
+                placeholderID = PHAssetCollectionChangeRequest
+                    .creationRequestForAssetCollection(withTitle: Self.paintingsAlbumTitle)
+                    .placeholderForCreatedAssetCollection.localIdentifier
+            }
+            album = placeholderID.flatMap {
+                PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [$0], options: nil).firstObject
+            }
+        }
+        guard let album else { throw CocoaError(.fileNoSuchFile) }
+        let assets = assets(withIDs: Array(changes.keys))
+        for start in stride(from: 0, to: assets.count, by: Self.batchSize) {
+            let chunk = assets[start..<min(start + Self.batchSize, assets.count)]
+            let add = chunk.filter { changes[$0.localIdentifier] == true }
+            let remove = chunk.filter { changes[$0.localIdentifier] == false }
+            try await PHPhotoLibrary.shared().performChanges {
+                guard let request = PHAssetCollectionChangeRequest(for: album) else { return }
+                if !add.isEmpty { request.addAssets(add as NSArray) }
+                if !remove.isEmpty { request.removeAssets(remove as NSArray) }
+            }
+        }
+    }
+
+    /// UUIDs of every photo in an album.
+    nonisolated func uuids(inAlbum id: String) -> Set<String> {
+        guard let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject
+        else { return [] }
+        var out = Set<String>()
+        PHAsset.fetchAssets(in: album, options: nil).enumerateObjects { a, _, _ in
+            out.insert(String(a.localIdentifier.prefix { $0 != "/" }))
+        }
+        return out
+    }
+
+    /// UUIDs of every photo in the Paintings album.
+    nonisolated func paintingsAlbumUUIDs() -> Set<String> {
+        guard let album = Self.paintingsAlbum() else { return [] }
+        var out = Set<String>()
+        PHAsset.fetchAssets(in: album, options: nil).enumerateObjects { a, _, _ in
+            out.insert(String(a.localIdentifier.prefix { $0 != "/" }))
+        }
+        return out
+    }
+
+    /// Your own top-level album called Paintings, if there is one.
+    private nonisolated static func paintingsAlbum() -> PHAssetCollection? {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "title == %@", paintingsAlbumTitle)
+        var found: PHAssetCollection?
+        PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: options)
+            .enumerateObjects { c, _, stop in
+                if c.canPerform(.addContent) { found = c; stop.pointee = true }
+            }
+        return found
     }
 
     /// One call, so macOS shows one confirmation for the whole batch.

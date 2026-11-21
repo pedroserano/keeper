@@ -425,27 +425,42 @@ extension KeeperToolbar where Sort == EmptyView {
 }
 
 /// The Show drop-down: the current choice, with the icon filled in when it isn't the first one.
-public struct ShowMenu<Choice: Hashable & CaseIterable & RawRepresentable>: View
+public struct ShowMenu<Choice: Hashable & CaseIterable & RawRepresentable, More: View>: View
     where Choice.RawValue == String, Choice.AllCases: RandomAccessCollection {
     @Binding var selection: Choice
     var help: String
+    /// Shown after the choices, such as Similar Shots' album filter.
+    var more: More
+    /// Added to the menu's title while a filter in `more` is on ("All · Holidays").
+    var moreTitle: String?
 
-    public init(selection: Binding<Choice>, help: String = "Which photos to show") {
+    public init(selection: Binding<Choice>, help: String = "Which photos to show") where More == EmptyView {
         _selection = selection
         self.help = help
+        self.more = EmptyView()
+    }
+
+    public init(selection: Binding<Choice>, help: String = "Which photos to show", moreTitle: String?,
+                @ViewBuilder more: () -> More) {
+        _selection = selection
+        self.help = help
+        self.more = more()
+        self.moreTitle = moreTitle
     }
 
     public var body: some View {
-        let first = Choice.allCases.first == selection
+        let first = Choice.allCases.first == selection && moreTitle == nil
         Menu {
             Picker("Show", selection: $selection) {
                 ForEach(Array(Choice.allCases), id: \.self) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.inline)
             .labelsHidden()
+            more
         } label: {
-            Label(selection.rawValue, systemImage: first ? "line.3.horizontal.decrease.circle"
-                                                         : "line.3.horizontal.decrease.circle.fill")
+            Label(moreTitle.map { "\(selection.rawValue) · \($0)" } ?? selection.rawValue,
+                  systemImage: first ? "line.3.horizontal.decrease.circle"
+                                     : "line.3.horizontal.decrease.circle.fill")
                 .labelStyle(.titleAndIcon)
         }
         .fixedSize()

@@ -39,6 +39,8 @@ struct ContentView: View {
                         // selected (⌘A, ⌘-click, Shift-click or G).
                         if session.source == .sideways, !session.list.isEmpty {
                             SidewaysBar(session: session)
+                        } else if session.source.isPaintings {
+                            PaintingsBar(session: session)
                         } else if session.selectsPhotos, !session.list.isEmpty,
                            !session.selectedPhotos.isEmpty || session.selectingAll,
                            session.source == .rejected || session.suggestionsStatus == .ready {
@@ -163,7 +165,26 @@ struct ContentView: View {
         }
         // The same toolbar as every other photo screen; Delete Rejected is this screen's own action.
         KeeperToolbar(shortcuts: { showingShortcuts = true }) {
-            ShowMenu(selection: $session.filter)
+            if session.source.isGroups {
+                ShowMenu(selection: $session.filter, moreTitle: session.albumFilter?.title) {
+                    Divider()
+                    Menu("In Album") {
+                        Button { session.albumFilter = nil } label: {
+                            if session.albumFilter == nil { Label("Any Album", systemImage: "checkmark") } else { Text("Any Album") }
+                        }
+                        Divider()
+                        ForEach(session.library.albums, id: \.localIdentifier) { album in
+                            let title = album.localizedTitle ?? "Untitled"
+                            Button { session.albumFilter = .init(id: album.localIdentifier, title: title) } label: {
+                                if session.albumFilter?.id == album.localIdentifier { Label(title, systemImage: "checkmark") }
+                                else { Text(title) }
+                            }
+                        }
+                    }
+                }
+            } else {
+                ShowMenu(selection: $session.filter)
+            }
         } sort: {
             Menu {
                 Picker("Sort By", selection: session.source == .sideways ? $session.sidewaysSort : $session.sort) {
@@ -270,7 +291,11 @@ struct ContentView: View {
             case "g": s.toggleSelectionAtCursor()
             case "r": s.rotateTarget()
             case "a": if s.source == .sideways { s.rotateSideways() } else { s.acceptSuggestedRating() }
-            case "n": if s.source == .sideways { s.dismissSideways() } else { return false }
+            case "n":
+                if s.source == .sideways { s.dismissSideways() }
+                else if s.source.isPaintings { s.answerPainting(s.paintingTargets, isPainting: false) }
+                else { return false }
+            case "p": if s.source.isPaintings { s.answerPainting(s.paintingTargets, isPainting: true) } else { return false }
             case "i": s.showingScores.toggle()
             case "?", "/": showingShortcuts = true
             default: return false
@@ -287,7 +312,8 @@ struct Sidebar: View {
 
     var body: some View {
         List(selection: Binding<SidebarPick?>(
-            get: { session.dates.map(SidebarPick.dates) ?? .source(session.source) },
+            // Maybe Paintings is part of the Paintings row.
+            get: { session.dates.map(SidebarPick.dates) ?? .source(session.source == .maybePaintings ? .paintings : session.source) },
             set: {
                 // After this view update: changing published state during one is undefined.
                 let pick = $0
@@ -356,6 +382,14 @@ struct Sidebar: View {
                     Text(orientationNote).font(.caption).foregroundStyle(.secondary)
                     SidewaysConfidenceSlider(session: session)
                 }
+            }
+            Section {
+                row(.paintings)
+            } header: {
+                Text("Paintings")
+            } footer: {
+                Text("Photos of paintings, like the ones on a museum wall. Likely ones and maybes; say which are paintings and Keeper learns.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 ForEach(DatesItem.placeItems) { item in datesRow(item) }
@@ -836,6 +870,62 @@ struct SidewaysBar: View {
             .disabled(n == 0)
             .help("Turn \(selected > 0 ? "each selected photo" : "this photo") the way shown on it, as an edit in Photos (A, ⌘Z undoes)")
         }
+    }
+}
+
+struct PaintingsBar: View {
+    @ObservedObject var session: CullingSession
+    @State private var confirm: [String]?
+
+    var body: some View {
+        let selected = session.selectedPhotos.count
+        let maybe = session.source == .maybePaintings
+        let picked = selected > 0 ? Array(session.selectedPhotos) : session.current.map { [$0.localIdentifier] } ?? []
+        KeeperActionBar(selected > 0
+                        ? "\(selected.formatted()) of \(session.list.count.formatted()) photos selected · Esc to deselect"
+                        : maybe ? "Is it a painting? P puts it in the Paintings album, N says it isn’t. Each answer teaches Keeper."
+                                : "Likely paintings. P or Add puts them in the Paintings album, N says one isn’t.",
+                        systemImage: maybe ? "questionmark.square.dashed" : "photo.artframe") {
+            Picker("Show", selection: Binding(get: { session.source }, set: { session.select($0) })) {
+                Text("Likely \((session.counts[.paintings] ?? 0).formatted())").tag(Source.paintings)
+                Text("Maybe \((session.counts[.maybePaintings] ?? 0).formatted())").tag(Source.maybePaintings)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Likely paintings, or the borderline ones to say yes or no to")
+            Button { session.answerPainting(picked, isPainting: false) } label: {
+                Label(selected > 1 ? "Not Paintings (\(selected.formatted()))" : "Not a Painting", systemImage: "xmark")
+            }
+            .disabled(picked.isEmpty)
+            .help("It isn’t a painting: it leaves both lists for good (N, ⌘Z undoes)")
+            if maybe || selected > 0 {
+                Button { add(picked) } label: {
+                    Label(selected > 1 ? "Painting (\(selected.formatted()))" : "Painting", systemImage: "checkmark")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(picked.isEmpty)
+                .help("It’s a painting: into the Paintings album (P, ⌘Z takes it out)")
+            } else {
+                Button { add(session.paintingsToAdd) } label: {
+                    Label("Add All to Paintings Album…", systemImage: "rectangle.stack.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Put every photo here in the Paintings album in Photos (⌘Z takes them out)")
+            }
+        }
+        .alert("Add \(CullingSession.photosText(confirm?.count ?? 0)) to the Paintings album?",
+               isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } })) {
+            Button("Add") { if let ids = confirm { session.answerPainting(ids, isPainting: true) }; confirm = nil }
+            Button("Cancel", role: .cancel) { confirm = nil }
+        } message: {
+            Text("Keeper makes an album called Paintings in Photos if you don’t have one. They leave this list; ⌘Z takes them out of the album again.")
+        }
+    }
+
+    /// More than a handful asks first.
+    private func add(_ ids: [String]) {
+        if ids.count > CullingSession.rotateWithoutAsking { confirm = ids } else { session.answerPainting(ids, isPainting: true) }
     }
 }
 

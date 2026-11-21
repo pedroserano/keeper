@@ -1085,3 +1085,22 @@ import KeeperCore
     let many = (0..<300).map { ("m\($0)", Float(0.2)) }
     #expect(Similarity.similarSearchResults(many).count == Similarity.similarSearchLimit)
 }
+
+/// Paintings: likely ones, maybes for everything borderline, and nothing you've answered.
+@Test func paintingsLists() {
+    let a = FeatureVector([1, 0, 0]), nearA = FeatureVector([1, 0.2, 0]), far = FeatureVector([0, 1, 0])
+    let scores = [
+        "sure": PaintingScore(painting: 0.9, largestFace: 0),
+        "angled": PaintingScore(painting: 0.4, largestFace: 0),
+        "unlike": PaintingScore(painting: 0.4, largestFace: 0),
+        "personByArt": PaintingScore(painting: 0.9, largestFace: 0.2),
+        "saidNo": PaintingScore(painting: 0.95, largestFace: 0),
+        "inAlbum": PaintingScore(painting: 0.95, largestFace: 0),
+    ]
+    let lists = Paintings.lists(scores: scores, prints: ["sure": a, "angled": nearA, "unlike": far],
+                                confirmed: ["inAlbum"], rejected: ["saidNo"],
+                                unlabelledNearConfirmed: ["unlabelled": 0.1, "tooFar": 0.3])
+    #expect(Set(lists.likely.keys) == ["sure", "angled"])
+    #expect(Set(lists.maybe.keys) == ["unlike", "personByArt", "unlabelled"])
+    #expect(lists.likely["sure"]! < lists.likely["angled"]!, "surest first")
+}

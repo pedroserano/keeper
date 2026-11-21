@@ -157,6 +157,22 @@ public final class DecisionStore: Sendable {
         }
     }
 
+    /// Every saved print within `distance` of any of `seeds`, by UUID, with the nearest distance.
+    public func photos(near seeds: [FeatureVector], within distance: Float) throws -> [String: Float] {
+        guard !seeds.isEmpty else { return [:] }
+        return try dbQueue.read { db in
+            var out: [String: Float] = [:]
+            let rows = try Row.fetchCursor(db, sql: "SELECT uuid, vector FROM featurePrint")
+            while let row = try rows.next() {
+                guard let v = FeatureVector(quantized: row["vector"]) else { continue }
+                var best = Float.infinity
+                for s in seeds { best = min(best, v.distance(to: s)) }
+                if best <= distance { out[row["uuid"]] = best }
+            }
+            return out
+        }
+    }
+
     // MARK: Orientation (Sideways Photos)
 
     /// Photos already checked by the current engine (or dismissed, which a newer engine doesn't undo),

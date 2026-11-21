@@ -12,19 +12,27 @@ public struct Change: Equatable, Sendable {
     public let rotations: [String: Int]
     /// Sideways Photos proposals hidden (true: rotated or dismissed) or shown again (false).
     public let sidewaysHidden: [String: Bool]
+    /// Photos added to (true) or taken out of (false) Keeper's Paintings album in Photos.
+    public let inPaintingsAlbum: [String: Bool]
+    /// Photos you said aren't paintings (true), or took that back (false).
+    public let notPainting: [String: Bool]
 
     public init(label: String, before: [Decision], after: [Decision], rotations: [String: Int] = [:],
-                sidewaysHidden: [String: Bool] = [:]) {
+                sidewaysHidden: [String: Bool] = [:], inPaintingsAlbum: [String: Bool] = [:],
+                notPainting: [String: Bool] = [:]) {
         self.label = label
         self.before = before
         self.after = after
         self.rotations = rotations
         self.sidewaysHidden = sidewaysHidden
+        self.inPaintingsAlbum = inPaintingsAlbum
+        self.notPainting = notPainting
     }
 
     public var reversed: Change {
         Change(label: label, before: after, after: before, rotations: rotations.mapValues { -$0 },
-               sidewaysHidden: sidewaysHidden.mapValues { !$0 })
+               sidewaysHidden: sidewaysHidden.mapValues { !$0 }, inPaintingsAlbum: inPaintingsAlbum.mapValues { !$0 },
+               notPainting: notPainting.mapValues { !$0 })
     }
 }
 

@@ -201,6 +201,17 @@ final class CullingSession: ObservableObject {
     /// The Apple-scores panel in single view (I).
     @Published var showingScores = false
     @Published var filter: Filter = .all { didSet { if filter != oldValue { reload() } } }
+
+    /// Duplicates and Similar Shots: only groups with a photo in this album.
+    struct AlbumFilter: Equatable { var id: String; var title: String }
+    @Published var albumFilter: AlbumFilter? {
+        didSet {
+            guard albumFilter != oldValue else { return }
+            albumFilterMembers = albumFilter.map { library.uuids(inAlbum: $0.id) }
+            if source.isGroups { reload() }
+        }
+    }
+    private var albumFilterMembers: Set<String>?
     /// The order of photos in lists kept in date order (not suggestions or Sideways Photos).
     @Published var sort: PhotoSort = PhotoSort(rawValue: UserDefaults.standard.string(forKey: PhotoSort.storageKey) ?? "") ?? .oldest {
         didSet {
@@ -368,9 +379,10 @@ final class CullingSession: ObservableObject {
         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { accessGap = .limitedPhotos }
         log.notice("open: loaded \(self.decisions.count) decisions in \(started.duration(to: .now), privacy: .public)")
         library.onChange = { [weak self] change in self?.libraryChanged(change) }
-        reload(restoreFrom: (try? store.setting("cursor.\(source.key)")) ?? nil)
+        reload(restoreFrom: (try? store.setting("cursor.\(source.key)")) ?? nil, opening: true)
         refreshCounts()
         loadSuggestions()
+        loadPaintings()
         findSimilarPhotos()
         // Sliders send every step; re-pick once you stop.
         keeperWatch = KeeperSettings.shared.$rules
@@ -412,6 +424,7 @@ final class CullingSession: ObservableObject {
             self.refreshCounts()
             clock.lap("reload and count")
             self.findSideways(photos: result.library)
+            self.loadPaintings()   // new fingerprints can add look-alike paintings
         }
     }
 
@@ -886,6 +899,80 @@ final class CullingSession: ObservableObject {
         }
     }
 
+    /// Paintings: each photo's place in the list, from Photos' scene labels and the fingerprints
+    /// the look-alikes scan saved.
+    @Published private(set) var paintings = Paintings.Lists()
+    /// Photos you said aren't paintings, by UUID. Saved.
+    private(set) var notPaintings: Set<String> = []
+    private var paintingsLoad: Task<Void, Never>?
+
+    /// Works out both painting lists again, from Photos' labels, the Paintings album and your
+    /// answers. When you open either list too, so what you've confirmed lately teaches it.
+    func loadPaintings() {
+        if notPaintings.isEmpty, let saved = try? store.setting("notPaintings"), let data = saved.data(using: .utf8) {
+            notPaintings = Set((try? JSONDecoder().decode([String].self, from: data)) ?? [])
+        }
+        let url = libraryURL, store = store, library = library, rejected = notPaintings
+        paintingsLoad?.cancel()
+        paintingsLoad = Task { [weak self] in
+            let started = ContinuousClock.now
+            let found = await Task.detached(priority: .utility) { () -> Paintings.Lists? in
+                guard let scores = try? PhotosDatabase.readPaintingScores(inLibrary: url, atLeast: Paintings.possible)
+                else { return nil }
+                let album = library.paintingsAlbumUUIDs()
+                let prints = (try? store.featurePrints(for: Set(scores.keys).union(album))) ?? [:]
+                let near = (try? store.photos(near: album.compactMap { prints[$0] }, within: Paintings.unlabelledLookAlike)) ?? [:]
+                return Paintings.lists(scores: scores, prints: prints, confirmed: album, rejected: rejected,
+                                       unlabelledNearConfirmed: near)
+            }.value
+            guard let self, !Task.isCancelled, let found else { return }
+            log.notice("paintings: \(found.likely.count) likely, \(found.maybe.count) maybe, in \(started.duration(to: .now), privacy: .public)")
+            self.counts[.paintings] = found.likely.count
+            self.counts[.maybePaintings] = found.maybe.count
+            guard found != self.paintings else { return }
+            self.paintings = found
+            if self.source.isPaintings { self.reload(quietly: true) }
+        }
+    }
+
+    /// The photos P and N act on: the selection when the current photo is in it, else the current one.
+    var paintingTargets: [String] {
+        if mode == .grid, let current = target, selectedPhotos.contains(current.localIdentifier) { return Array(selectedPhotos) }
+        return target.map { [$0.localIdentifier] } ?? []
+    }
+
+    /// P, or Painting: into the Paintings album. N, or Not a Painting: never listed again (⌘Z undoes either).
+    func answerPainting(_ ids: [String], isPainting: Bool) {
+        guard !ids.isEmpty else { return }
+        if isPainting { addToPaintingsAlbum(ids); return }
+        commit(Change(label: ids.count == 1 ? "Not a Painting" : "Not Paintings", before: [], after: [],
+                      notPainting: Dictionary(ids.map { ($0, true) }, uniquingKeysWith: { a, _ in a })))
+    }
+
+    /// Answered photos leave both lists at once; ones taken back come back when the lists are
+    /// worked out again.
+    private func paintingsAnswered(_ change: Change) {
+        for (id, no) in change.notPainting {
+            let uuid = String(id.prefix { $0 != "/" })
+            if no { notPaintings.insert(uuid) } else { notPaintings.remove(uuid) }
+        }
+        if !change.notPainting.isEmpty,
+           let data = try? JSONEncoder().encode(notPaintings.sorted()) {
+            try? store.setSetting("notPaintings", to: String(decoding: data, as: UTF8.self))
+        }
+        let gone = change.notPainting.filter(\.value).keys.map { String($0.prefix { $0 != "/" }) }
+            + change.inPaintingsAlbum.filter(\.value).keys.map { String($0.prefix { $0 != "/" }) }
+        var lists = paintings
+        for uuid in gone { lists.likely[uuid] = nil; lists.maybe[uuid] = nil }
+        if lists != paintings {
+            paintings = lists
+            counts[.paintings] = lists.likely.count
+            counts[.maybePaintings] = lists.maybe.count
+            if source.isPaintings { reload(quietly: true) }
+        }
+        if change.notPainting.values.contains(false) || change.inPaintingsAlbum.values.contains(false) { loadPaintings() }
+    }
+
     /// Reads Apple's scores for every photo (one read-only query, well under a second for
     /// 200,000 photos) and builds the suggestions from them, in the background.
     func loadSuggestions() {
@@ -1056,7 +1143,6 @@ final class CullingSession: ObservableObject {
     /// ⌘-click or G picks one, Shift-click a run, ⌘A the lot, Esc none.
     @Published private(set) var selectedPhotos: Set<String> = []
     @Published private(set) var selectingAll = false
-    private var photoAnchor: Int?
 
     /// Every list but Duplicates and Similar Shots, where G and the checkboxes pick whole groups.
     var selectsPhotos: Bool { !source.isGroups && sections == nil }
@@ -1065,20 +1151,20 @@ final class CullingSession: ObservableObject {
         guard selectsPhotos, list.indices.contains(i) else { return }
         let id = list.asset(at: i).localIdentifier
         if selectedPhotos.contains(id) { selectedPhotos.remove(id) } else { selectedPhotos.insert(id) }
-        photoAnchor = i
         select(index: i)
     }
 
-    /// Shift-click: every photo from the last one picked (or the cursor) to this one. They're picked,
-    /// or unpicked when this one was picked, so a run can be taken out again.
+    /// Shift-click: every photo from the current one (the blue outline) to this one. They're picked,
+    /// or unpicked when this one was picked, so a run can be taken out again. It starts at the
+    /// cursor, not at the last ⌘-click or drag: a plain click moves the cursor without moving that,
+    /// so runs reached photos you hadn't meant.
     func selectPhotos(through i: Int) {
         guard selectsPhotos, list.indices.contains(i) else { return }
-        let from = photoAnchor ?? cursor
+        let from = list.indices.contains(cursor) ? cursor : i
         let list = list
         let ids = (min(from, i)...max(from, i)).filter(list.indices.contains).map { list.asset(at: $0).localIdentifier }
         if selectedPhotos.contains(list.asset(at: i).localIdentifier) { selectedPhotos.subtract(ids) }
         else { selectedPhotos.formUnion(ids) }
-        photoAnchor = i
         select(index: i)
     }
 
@@ -1098,12 +1184,10 @@ final class CullingSession: ObservableObject {
         var ids = base
         for i in indices where list.indices.contains(i) { ids.insert(list.asset(at: i).localIdentifier) }
         if ids != selectedPhotos { selectedPhotos = ids }
-        if let last = indices.last { photoAnchor = last }
     }
 
     func deselectAllPhotos() {
         selectedPhotos = []
-        photoAnchor = nil
     }
 
     /// The selected photos with no rating yet that have a suggested one, as decisions before and
@@ -1196,20 +1280,21 @@ final class CullingSession: ObservableObject {
 
     func select(_ newSource: Source) {
         guard newSource != source else {
-            if newSource == .findSimilar { reload(restoreFrom: similarPhotos.first) }
+            if newSource == .findSimilar { reload(restoreFrom: similarPhotos.first, opening: true) }
             return
         }
         if source == .calibrate { learnFromRatings() }
         saveCursor()
         selectedPhotos = []
-        photoAnchor = nil
         source = newSource
         // Similar Photos lasts until you quit: it opens to All Photos next time.
         if newSource != .findSimilar, let data = try? JSONEncoder().encode(newSource) {
             try? store.setSetting("source", to: String(decoding: data, as: UTF8.self))
         }
         zoomed = false
-        reload(restoreFrom: newSource == .findSimilar ? similarPhotos.first : (try? store.setting("cursor.\(newSource.key)")) ?? nil)
+        if newSource.isPaintings { loadPaintings() }
+        reload(restoreFrom: newSource == .findSimilar ? similarPhotos.first : (try? store.setting("cursor.\(newSource.key)")) ?? nil,
+               opening: true)
     }
 
     /// Fetches the source (lazy, fast) and applies the filter. Decisions don't call this, so the
@@ -1217,7 +1302,9 @@ final class CullingSession: ObservableObject {
     /// `quietly`: an update to the list you're looking at (Sideways Photos while its scan finds more,
     /// or after rotating some): the current photos stay on screen and in their places until the new
     /// list is ready, with new ones added at the end, instead of a progress view and a re-sort.
-    private func reload(restoreFrom id: String? = nil, quietly: Bool = false) {
+    /// `opening`: a list just chosen, which opens where you last were in it. Any other update keeps
+    /// the outline on whichever photo has it when the update lands, wherever you've moved it since.
+    private func reload(restoreFrom id: String? = nil, quietly: Bool = false, opening: Bool = false) {
         let keepID = id ?? current?.localIdentifier
         let started = ContinuousClock.now
         let result = source == .sideways ? library.assets(fetching: Array(sideways.keys))
@@ -1228,6 +1315,7 @@ final class CullingSession: ObservableObject {
         if quietly, source == .sideways {
             for i in list.indices { keepOrder[list.asset(at: i).localIdentifier] = i }
         }
+        followCursor = !opening && id == nil
         apply(result, keepingID: keepID, quietly: quietly, keepOrder: keepOrder)
     }
 
@@ -1239,11 +1327,12 @@ final class CullingSession: ObservableObject {
         // The common case needs no scan: every photo in the source, straight from PhotoKit.
         let byAdded = sort == .recentlyAdded && source.sorts && source != .sideways
         if filter == .all && source != .unreviewed && source != .rejected && source != .sideways && source != .findSimilar
+            && !source.isPaintings
             && !source.isSuggestion && !byAdded {
             loading = false
             sections = nil
             sectionGroups = []
-            setList(AssetList(result: result, positions: nil), keeping: keepAsset)
+            setList(AssetList(result: result, positions: nil), keeping: keepAsset, nearby: followCursor)
             return
         }
 
@@ -1262,12 +1351,15 @@ final class CullingSession: ObservableObject {
         let recommender = recommender
         let sideways = sideways, minConfidence = sidewaysMinConfidence, sidewaysSort = sidewaysSort
         let similarOrder = Dictionary(similarPhotos.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let paintings = paintings
         let sampleOrder = Dictionary(calibrationSample.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         // Duplicates or Similar Shots: each unresolved group together, in date order, the one to keep first.
         var groupOrder: [String: Double] = [:]
         var listedGroups: [LookAlikeGroup] = []
         if let kind = source.groupKind, let recommender {
-            for group in recommender.lookAlikes(kind) where !Self.isResolved(group, decisions, localIDs: groupLocalIDs) {
+            let inAlbum = albumFilterMembers
+            for group in recommender.lookAlikes(kind) where !Self.isResolved(group, decisions, localIDs: groupLocalIDs)
+                && inAlbum.map({ members in group.members.contains(where: members.contains) }) != false {
                 for (rank, uuid) in group.members.enumerated() {
                     groupOrder[uuid] = Double(listedGroups.count) * 10_000 + Double(rank)
                 }
@@ -1296,6 +1388,13 @@ final class CullingSession: ObservableObject {
                     }
                     if source == .findSimilar {
                         if let order = similarOrder[asset.localIdentifier] { out.append((i, Double(order))) }
+                        return
+                    }
+                    if source.isPaintings {
+                        let uuid = String(asset.localIdentifier.split(separator: "/").first ?? "")
+                        if let order = source == .paintings ? paintings.likely[uuid] : paintings.maybe[uuid] {
+                            out.append((i, order))
+                        }
                         return
                     }
                     if source == .sideways {
@@ -1347,7 +1446,7 @@ final class CullingSession: ObservableObject {
                 switch source {
                 case .suggestedRejects: out.sort { $0.keep < $1.keep }
                 case .bestShots: out.sort { $0.keep > $1.keep }
-                case .lowQuality, .calibrate, .duplicates, .similarShots, .sideways, .findSimilar: out.sort { $0.keep < $1.keep }
+                case .lowQuality, .calibrate, .duplicates, .similarShots, .sideways, .findSimilar, .paintings, .maybePaintings: out.sort { $0.keep < $1.keep }
                 default:
                     guard byAdded else { return (out.map(\.position), true, nil, []) }
                     // Newest additions first; photos added together, newest taken first.
@@ -1376,20 +1475,44 @@ final class CullingSession: ObservableObject {
             newList.ascending = ordered
             self.sections = sections
             self.sectionGroups = groupIndices.map { listedGroups[$0] }
-            self.setList(newList, keeping: keepAsset)
+            // An update keeps the outline on whichever photo has it now: you may have moved it
+            // while the update was being worked out.
+            self.setList(newList, keeping: self.followCursor ? self.current : keepAsset, nearby: self.followCursor)
         }
     }
 
-    private func setList(_ newList: AssetList, keeping asset: PHAsset?) {
+    /// The reload under way is a quiet update that follows the cursor (see reload).
+    private var followCursor = false
+
+    /// `nearby`: if `asset` leaves, the outline moves to the nearest photo that stays, next ones
+    /// first, not to whatever lands at its old position.
+    private func setList(_ newList: AssetList, keeping asset: PHAsset?, nearby: Bool = false) {
+        var fallback: [String] = []
+        if nearby, list.indices.contains(cursor) {
+            let after = (cursor + 1..<min(cursor + 300, list.count)).map { list.asset(at: $0).localIdentifier }
+            let before = stride(from: cursor - 1, through: max(cursor - 300, 0), by: -1).map { list.asset(at: $0).localIdentifier }
+            fallback = after + before
+        }
+        followCursor = false
         list = newList
         titleDates.refresh(newList)
         groupAnchor = nil
         if let asset, let i = newList.index(of: asset) {
             cursor = i
+        } else if !fallback.isEmpty,
+                  let i = Self.firstIndex(of: fallback, in: newList, assets: library.assets(withIDs: fallback)) {
+            cursor = i
         } else {
             cursor = min(cursor, max(newList.count - 1, 0))
         }
         if mode == .compare { rebuildCompareGroup() }
+    }
+
+    /// Where the first of `ids` (in order) that's in the list is.
+    private static func firstIndex(of ids: [String], in list: AssetList, assets: [PHAsset]) -> Int? {
+        let byID = Dictionary(assets.map { ($0.localIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
+        for id in ids { if let a = byID[id], let i = list.index(of: a) { return i } }
+        return nil
     }
 
     /// Sidebar counts, worked out in the background. Unreviewed is "all photos minus the ones
@@ -1529,11 +1652,12 @@ final class CullingSession: ObservableObject {
         }
 
         // Photos added or removed (hidden, deleted, imported): stay on the same photo if it's still
-        // there, otherwise on the same position, which is now the next photo.
+        // there, otherwise on the nearest one that is, wherever the outline is when it lands.
         let keep = current
         if list.positions == nil {
-            setList(AssetList(result: after, positions: nil), keeping: keep)
+            setList(AssetList(result: after, positions: nil), keeping: keep, nearby: true)
         } else {
+            followCursor = true
             apply(after, keepingID: keep?.localIdentifier)
         }
         // Once changes pause: a run of rotations reports one change after another.
@@ -1723,10 +1847,12 @@ final class CullingSession: ObservableObject {
         }
         if record {
             history.record(Change(label: change.label, before: change.before, after: after, rotations: change.rotations,
-                                  sidewaysHidden: change.sidewaysHidden))
+                                  sidewaysHidden: change.sidewaysHidden, inPaintingsAlbum: change.inPaintingsAlbum,
+                                  notPainting: change.notPainting))
         }
         if !after.isEmpty { scheduleCountsRefresh() }
         applySidewaysHidden(change.sidewaysHidden)
+        if !change.notPainting.isEmpty { paintingsAnswered(change) }
         let rotatedBack = change.rotations.keys.filter { change.sidewaysHidden[$0] == false }
 
         let pairs = Array(zip(change.before, after))
@@ -1772,6 +1898,14 @@ final class CullingSession: ObservableObject {
                     }
                     if bulk { self.show("Saved \(items.count.formatted()) photos to Photos.") }
                 }
+                if !change.inPaintingsAlbum.isEmpty {
+                    try await library.setInPaintingsAlbum(change.inPaintingsAlbum)
+                    self.paintingsAnswered(change)
+                    let added = change.inPaintingsAlbum.values.filter { $0 }.count
+                    let n = change.inPaintingsAlbum.count
+                    self.show(added > 0 ? "Added \(Self.photosText(n)) to the Paintings album. ⌘Z takes them out."
+                                        : "Took \(Self.photosText(n)) out of the Paintings album.")
+                }
                 let failed = await self.rotate(change.rotations)
                 self.sidewaysRotatedBack(rotatedBack)
                 // The Dates screens' thumbnails show the new stars, ♥ or turn.
@@ -1780,11 +1914,14 @@ final class CullingSession: ObservableObject {
                     // ⌘Z still turns back the ones that did rotate.
                     if record {
                         let turned = change.rotations.filter { failed[$0.key] == nil }
-                        let kept = turned.isEmpty && change.before.isEmpty ? nil
+                        let kept = turned.isEmpty && change.before.isEmpty && change.inPaintingsAlbum.isEmpty
+                            && change.notPainting.isEmpty ? nil
                             : Change(label: change.label, before: change.before, after: after, rotations: turned,
-                                     sidewaysHidden: change.sidewaysHidden)
+                                     sidewaysHidden: change.sidewaysHidden, inPaintingsAlbum: change.inPaintingsAlbum,
+                                     notPainting: change.notPainting)
                         self.history.replace(Change(label: change.label, before: change.before, after: after,
-                                                    rotations: change.rotations, sidewaysHidden: change.sidewaysHidden),
+                                                    rotations: change.rotations, sidewaysHidden: change.sidewaysHidden,
+                                                    inPaintingsAlbum: change.inPaintingsAlbum, notPainting: change.notPainting),
                                              with: kept)
                     }
                     let n = failed.count
@@ -1807,6 +1944,31 @@ final class CullingSession: ObservableObject {
                 if record { self.history.discardLast() }
                 self.show("Couldn't update Photos: \(error.localizedDescription)")
             }
+        }
+    }
+
+    static func photosText(_ n: Int) -> String { n == 1 ? "1 photo" : "\(n.formatted()) photos" }
+
+    /// Paintings › Add to Paintings Album: the selected photos, or else every photo in the list.
+    var paintingsToAdd: [String] {
+        selectedPhotos.isEmpty ? list.indices.map { list.asset(at: $0).localIdentifier } : Array(selectedPhotos)
+    }
+
+    /// Adds photos to the Paintings album in Photos (made the first time). Ones already in it are
+    /// left as they are, so ⌘Z takes out only the ones this added.
+    func addToPaintingsAlbum(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let library = library
+        Task { [weak self] in
+            let already = await Task.detached(priority: .userInitiated) { library.inPaintingsAlbum(ids) }.value
+            guard let self else { return }
+            let new = ids.filter { !already.contains($0) }
+            guard !new.isEmpty else {
+                self.show(ids.count == 1 ? "It’s already in the Paintings album." : "They’re all in the Paintings album already.")
+                return
+            }
+            self.commit(Change(label: "Add to Paintings Album", before: [], after: [],
+                               inPaintingsAlbum: Dictionary(new.map { ($0, true) }, uniquingKeysWith: { a, _ in a })))
         }
     }
 
